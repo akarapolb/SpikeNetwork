@@ -1,0 +1,23 @@
+[package]
+name = "spike-relay"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Spike Network relay: authenticated store-and-forward for ciphertext"
+
+[lib]
+name = "spike_relay"
+
+[[bin]]
+name = "spike-relay"
+path = "src/main.rs"
+
+[dependencies]
+spike-core = { path = "../core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+serde_json = "1"
+hex = "0.4"
+rand = "0.8"
+clap = { version = "4", features = ["derive"] }
