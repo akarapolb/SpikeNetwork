@@ -314,6 +314,63 @@ mod tests {
     }
 
     #[test]
+    fn fallback_prekey_lets_many_senders_start_sessions_and_blocks_replay() {
+        let (mut a, mut b, mut c) = (dev(), dev(), dev());
+        let fallback = b.id.fresh_fallback_prekey();
+        // Two different senders use the same reusable fallback key.
+        a.sessions
+            .start_outbound(&a.id, &b.id.card(), &fallback)
+            .unwrap();
+        c.sessions
+            .start_outbound(&c.id, &b.id.card(), &fallback)
+            .unwrap();
+        let (ma, mc) = (
+            a.sessions.encrypt(&b.id.card(), b"from a").unwrap(),
+            c.sessions.encrypt(&b.id.card(), b"from c").unwrap(),
+        );
+        let contacts = [a.id.card(), c.id.card()];
+        for (m, want) in [(&ma, &b"from a"[..]), (&mc, &b"from c"[..])] {
+            match b.sessions.decrypt(&mut b.id, &contacts, m).unwrap() {
+                Opened::Message { body, .. } => assert_eq!(body, want),
+                o => panic!("{o:?}"),
+            }
+        }
+        // The key is reusable, so a replayed first message must still be refused.
+        assert!(
+            b.sessions.decrypt(&mut b.id, &contacts, &ma).is_err(),
+            "replay via fallback accepted"
+        );
+    }
+
+    #[test]
+    fn rotated_fallback_still_opens_in_flight_messages_once_then_expires() {
+        let (mut a, mut b) = (dev(), dev());
+        let old = b.id.fresh_fallback_prekey();
+        a.sessions
+            .start_outbound(&a.id, &b.id.card(), &old)
+            .unwrap();
+        let in_flight = a.sessions.encrypt(&b.id.card(), b"in flight").unwrap();
+        let _new = b.id.fresh_fallback_prekey(); // one rotation: old key still held
+        assert!(
+            open(&mut b, &a.id.card(), &in_flight).is_ok(),
+            "message to the previous fallback key lost"
+        );
+
+        let (mut a2, mut b2) = (dev(), dev());
+        let old = b2.id.fresh_fallback_prekey();
+        a2.sessions
+            .start_outbound(&a2.id, &b2.id.card(), &old)
+            .unwrap();
+        let too_late = a2.sessions.encrypt(&b2.id.card(), b"too late").unwrap();
+        b2.id.fresh_fallback_prekey();
+        b2.id.fresh_fallback_prekey(); // two rotations: old private key forgotten
+        assert!(
+            open(&mut b2, &a2.id.card(), &too_late).is_err(),
+            "private fallback key kept too long"
+        );
+    }
+
+    #[test]
     fn prekey_is_single_use() {
         let (mut a, mut b, mut c) = (dev(), dev(), dev());
         let pk = b.id.fresh_prekeys(1).remove(0);

@@ -187,9 +187,10 @@ where
             })
             .collect();
         let prekeys = state.store.prekey_count(&me)?;
-        Ok::<_, rusqlite::Error>((conn_id, backlog, prekeys))
+        let fallback_age = state.store.fallback_age_secs(&me)?;
+        Ok::<_, rusqlite::Error>((conn_id, backlog, prekeys, fallback_age))
     })();
-    let Ok((conn_id, backlog, prekeys)) = registered else {
+    let Ok((conn_id, backlog, prekeys, fallback_age_secs)) = registered else {
         let _ = send_json(&mut tx, &err("internal", "storage error")).await;
         return Err(());
     };
@@ -199,6 +200,7 @@ where
             &ServerMsg::Ready {
                 device_id: me.clone(),
                 prekeys,
+                fallback_age_secs,
             },
         )
         .await?;
@@ -221,6 +223,7 @@ where
                         Ok(ClientMsg::Send { to, blob }) => on_send(&state, &cfg, &to, &blob),
                         Ok(ClientMsg::Ack { id }) => { on_ack(&state, &me, &id); None }
                         Ok(ClientMsg::PublishPrekeys { keys }) => Some(on_publish(&state, &me, &my_ed, &keys)),
+                        Ok(ClientMsg::PublishFallback { key }) => Some(on_fallback(&state, &me, &my_ed, &key)),
                         Ok(ClientMsg::ClaimPrekey { device }) => {
                             claims += 1;
                             if claims > cfg.max_claims_per_conn {
@@ -303,15 +306,32 @@ fn on_publish(state: &Shared, me: &str, my_ed: &[u8; 32], keys: &[WirePrekey]) -
     }
 }
 
+fn on_fallback(state: &Shared, me: &str, my_ed: &[u8; 32], key: &WirePrekey) -> ServerMsg {
+    match SignedPrekey::from_wire(key) {
+        Ok(p) if verify_prekey(my_ed, &p).is_ok() => match state.store.publish_fallback(me, key) {
+            Ok(()) => ServerMsg::FallbackPublished,
+            Err(_) => internal(),
+        },
+        _ => err(
+            "bad_prekey",
+            "prekey is malformed or not signed by this device",
+        ),
+    }
+}
+
 fn on_claim(state: &Shared, device: &str) -> ServerMsg {
     if !is_valid_device_id(device) {
         return err("bad_request", "invalid device id");
     }
     match state.store.claim_prekey(device) {
-        Ok(prekey) => ServerMsg::Prekey {
-            device: device.to_string(),
-            prekey,
-        },
+        Ok(found) => {
+            let fallback = found.as_ref().is_some_and(|(_, f)| *f);
+            ServerMsg::Prekey {
+                device: device.to_string(),
+                prekey: found.map(|(k, _)| k),
+                fallback,
+            }
+        }
         Err(_) => internal(),
     }
 }

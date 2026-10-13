@@ -8,18 +8,41 @@ use std::time::Duration;
 /// Replenish prekeys when the relay holds fewer than this many of ours.
 const LOW_WATER: usize = 10;
 const TARGET: usize = 30;
+/// Rotate the fallback prekey when the relay's copy is older than this (or missing).
+/// Two generations of its private half are kept, so a key lives at most ~2x this.
+pub const FALLBACK_ROTATE_SECS: u64 = 7 * 24 * 3600;
 
 /// Make sure the relay holds enough of our one-time prekeys so others can start
 /// sessions with us while we are offline. Returns how many were uploaded.
 pub async fn top_up_prekeys(relay: &mut Relay, home: &Home, me: &mut Identity) -> Result<usize> {
-    if relay.prekeys >= LOW_WATER {
-        return Ok(0);
+    top_up_prekeys_with(relay, home, me, FALLBACK_ROTATE_SECS).await
+}
+
+/// As [`top_up_prekeys`], with an explicit fallback rotation age (for tests).
+pub async fn top_up_prekeys_with(
+    relay: &mut Relay,
+    home: &Home,
+    me: &mut Identity,
+    rotate_after_secs: u64,
+) -> Result<usize> {
+    let mut uploaded = 0;
+    if relay.prekeys < LOW_WATER {
+        let keys = me.fresh_prekeys(TARGET - relay.prekeys);
+        // Persist the private halves before the public halves leave the device.
+        home.save_identity(me)?;
+        relay.publish_prekeys(&keys).await?;
+        uploaded = keys.len();
     }
-    let keys = me.fresh_prekeys(TARGET - relay.prekeys);
-    // Persist the private halves before the public halves leave the device.
-    home.save_identity(me)?;
-    relay.publish_prekeys(&keys).await?;
-    Ok(keys.len())
+    // The fallback is what keeps a drained device reachable, so keep it fresh.
+    if relay
+        .fallback_age_secs
+        .is_none_or(|age| age > rotate_after_secs)
+    {
+        let key = me.fresh_fallback_prekey();
+        home.save_identity(me)?;
+        relay.publish_fallback(&key).await?;
+    }
+    Ok(uploaded)
 }
 
 #[derive(Debug)]

@@ -21,6 +21,9 @@ pub enum ClientMsg {
     Ack { id: String },
     /// Upload signed one-time prekeys so others can start sessions while we are offline.
     PublishPrekeys { keys: Vec<WirePrekey> },
+    /// Replace our fallback prekey: a reusable last resort handed out only when
+    /// no one-time prekeys remain.
+    PublishFallback { key: WirePrekey },
     /// Take one of `device`'s prekeys (each is handed out at most once).
     ClaimPrekey { device: String },
 }
@@ -31,10 +34,13 @@ pub enum ServerMsg {
     Challenge {
         nonce: String,
     },
-    /// `prekeys` is how many of our prekeys the relay still holds.
+    /// `prekeys` is how many of our one-time prekeys the relay still holds;
+    /// `fallback_age_secs` is the age of our stored fallback prekey, if any.
     Ready {
         device_id: String,
         prekeys: usize,
+        #[serde(default)]
+        fallback_age_secs: Option<u64>,
     },
     Accepted {
         id: String,
@@ -47,10 +53,15 @@ pub enum ServerMsg {
     Published {
         prekeys: usize,
     },
-    /// Reply to `ClaimPrekey`; `prekey` is `None` when the device has none left.
+    /// Reply to `PublishFallback`.
+    FallbackPublished,
+    /// Reply to `ClaimPrekey`; `prekey` is `None` when the device has none at
+    /// all. `fallback` is true when it is the reusable fallback, not a one-time key.
     Prekey {
         device: String,
         prekey: Option<WirePrekey>,
+        #[serde(default)]
+        fallback: bool,
     },
     Error {
         code: String,

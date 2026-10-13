@@ -21,6 +21,8 @@ pub struct Relay {
     pub device_id: String,
     /// How many of our prekeys the relay held when we connected (updated on publish).
     pub prekeys: usize,
+    /// Age of our fallback prekey on the relay, if it holds one.
+    pub fallback_age_secs: Option<u64>,
 }
 
 impl Relay {
@@ -31,6 +33,7 @@ impl Relay {
             pending: VecDeque::new(),
             device_id: String::new(),
             prekeys: 0,
+            fallback_age_secs: None,
         };
         let ServerMsg::Challenge { nonce } = r.read().await? else {
             bail!("relay did not send a challenge")
@@ -43,9 +46,14 @@ impl Relay {
         .await?;
         loop {
             match r.read().await? {
-                ServerMsg::Ready { device_id, prekeys } => {
+                ServerMsg::Ready {
+                    device_id,
+                    prekeys,
+                    fallback_age_secs,
+                } => {
                     r.device_id = device_id;
                     r.prekeys = prekeys;
+                    r.fallback_age_secs = fallback_age_secs;
                     return Ok(r);
                 }
                 ServerMsg::Error { code, message } => bail!("relay refused: {code}: {message}"),
@@ -121,16 +129,50 @@ impl Relay {
         }
     }
 
-    /// Take one of `device`'s prekeys; `None` if the relay has none left.
+    /// Upload a new fallback prekey, replacing the old one.
+    pub async fn publish_fallback(&mut self, key: &SignedPrekey) -> Result<()> {
+        self.write(&ClientMsg::PublishFallback { key: key.to_wire() })
+            .await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::FallbackPublished => {
+                    self.fallback_age_secs = Some(0);
+                    return Ok(());
+                }
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                _ => {}
+            }
+        }
+    }
+
+    /// Take one of `device`'s prekeys; `None` if the relay has none at all.
     pub async fn claim_prekey(&mut self, device: &str) -> Result<Option<SignedPrekey>> {
+        Ok(self.claim_prekey_info(device).await?.map(|(k, _)| k))
+    }
+
+    /// Like [`claim_prekey`](Self::claim_prekey), also saying whether the key
+    /// was the reusable fallback (true) or a one-time key (false).
+    pub async fn claim_prekey_info(
+        &mut self,
+        device: &str,
+    ) -> Result<Option<(SignedPrekey, bool)>> {
         self.write(&ClientMsg::ClaimPrekey {
             device: device.into(),
         })
         .await?;
         loop {
             match self.read().await? {
-                ServerMsg::Prekey { prekey, .. } => {
-                    return Ok(prekey.map(|p| SignedPrekey::from_wire(&p)).transpose()?)
+                ServerMsg::Prekey {
+                    prekey, fallback, ..
+                } => {
+                    return Ok(prekey
+                        .map(|p| SignedPrekey::from_wire(&p))
+                        .transpose()?
+                        .map(|k| (k, fallback)))
                 }
                 ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
                 ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {

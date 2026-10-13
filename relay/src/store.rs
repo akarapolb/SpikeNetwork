@@ -65,6 +65,12 @@ impl Store {
                  key    TEXT NOT NULL,
                  sig    TEXT NOT NULL,
                  UNIQUE(device, key)
+             );
+             CREATE TABLE IF NOT EXISTS fallbacks (
+                 device   TEXT PRIMARY KEY,
+                 key      TEXT    NOT NULL,
+                 sig      TEXT    NOT NULL,
+                 uploaded INTEGER NOT NULL
              );",
         )?;
         Ok(Self {
@@ -170,17 +176,60 @@ impl Store {
         Ok(count as usize)
     }
 
-    /// Remove and return the oldest prekey for `device` (each is handed out once).
-    pub fn claim_prekey(&self, device: &str) -> rusqlite::Result<Option<WirePrekey>> {
-        self.conn
+    /// Replace the device's fallback prekey.
+    pub fn publish_fallback(&self, device: &str, k: &WirePrekey) -> rusqlite::Result<()> {
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO fallbacks (device, key, sig, uploaded) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(device) DO UPDATE SET key = ?2, sig = ?3, uploaded = ?4",
+            params![device, k.key, k.sig, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// Age of the device's stored fallback prekey, if any.
+    pub fn fallback_age_secs(&self, device: &str) -> rusqlite::Result<Option<u64>> {
+        let up: Option<i64> = self
+            .conn
             .lock()
             .unwrap()
+            .query_row(
+                "SELECT uploaded FROM fallbacks WHERE device = ?1",
+                [device],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(up.map(|u| ((now_ms() - u).max(0) / 1000) as u64))
+    }
+
+    /// Remove and return the oldest one-time prekey for `device` (each is
+    /// handed out once). If none remain, return the reusable fallback instead
+    /// (not removed). The bool is true for the fallback.
+    pub fn claim_prekey(&self, device: &str) -> rusqlite::Result<Option<(WirePrekey, bool)>> {
+        let c = self.conn.lock().unwrap();
+        let one_time = c
             .query_row(
                 "DELETE FROM prekeys WHERE id = (SELECT id FROM prekeys WHERE device = ?1 ORDER BY id LIMIT 1)
                  RETURNING key, sig",
                 [device],
                 |r| Ok(WirePrekey { key: r.get(0)?, sig: r.get(1)? }),
             )
-            .optional()
+            .optional()?;
+        if let Some(k) = one_time {
+            return Ok(Some((k, false)));
+        }
+        c.query_row(
+            "SELECT key, sig FROM fallbacks WHERE device = ?1",
+            [device],
+            |r| {
+                Ok((
+                    WirePrekey {
+                        key: r.get(0)?,
+                        sig: r.get(1)?,
+                    },
+                    true,
+                ))
+            },
+        )
+        .optional()
     }
 }

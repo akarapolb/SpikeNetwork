@@ -459,3 +459,128 @@ async fn relay_disk_holds_no_plaintext_and_is_private() {
     }
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Drain every one-time prekey a device has on the relay, the way an abuser would.
+async fn drain_prekeys(url: &str, victim: &str) -> usize {
+    let mut taken = 0;
+    // Each connection may claim only a few, so an attacker has to keep reconnecting.
+    for _ in 0..10 {
+        let attacker = Identity::generate().unwrap();
+        let mut r = Relay::connect(url, &attacker).await.unwrap();
+        loop {
+            match r.claim_prekey_info(victim).await {
+                Ok(Some((_, false))) => taken += 1,
+                Ok(_) => return taken, // got the fallback or nothing: one-time keys are gone
+                Err(_) => break,       // rate limited on this connection; reconnect
+            }
+        }
+    }
+    taken
+}
+
+#[tokio::test]
+async fn drained_device_stays_reachable_through_the_fallback_prekey() {
+    let url = start_relay(Config::default()).await;
+    let alice = Device::new("alice");
+    let bob = Device::new("bob");
+    let carol = Device::new("carol");
+    for (d, other, name) in [
+        (&alice, &bob, "bob"),
+        (&carol, &bob, "bob"),
+        (&bob, &alice, "alice"),
+        (&bob, &carol, "carol"),
+    ] {
+        d.add(name, other, true);
+    }
+    assert_eq!(ops::publish_keys(&bob.home, &url).await.unwrap(), 30);
+
+    // An abuser takes every one-time prekey. Without a fallback, nobody could contact Bob now.
+    let bob_id = bob.home.load_identity().unwrap().device_id();
+    assert_eq!(drain_prekeys(&url, &bob_id).await, 30);
+
+    // Two different senders can still start sessions, using the same reusable fallback key.
+    let r = ops::send(&alice.home, &url, "bob", b"from alice")
+        .await
+        .unwrap();
+    assert!(r.new_session);
+    ops::send(&carol.home, &url, "bob", b"from carol")
+        .await
+        .unwrap();
+
+    let mut bodies: Vec<_> = bob
+        .recv(&url)
+        .await
+        .iter()
+        .map(|o| msg(o).1.to_vec())
+        .collect();
+    bodies.sort();
+    assert_eq!(bodies, vec![b"from alice".to_vec(), b"from carol".to_vec()]);
+}
+
+#[tokio::test]
+async fn fallback_is_only_used_after_one_time_prekeys_run_out() {
+    let url = start_relay(Config::default()).await;
+    let bob = Device::new("bob");
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    let bob_id = bob.home.load_identity().unwrap().device_id();
+    let a = Identity::generate().unwrap();
+    let mut r = Relay::connect(&url, &a).await.unwrap();
+    let (_, fallback) = r.claim_prekey_info(&bob_id).await.unwrap().unwrap();
+    assert!(
+        !fallback,
+        "a one-time key must be preferred while any remain"
+    );
+}
+
+#[tokio::test]
+async fn fallback_rotates_when_old_and_forgeries_are_refused() {
+    let url = start_relay(Config::default()).await;
+    let bob = Device::new("bob");
+    let mut me = bob.home.load_identity().unwrap();
+    let bob_id = me.device_id();
+
+    // First connection uploads a fallback; a prompt second connection leaves it alone.
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    let spy = Identity::generate().unwrap();
+    let mut s = Relay::connect(&url, &spy).await.unwrap();
+    // Drain one-time keys so that claims return the fallback.
+    drain_prekeys(&url, &bob_id).await;
+    let (first, is_fb) = s.claim_prekey_info(&bob_id).await.unwrap().unwrap();
+    assert!(is_fb);
+    let (again, _) = s.claim_prekey_info(&bob_id).await.unwrap().unwrap();
+    assert_eq!(
+        first, again,
+        "the fallback is reusable and stable until rotated"
+    );
+
+    // Reconnecting with a fresh fallback and the default rotation age leaves it alone.
+    let mut r = Relay::connect(&url, &me).await.unwrap();
+    ops::top_up_prekeys(&mut r, &bob.home, &mut me)
+        .await
+        .unwrap();
+    drain_prekeys(&url, &bob_id).await;
+    let (unchanged, is_fb) = s.claim_prekey_info(&bob_id).await.unwrap().unwrap();
+    assert!(is_fb);
+    assert_eq!(first, unchanged, "a young fallback must not be rotated");
+
+    // Once it is older than the rotation age, reconnecting publishes a different one.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let mut r = Relay::connect(&url, &me).await.unwrap();
+    assert!(r.fallback_age_secs.unwrap() >= 1);
+    ops::top_up_prekeys_with(&mut r, &bob.home, &mut me, 0)
+        .await
+        .unwrap();
+    drain_prekeys(&url, &bob_id).await;
+    let (rotated, is_fb) = s.claim_prekey_info(&bob_id).await.unwrap().unwrap();
+    assert!(is_fb, "after draining, claims must return the fallback");
+    assert_ne!(first, rotated, "stale fallback must be replaced");
+
+    // A fallback signed by someone else is refused.
+    let mut mallory = Identity::generate().unwrap();
+    let e = r
+        .publish_fallback(&mallory.fresh_fallback_prekey())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("bad_prekey"), "{e}");
+}

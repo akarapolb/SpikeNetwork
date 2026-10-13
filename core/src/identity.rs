@@ -109,6 +109,25 @@ impl Identity {
         self.account.sign([AUTH_CTX, nonce].concat()).to_bytes()
     }
 
+    /// Generate a new *fallback* prekey (a last-resort key a relay hands out
+    /// when all one-time prekeys are used up), sign it, and mark it published.
+    /// The previous fallback private key is kept until the next rotation so
+    /// messages already in flight still open; the one before that is dropped.
+    /// Persist the identity afterwards and upload the result.
+    pub fn fresh_fallback_prekey(&mut self) -> SignedPrekey {
+        self.account.generate_fallback_key();
+        let key = self
+            .account
+            .fallback_key()
+            .values()
+            .next()
+            .map(|k| k.to_bytes())
+            .expect("fallback key was just generated");
+        self.account.mark_keys_as_published();
+        let sig = self.account.sign([PREKEY_CTX, &key].concat()).to_bytes();
+        SignedPrekey { key, sig }
+    }
+
     /// Generate `n` new one-time prekeys (capped by the account's limit),
     /// sign them, and mark them published. The caller must persist the
     /// identity afterwards and upload the result to a relay.

@@ -19,5 +19,6 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [adr/0003-encrypted-state-at-rest.md](adr/0003-encrypted-state-at-rest.md) | Passphrase-encrypted local state: what it covers and what it does not |
 | [adr/0004-durable-relay-storage.md](adr/0004-durable-relay-storage.md) | SQLite-backed relay queues and prekeys; what the relay disk reveals |
 | [adr/0005-tls-for-relay-connections.md](adr/0005-tls-for-relay-connections.md) | wss://, safe defaults, certificate handling |
+| [adr/0006-fallback-prekey.md](adr/0006-fallback-prekey.md) | Last-resort prekey: reachability vs first-message forward secrecy |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [spike-connect-plans.html](spike-connect-plans.html) | All three plans in one page |

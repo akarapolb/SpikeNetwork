@@ -1,4 +1,4 @@
-# Threat model (Phase 0 draft, updated through ADR 0005)
+# Threat model (Phase 0 draft, updated through ADR 0006)
 
 Scope: the code in this repository today (`core`, `relay`, `cli`). It will grow with the product. Each item is marked **mitigated**, **partial**, or **open**.
 
@@ -26,7 +26,7 @@ No anonymity and no metadata protection is claimed.
 | Key substitution during pairing | Partial | Cards are self-signed (keys can't be mixed). A substituted *whole* card is only caught if users compare the fingerprint out of band; contacts start **UNVERIFIED** and the CLI warns |
 | Key change of an existing contact | Mitigated | `add` refuses a different key for an existing name unless `--force`, which resets verification |
 | Compromise of a device's keys exposes history | Mitigated for earlier traffic | Forward secrecy tested. Anything still stored on the device, and sessions' future messages until recovery, are exposed |
-| Prekey exhaustion / contact-start denial of service | Partial | Single-use prekeys, per-connection claim cap (resettable by reconnecting); no fallback key; no per-account rate limit |
+| Prekey exhaustion / contact-start denial of service | Mitigated | A reusable, signed, weekly-rotated fallback prekey keeps a drained device reachable (ADR 0006). Cost: first messages of sessions started via the fallback have weaker forward secrecy while that key is held. Claim cap is per connection only (resettable); no per-IP/recipient limit yet |
 | Stolen disk or leaked backup | Mitigated | All state is encrypted under an Argon2id-derived key (ADR 0003); tests check nothing identifying is stored in the clear and that tampering, truncation and file swaps are rejected. Strength depends on the passphrase |
 | Rollback to an older valid state file | **Open** | An attacker with write access could restore an old ratchet state; needs a monotonic counter / hardware keystore |
 | Compromised running endpoint (malware, debugger) | **Open** | Keys are in memory while unlocked; out of scope for Phase 0 |
@@ -38,4 +38,4 @@ No anonymity and no metadata protection is claimed.
 | Abusive agents | **Open** | Agent permissions and approval flow are Phase 2 |
 
 ## Before any real use
-Independent security review, per-sender and per-account rate limiting, a fallback prekey, delivery receipts.
+Independent security review, per-sender and per-account rate limiting, delivery receipts, relay-side rate limiting.

@@ -7,7 +7,7 @@ A privacy-first communication network for people, AI agents and devices. See [`d
 ## What works today
 - Device identity and shareable, self-signed device cards with fingerprints
 - End-to-end encrypted two-way conversations using Olm (Double Ratchet) via the audited-lineage `vodozemac` crate: forward secrecy, replay rejection, out-of-order delivery
-- Asynchronous session start: signed one-time prekeys served by the relay, so you can message someone who is offline
+- Asynchronous session start: signed one-time prekeys served by the relay, so you can message someone who is offline, plus a rotating fallback prekey so a drained device stays reachable
 - A store-and-forward relay that holds only ciphertext (auth, size/queue/TTL limits, ack, prekey store), durable across crashes with `--db`, TLS (`wss://`) with `--tls-cert/--tls-key`; plain `ws://` is refused off loopback by default
 - All local state (keys, sessions, contacts) encrypted at rest: Argon2id passphrase KDF + XChaCha20-Poly1305
 - A CLI: `init`, `card`, `add`, `verify`, `contacts`, `keys`, `send`, `recv`
@@ -42,6 +42,6 @@ spike --home /tmp/b recv
 | `docs/threat-model.md` | What is and is not protected |
 
 ## Known limitations (Phase 0)
-No passphrase change or recovery, no rollback protection, keys live in memory while the CLI runs, no fallback prekey, single-node relay storage, no direct P2P path yet, no attachments, no groups, no independent review. Details in `docs/threat-model.md` and `docs/adr/`.
+No passphrase change or recovery, no rollback protection, keys live in memory while the CLI runs, single-node relay storage, no direct P2P path yet, no attachments, no groups, no independent review. Details in `docs/threat-model.md` and `docs/adr/`.
 
 No license has been chosen yet (Apache-2.0 is the candidate).
