@@ -1,0 +1,380 @@
+<title>Multi-Device History Design</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Schibsted+Grotesk:wght@600;700&display=swap">
+<style>
+/* Layout: sticky section nav above one reading column; two figures; tables scroll inside their own wrappers. */
+:root{
+  --bg:#f5f7f9; --surface:#ffffff; --fg:#14202b; --muted:#5a6b7a; --line:#d9e0e6;
+  --accent:#0b6b73; --accent-soft:#dff0f1; --warn:#9a5b00; --warn-soft:#fbeed0; --bad:#9b2c2c; --bad-soft:#f8e1e1;
+  --display:"Schibsted Grotesk","Helvetica Neue",Arial,sans-serif;
+  --body:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e161d; --surface:#15202a; --fg:#e4ebf1; --muted:#94a5b4; --line:#26343f;
+  --accent:#4fc3cc; --accent-soft:#12343a; --warn:#f0c866; --warn-soft:#3a2f12; --bad:#f19a9a; --bad-soft:#3a1c1c; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e161d; --surface:#15202a; --fg:#e4ebf1; --muted:#94a5b4; --line:#26343f;
+  --accent:#4fc3cc; --accent-soft:#12343a; --warn:#f0c866; --warn-soft:#3a2f12; --bad:#f19a9a; --bad-soft:#3a1c1c; color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.55;padding-inline:16px;padding-block:0 64px}
+.wrap{max-width:960px;margin:0 auto}
+header.top{padding-block:40px 20px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{font-family:var(--display);font-size:clamp(28px,5vw,42px);line-height:1.1;margin:8px 0 12px;text-wrap:balance}
+.lede{max-width:65ch;color:var(--muted);margin:0}
+nav.tabs{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line);display:flex;gap:2px;flex-wrap:wrap;padding-block:8px;margin-bottom:8px}
+nav.tabs a{font-family:var(--mono);font-size:12.5px;color:var(--muted);text-decoration:none;padding:6px 10px;border-radius:6px}
+nav.tabs a:hover,nav.tabs a:focus-visible{background:var(--accent-soft);color:var(--accent);outline:none}
+section{padding-block:36px 4px;scroll-margin-top:56px}
+h2{font-family:var(--display);font-size:clamp(22px,4vw,30px);margin:0 0 6px;text-wrap:balance}
+h3{font-family:var(--display);font-size:18px;margin:28px 0 8px;text-wrap:balance}
+.sub{color:var(--muted);margin:0 0 18px;max-width:65ch}
+p,li{max-width:70ch}
+ul,ol{padding-left:22px;margin:8px 0}
+li{margin:4px 0}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface);margin:8px 0 16px}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:9px 12px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:500;background:var(--bg)}
+tr:last-child td{border-bottom:0}
+tr.pick td{background:var(--accent-soft)}
+.tag{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:1px 7px;border-radius:4px;vertical-align:1px;white-space:nowrap}
+.t-ok{background:var(--accent-soft);color:var(--accent)}
+.t-warn{background:var(--warn-soft);color:var(--warn)}
+.t-bad{background:var(--bad-soft);color:var(--bad)}
+.callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;max-width:72ch}
+.callout.warn{border-color:var(--warn);background:var(--warn-soft)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin:8px 0 16px}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;min-width:0}
+.box h4{margin:0 0 6px;font-family:var(--display);font-size:16px}
+.box p,.box ul{margin:0;font-size:14.5px}
+pre{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;font-family:var(--mono);font-size:12.5px;line-height:1.5;margin:8px 0 16px}
+code{font-family:var(--mono);font-size:.9em}
+figure{margin:12px 0 28px}
+.fw{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px}
+svg{display:block;width:100%;min-width:760px;height:auto;color:var(--fg);font-family:var(--body)}
+figcaption{margin-top:10px;color:var(--muted);font-size:14.5px;max-width:75ch}
+figcaption b{color:var(--fg)}
+footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.box-s{fill:var(--surface);stroke:currentColor;stroke-width:1.2}
+.dev{fill:none;stroke:var(--muted);stroke-width:1.2}
+.acc{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.6}
+.ext{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.4}
+.ln{fill:none;stroke:currentColor;stroke-width:1.5}
+.lnA{fill:none;stroke:var(--accent);stroke-width:2}
+.dash{stroke-dasharray:6 4}
+.dot{stroke-dasharray:2 4}
+.t{font-size:12.5px;fill:currentColor}
+.tb{font-size:13px;font-weight:600;fill:currentColor}
+.ts{font-size:11px;fill:var(--muted)}
+.ta{font-size:11px;font-weight:600;fill:var(--accent)}
+.tw2{font-size:11px;fill:var(--warn)}
+.bd{fill:var(--accent)}
+.bn{font-size:11px;font-weight:700;fill:var(--surface);text-anchor:middle}
+.mk{fill:currentColor}.mkA{fill:var(--accent)}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <div class="eyebrow">Design doc · Spike Connect · 13 Oct 2026 · Status: proposed, not built</div>
+  <h1>Message history across multiple devices</h1>
+  <p class="lede">How a person with a phone and a laptop sees the same conversations without any server holding their messages. Covers the local message store, device identity, fan-out delivery, history for new devices, and what infrastructure is still needed.</p>
+</header>
+
+<nav class="tabs" aria-label="Sections">
+  <a href="#summary">Summary</a><a href="#servers">Servers?</a><a href="#today">Today</a><a href="#design">Design</a><a href="#linking">Linking</a><a href="#sync">Sync</a><a href="#threats">Threats</a><a href="#options">Options</a><a href="#plan">Plan</a><a href="#open">Open</a>
+</nav>
+
+<section id="summary">
+  <h2>Summary</h2>
+  <p class="sub">What we recommend, and what we need you to decide.</p>
+  <div class="callout">
+    <b>Recommendation.</b> Give every person one <b>identity key</b> that signs a list of their <b>devices</b>. Senders encrypt each message separately for every device in that list (<b>fan-out</b>), including the sender's own other devices. Each device keeps history in an <b>encrypted local message store</b>. A new device gets old messages only when an existing device sends it a <b>history bundle</b> during verified linking, or from an optional <b>encrypted backup</b>. A continuous sync log comes later, only if needed.
+  </div>
+  <ul>
+    <li><b>No server holds messages, accounts or history.</b> History lives on your devices.</li>
+    <li><b>Servers are still needed</b> for offline delivery, key lookup, mobile wake-ups and NAT. They hold only ciphertext and signed public data, and anyone can run one. See <a href="#servers">the next section</a>.</li>
+    <li><b>Existing code stays valid.</b> Today's single-device identity becomes a one-device list.</li>
+  </ul>
+  <p><b>Decisions needed:</b> see <a href="#open">Open questions</a>. The main ones are the default history window for new devices, whether contacts must approve a new device, and whether the first release supports backup.</p>
+</section>
+
+<section id="servers">
+  <h2>Do we still need a central server?</h2>
+  <p class="sub">No central server that manages messages. Yes to some always-on infrastructure.</p>
+  <p>Pure peer-to-peer cannot deliver to a phone that is off or asleep, and cannot find a peer behind a home router without help. So the design removes the <i>message-managing</i> server, not all servers.</p>
+  <div class="tw"><table>
+    <tr><th>Job</th><th>Needs an always-on node?</th><th>What it holds</th><th>Who can run it</th></tr>
+    <tr><td><b>Message history</b></td><td><span class="tag t-ok">No</span></td><td>Nothing. Each device stores its own copy.</td><td>n/a</td></tr>
+    <tr><td><b>Accounts, logins, contact lists</b></td><td><span class="tag t-ok">No</span></td><td>Nothing. Identity is a key you hold; contacts live on your devices.</td><td>n/a</td></tr>
+    <tr><td><b>Delivery while a device is offline</b></td><td><span class="tag t-warn">Yes: relay</span></td><td>Ciphertext in a per-device queue until acknowledged or expired</td><td>Anyone: Spike-hosted, self-hosted, your own Spike Box</td></tr>
+    <tr><td><b>Finding someone's devices and prekeys</b></td><td><span class="tag t-warn">Yes: directory</span></td><td>Signed public data: device list, prekeys. Same process as the relay.</td><td>Same as relay</td></tr>
+    <tr><td><b>Waking a sleeping phone</b></td><td><span class="tag t-warn">Yes: push</span></td><td>A content-free wake-up token. Apple and Google push services are unavoidable on phones.</td><td>Platform vendors</td></tr>
+    <tr><td><b>Connecting through NAT (direct P2P)</b></td><td><span class="tag t-warn">Sometimes</span></td><td>Nothing durable; relays bytes when hole-punching fails</td><td>Relay or STUN/TURN</td></tr>
+  </table></div>
+  <h3>How we avoid a single central operator</h3>
+  <ul>
+    <li><b>Home relay in the device list.</b> Each device entry names the relay(s) it reads from. A sender connects to the <i>recipient's</i> relay and delivers there, so no federation protocol is needed and no shared server is required.</li>
+    <li><b>Replaceable.</b> Changing relay means publishing a new signed device list. Contacts follow it automatically.</li>
+    <li><b>Self-hosting is first-class.</b> The relay is open source. A Spike Box at home can be your relay, so your messages never touch a third party at all.</li>
+  </ul>
+  <div class="callout warn"><b>What is still visible to a relay operator:</b> who receives how much and when (device IDs, sizes, timing), not content. Choosing your own relay moves that metadata to a party you trust. The current code assumes both people use <i>one</i> relay URL, so the home-relay field is new work (milestone M3).</div>
+</section>
+
+<section id="today">
+  <h2>Where the code is today</h2>
+  <p class="sub">So the gap between now and this design is clear.</p>
+  <div class="tw"><table>
+    <tr><th>Area</th><th>Today</th><th>Needed for this design</th></tr>
+    <tr><td>Identity</td><td>One Olm account is both the person and the device. <code>device_id</code> is derived from its Ed25519 key.</td><td>A separate identity key; devices are keys the identity vouches for.</td></tr>
+    <tr><td>Contacts</td><td>A contact is one device card.</td><td>A contact is an identity plus its current signed device list.</td></tr>
+    <tr><td>Sending</td><td>One Olm session per contact; one ciphertext per message.</td><td>One session per <i>device pair</i>; one ciphertext per recipient device plus own devices.</td></tr>
+    <tr><td>History</td><td><b>Not stored.</b> <code>spike recv</code> prints and forgets. Only ratchet state persists.</td><td>An encrypted message store with stable message IDs.</td></tr>
+    <tr><td>Relay</td><td>Per-device queues, prekeys, fallback prekey. One relay assumed.</td><td>Same queues. Add device-list publish/fetch and per-device relay addresses.</td></tr>
+  </table></div>
+</section>
+
+<section id="design">
+  <h2>Design</h2>
+  <p class="sub">Five parts: identity and devices, the envelope, fan-out, the message store, and the device list directory.</p>
+
+  <h3>1. Identity and devices</h3>
+  <ul>
+    <li>An <b>identity key</b> (Ed25519) represents the person. Its fingerprint is what contacts verify. It never signs messages and is used rarely.</li>
+    <li>Each <b>device</b> has its own Olm account (today's code, unchanged) with its own prekeys.</li>
+    <li>The identity key signs a <b>device list</b>: version number, each device's keys and home relay, and a timestamp. Versions only increase.</li>
+    <li>Where the identity key lives is a real decision (<a href="#open">open question 3</a>). Recommended: kept on every device encrypted in the vault, so any device can add or remove devices, with a prompt on the existing device for each change.</li>
+  </ul>
+<pre>DeviceList v7  (signed by identity key)
+  identity:  ed25519:9f2c…
+  devices:   [ {id: a1b2…, curve25519: …, ed25519: …, relay: wss://home.example, added: v3},
+               {id: c3d4…, curve25519: …, ed25519: …, relay: wss://home.example, added: v7} ]
+  removed:   [ {id: 77aa…, at: v5} ]</pre>
+
+  <h3>2. Message envelope</h3>
+  <p>Inside the encrypted body (relays never see it):</p>
+<pre>Envelope { msg_id: random 128-bit,  conv_id,  sender_device,  lamport: u64,
+           kind: message | edit | delete | read | sync-control,  body, attachments[] }</pre>
+  <p>The globally unique <code>msg_id</code> makes merging and de-duplication trivial. <code>lamport</code> orders events from different devices without trusting clocks.</p>
+
+  <h3>3. Fan-out delivery</h3>
+  <figure>
+    <div class="fw">
+    <svg viewBox="0 0 960 400" role="img" aria-label="Alice sends one message from her phone. It is encrypted separately for Bob's phone, Bob's laptop and Alice's own laptop, and each ciphertext goes into that device's queue on the relay.">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mkA"/></marker>
+        <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk"/></marker>
+      </defs>
+      <rect class="dev" x="20" y="30" width="250" height="340" rx="8"/>
+      <text class="tb" x="36" y="52">Alice (one identity)</text>
+      <rect class="acc" x="36" y="68" width="218" height="96" rx="6"/>
+      <text class="tb" x="145" y="94" text-anchor="middle">Phone A1</text>
+      <text class="ts" x="145" y="112" text-anchor="middle">composes and sends</text>
+      <text class="ts" x="145" y="128" text-anchor="middle">history store (encrypted)</text>
+      <rect class="box-s" x="36" y="236" width="218" height="96" rx="6"/>
+      <text class="tb" x="145" y="262" text-anchor="middle">Laptop A2</text>
+      <text class="ts" x="145" y="280" text-anchor="middle">receives a sent copy</text>
+      <text class="ts" x="145" y="296" text-anchor="middle">history store (encrypted)</text>
+
+      <rect class="dev" x="690" y="30" width="250" height="340" rx="8"/>
+      <text class="tb" x="706" y="52">Bob (one identity)</text>
+      <rect class="box-s" x="706" y="68" width="218" height="96" rx="6"/>
+      <text class="tb" x="815" y="94" text-anchor="middle">Phone B1</text>
+      <text class="ts" x="815" y="112" text-anchor="middle">history store (encrypted)</text>
+      <rect class="box-s" x="706" y="236" width="218" height="96" rx="6"/>
+      <text class="tb" x="815" y="262" text-anchor="middle">Laptop B2</text>
+      <text class="ts" x="815" y="280" text-anchor="middle">history store (encrypted)</text>
+
+      <rect class="ext" x="360" y="110" width="240" height="180" rx="8"/>
+      <text class="tb" x="480" y="134" text-anchor="middle">Relay (untrusted)</text>
+      <text class="ts" x="480" y="154" text-anchor="middle">one queue per device, ciphertext only</text>
+      <rect class="box-s" x="376" y="168" width="208" height="22" rx="4"/><text class="t" x="480" y="184" text-anchor="middle">queue B1</text>
+      <rect class="box-s" x="376" y="196" width="208" height="22" rx="4"/><text class="t" x="480" y="212" text-anchor="middle">queue B2</text>
+      <rect class="box-s" x="376" y="224" width="208" height="22" rx="4"/><text class="t" x="480" y="240" text-anchor="middle">queue A2</text>
+      <text class="tw2" x="480" y="270" text-anchor="middle">sees device IDs, sizes, timing</text>
+
+      <!-- A1 sends three ciphertexts -->
+      <path class="lnA" d="M254 116 L360 178" marker-end="url(#a1)"/>
+      <path class="lnA" d="M254 124 L360 206" marker-end="url(#a1)"/>
+      <path class="lnA dash" d="M254 132 L360 234" marker-end="url(#a1)"/>
+      <circle class="bd" cx="300" cy="120" r="9"/><text class="bn" x="300" y="124">1</text>
+      <text class="ta" x="266" y="92">3 ciphertexts</text>
+      <text class="ts" x="266" y="104">one per device</text>
+
+      <!-- deliveries -->
+      <path class="ln" d="M584 179 L690 130" marker-end="url(#a2)"/>
+      <path class="ln" d="M584 207 L690 260" marker-end="url(#a2)"/>
+      <path class="ln dash" d="M376 235 L270 280" marker-end="url(#a2)"/>
+      <circle class="bd" cx="637" cy="154" r="9"/><text class="bn" x="637" y="158">2</text>
+      <circle class="bd" cx="637" cy="233" r="9"/><text class="bn" x="637" y="237">2</text>
+      <circle class="bd" cx="322" cy="258" r="9"/><text class="bn" x="322" y="262">2</text>
+
+      <text class="ts" x="480" y="330" text-anchor="middle">Each device pair has its own Olm session:</text>
+      <text class="ts" x="480" y="346" text-anchor="middle">A1-B1, A1-B2, A2-B1, A2-B2, and A1-A2 for sent copies</text>
+    </svg>
+    </div>
+    <figcaption><b>One send becomes one ciphertext per recipient device.</b> ① Alice's phone encrypts the message three times, for B1, B2 and her own laptop A2 (dashed: the sent copy). ② The relay queues each in that device's own queue. A device that is off gets its copy when it reconnects. The relay never learns that three ciphertexts are the same message.</figcaption>
+  </figure>
+  <ul>
+    <li><b>Cost:</b> N recipient devices means N encryptions and N uploads. Fine for two to five devices per person; groups will need MLS later.</li>
+    <li><b>Receiving device sets the visible state.</b> A device that has not yet fetched a message simply shows it later. Messages are ordered by <code>lamport</code>, then <code>msg_id</code>.</li>
+    <li><b>Delivery receipts</b> are per device: "delivered to B1" is distinct from "read on B2".</li>
+    <li><b>New contact devices:</b> before sending, the sender fetches the recipient's device list. If the version changed, the UI shows "Bob added a device" and, for verified contacts, marks the new device unverified until the identity-key signature checks out.</li>
+  </ul>
+
+  <h3>4. Local encrypted message store</h3>
+  <p>Required first (milestone M1), because even single-device history does not exist yet, and attachments need it too.</p>
+<pre>conversations(conv_id PK, peer_identity, created, retention_days NULL)
+messages(msg_id PK, conv_id, sender_device, lamport, ts, kind, body BLOB, state, edited_of NULL, deleted BOOL)
+receipts(msg_id, device, kind, ts)                   -- delivered / read, per device
+attachments(att_id PK, msg_id, name, size, sha256, state)
+sync_cursor(peer_device PK, last_seen_lamport)        -- used by milestone M5</pre>
+  <ul>
+    <li>Same vault key and AEAD-with-file-name pattern as ADR 0003, applied to a database. Options: encrypt per row, or SQLCipher. <b>Recommendation: SQLCipher</b>, so queries and full-text search work. Open question 5.</li>
+    <li>Insert is idempotent on <code>msg_id</code>, so replays and duplicate deliveries are harmless.</li>
+    <li>Retention is per conversation. Deleting locally is a tombstone, so a sync does not resurrect it.</li>
+  </ul>
+
+  <h3>5. Device list directory</h3>
+  <p>The relay stores each identity's latest signed device list. Clients publish and fetch; the relay only checks the signature chain, not the content.</p>
+  <ul>
+    <li><b>Rollback defense:</b> clients remember the highest version they have seen per contact and refuse lower ones.</li>
+    <li><b>Hiding a device:</b> a malicious relay can withhold a new device from senders. Mitigations: sender also learns the list from the contact directly during any message (the list version is included in the envelope), and a future transparency log.</li>
+  </ul>
+</section>
+
+<section id="linking">
+  <h2>Adding a device and getting history</h2>
+  <p class="sub">Fan-out delivers new messages. Old messages must be handed over deliberately, because they were never encrypted for the new device.</p>
+  <figure>
+    <div class="fw">
+    <svg viewBox="0 0 960 470" role="img" aria-label="Sequence for linking a new device: the new device shows a QR code, the existing device scans it and both show a matching safety code, the existing device publishes a new signed device list, then sends an encrypted history bundle, and contacts begin sending to the new device.">
+      <defs>
+        <marker id="s1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk"/></marker>
+        <marker id="s2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mkA"/></marker>
+      </defs>
+      <rect class="acc" x="70" y="16" width="160" height="40" rx="6"/><text class="tb" x="150" y="41" text-anchor="middle">New device N</text>
+      <rect class="box-s" x="400" y="16" width="160" height="40" rx="6"/><text class="tb" x="480" y="41" text-anchor="middle">Existing device E</text>
+      <rect class="ext" x="730" y="16" width="160" height="40" rx="6"/><text class="tb" x="810" y="41" text-anchor="middle">Relay</text>
+      <path class="ln dot" d="M150 56 L150 456"/><path class="ln dot" d="M480 56 L480 456"/><path class="ln dot" d="M810 56 L810 456"/>
+
+      <path class="ln dash" d="M150 96 L480 96" marker-end="url(#s1)"/>
+      <circle class="bd" cx="102" cy="96" r="9"/><text class="bn" x="102" y="100">1</text>
+      <text class="t" x="315" y="88" text-anchor="middle">N shows QR: its device keys + one-time pairing key</text>
+      <text class="ts" x="315" y="112" text-anchor="middle">out of band: camera, never through the relay</text>
+
+      <path class="ln" d="M480 160 L150 160" marker-end="url(#s1)"/>
+      <circle class="bd" cx="102" cy="160" r="9"/><text class="bn" x="102" y="164">2</text>
+      <text class="t" x="315" y="152" text-anchor="middle">E replies over the pairing key; both screens show a safety code</text>
+      <text class="ts" x="315" y="176" text-anchor="middle">user confirms the codes match on both devices</text>
+
+      <path class="lnA" d="M480 232 L810 232" marker-end="url(#s2)"/>
+      <circle class="bd" cx="102" cy="232" r="9"/><text class="bn" x="102" y="236">3</text>
+      <text class="t" x="645" y="224" text-anchor="middle">E signs DeviceList v+1 (adds N) and publishes it</text>
+      <text class="ts" x="645" y="248" text-anchor="middle">identity key signature; version only increases</text>
+
+      <path class="lnA" d="M480 302 L810 302" marker-end="url(#s2)"/>
+      <path class="lnA" d="M810 322 L150 322" marker-end="url(#s2)"/>
+      <circle class="bd" cx="102" cy="302" r="9"/><text class="bn" x="102" y="306">4</text>
+      <text class="t" x="645" y="294" text-anchor="middle">E uploads history bundle, encrypted to N, in chunks</text>
+      <text class="ts" x="480" y="344" text-anchor="middle">N downloads, verifies each chunk hash, imports; resumable. Direct LAN or P2P transfer replaces the relay when available.</text>
+
+      <path class="ln" d="M810 396 L150 396" marker-end="url(#s1)"/>
+      <circle class="bd" cx="102" cy="396" r="9"/><text class="bn" x="102" y="400">5</text>
+      <text class="t" x="480" y="388" text-anchor="middle">Contacts fetch v+1 and start encrypting new messages for N too</text>
+      <text class="ts" x="480" y="418" text-anchor="middle">verified contacts are told "Alice added a device"</text>
+    </svg>
+    </div>
+    <figcaption><b>The new device only becomes trusted after a person confirms a code on both screens.</b> Steps ① and ② bind the two devices without trusting the relay. ③ makes the device official. ④ moves history. ⑤ starts new traffic. Steps ④ and ⑤ can happen in either order.</figcaption>
+  </figure>
+
+  <h3>History bundle</h3>
+  <ul>
+    <li>Selectable window: <b>last 30 days</b> by default, <b>all</b>, or <b>none</b> ("start fresh"). Per-conversation exclusion. Attachments are optional and off by default (size).</li>
+    <li>Encrypted to N's device key with a fresh random bundle key; split into chunks with per-chunk hashes in a signed manifest. Same chunking design as attachments (shared code).</li>
+    <li>The relay stores the chunks as opaque blobs with a short TTL and a size cap, deleted on completion.</li>
+    <li><b>Privacy cost:</b> old plaintext now exists on one more device. This is a deliberate trade against forward secrecy of history, so the window defaults to bounded and the choice is shown to the user.</li>
+  </ul>
+  <h3>If no existing device is available</h3>
+  <p>A new device cannot get history, only new messages. Optional <b>encrypted backup</b> (milestone M6) covers this and total device loss: a random 256-bit recovery key shown once as words, backup blobs encrypted under it, stored wherever the user chooses (file, own server, relay with a quota). Restore creates a new device, not a clone of the old one.</p>
+</section>
+
+<section id="sync">
+  <h2>Keeping devices in step afterwards</h2>
+  <p class="sub">Fan-out already keeps incoming and sent messages aligned. Everything else needs a small sync channel.</p>
+  <div class="tw"><table>
+    <tr><th>Event</th><th>Handled by</th><th>Merge rule</th></tr>
+    <tr><td>New message, either direction</td><td>Fan-out (incl. sent copy)</td><td>Insert by <code>msg_id</code>; duplicates ignored</td></tr>
+    <tr><td>Edit</td><td>Fan-out envelope <code>kind=edit</code></td><td>Highest <code>(lamport, device_id)</code> wins</td></tr>
+    <tr><td>Delete for everyone</td><td>Fan-out <code>kind=delete</code></td><td>Tombstone; always wins over edit</td></tr>
+    <tr><td>Read state, local deletes, settings</td><td>Sync message to own devices only (<code>kind=sync-control</code>) over the A1-A2 sessions</td><td>Read: max lamport. Local delete: tombstone per device group</td></tr>
+    <tr><td>A device that was offline for weeks</td><td>Its relay queue (until TTL), then <b>catch-up</b> from another own device using <code>sync_cursor</code></td><td>Send all events after the cursor</td></tr>
+  </table></div>
+  <p>This reuses the existing channel instead of adding a new protocol: sync traffic is ordinary end-to-end messages between your own devices. A full replicated event log is only needed if catch-up proves too slow.</p>
+</section>
+
+<section id="threats">
+  <h2>Threats this design must handle</h2>
+  <p class="sub">Added to <code>docs/threat-model.md</code> when each milestone ships.</p>
+  <div class="tw"><table>
+    <tr><th>Threat</th><th>Mitigation</th><th>Residual</th></tr>
+    <tr><td>Attacker adds a rogue device to your list</td><td>Device list must be signed by the identity key; adding needs approval on an existing device with the safety-code step</td><td>Whoever holds the identity key (or a device that can use it) can add devices. Hence open question 3</td></tr>
+    <tr><td>Relay serves an old or reduced device list</td><td>Clients refuse a lower version than seen; version carried in envelopes</td><td>First contact, or a client that has seen nothing newer, can be shown a stale list. Transparency log is future work</td></tr>
+    <tr><td>Relay hides a new device from senders</td><td>Version in envelopes lets devices notice; own devices compare lists</td><td>Delivery to the hidden device is delayed until noticed</td></tr>
+    <tr><td>History bundle intercepted</td><td>Encrypted to N's key; QR pairing key and safety-code confirmation prevent a man in the middle</td><td>User skips the code check. UI must make it unavoidable</td></tr>
+    <tr><td>Stolen device reads all synced history</td><td>Vault encryption (ADR 0003); remote remove-device publishes a new list; contacts stop sending to it</td><td>Cannot un-read what it already holds. Keep history window bounded</td></tr>
+    <tr><td>Removed device keeps receiving</td><td>New list version; contacts drop its sessions; relay deletes its queue</td><td>Messages already sent to it before the list update</td></tr>
+    <tr><td>Sync message forged or replayed</td><td>Only accepted over an authenticated A-to-A session; ratchet rejects replays</td><td>A compromised own device can inject events</td></tr>
+    <tr><td>Metadata: relay learns your device count</td><td>It already sees queues per device</td><td>Accepted; same as today</td></tr>
+  </table></div>
+</section>
+
+<section id="options">
+  <h2>Options considered</h2>
+  <p class="sub">What we chose and what we are deliberately not doing yet.</p>
+  <div class="tw"><table>
+    <tr><th>Option</th><th>What it gives</th><th>Cost</th><th>Verdict</th></tr>
+    <tr><td><b>A. Fan-out only</b></td><td>New messages on all devices</td><td>Low</td><td>Necessary, not enough: new devices start empty</td></tr>
+    <tr class="pick"><td><b>B. A + link-time history bundle</b></td><td>New device gets a chosen window of history</td><td>Medium; shares chunk code with attachments</td><td><span class="tag t-ok">Chosen for v1</span></td></tr>
+    <tr class="pick"><td><b>C. B + sync via own-device messages</b></td><td>Edits, deletes, read state, catch-up</td><td>Medium</td><td><span class="tag t-ok">Chosen</span></td></tr>
+    <tr><td><b>D. Optional encrypted backup</b></td><td>Survives losing every device</td><td>Medium; key management UX</td><td><span class="tag t-warn">Later (M6)</span></td></tr>
+    <tr><td><b>E. Own devices as an MLS group</b></td><td>Forward secrecy and recovery for the device set</td><td>High; MLS integration before groups exist</td><td><span class="tag t-bad">Not now</span>; revisit with Phase 3 groups</td></tr>
+    <tr><td><b>F. Server-side encrypted history</b></td><td>Easiest new-device experience</td><td>A server stores everyone's history blobs; key escrow questions</td><td><span class="tag t-bad">Rejected</span>; against the product promise</td></tr>
+    <tr><td><b>G. Share one set of device keys across devices</b></td><td>Simplest</td><td>Cloned keys break the ratchet and make revocation impossible</td><td><span class="tag t-bad">Rejected</span></td></tr>
+  </table></div>
+</section>
+
+<section id="plan">
+  <h2>Build plan</h2>
+  <p class="sub">Each milestone is shippable and tested on its own. Estimates are rough and exclude security review.</p>
+  <div class="tw"><table>
+    <tr><th>Milestone</th><th>Scope</th><th>Tests that must pass</th><th>Size</th></tr>
+    <tr><td><b>M1 Message store</b></td><td>Encrypted DB, envelope with <code>msg_id</code>, <code>spike history</code>, <code>recv</code> writes to it</td><td>Idempotent insert; tamper/wrong key; retention; no plaintext on disk</td><td>~1 wk</td></tr>
+    <tr><td><b>M2 Identity vs device</b></td><td>Identity key, signed DeviceList v1, card v2, v1 cards still accepted as one-device lists</td><td>Rollback refused; unsigned list refused; v1 compatibility</td><td>~1 wk</td></tr>
+    <tr><td><b>M3 Fan-out + home relay</b></td><td>Per-device sessions, sent copies, device-list publish/fetch on relay, relay address per device</td><td>Message appears on both recipient devices and own other device; offline device catches up; contact adds device mid-conversation</td><td>~2 wk</td></tr>
+    <tr><td><b>M4 Linking + history bundle</b></td><td>QR pairing, safety code, chunked encrypted bundle via relay blobs</td><td>MITM at pairing fails; interrupted transfer resumes; tampered chunk rejected; window honored</td><td>~2 wk</td></tr>
+    <tr><td><b>M5 Own-device sync</b></td><td>Edits, deletes, read state, cursor catch-up</td><td>Concurrent edits converge; delete beats edit; long-offline device catches up</td><td>~1.5 wk</td></tr>
+    <tr><td><b>M6 Backup (optional)</b></td><td>Recovery key, encrypted backup/restore</td><td>Restore on clean machine; wrong key fails; backup contains no plaintext</td><td>~1.5 wk</td></tr>
+  </table></div>
+  <p>The attachment prototype (last Phase 1 item) should reuse M1's store and M4's chunk format, so doing M1 first removes rework.</p>
+</section>
+
+<section id="open">
+  <h2>Open questions</h2>
+  <p class="sub">Each changes the build; a recommended answer is given.</p>
+  <ol>
+    <li><b>Default history window for a new device?</b> Recommend 30 days, with an explicit "all" and "none" choice.</li>
+    <li><b>Must contacts approve a new device?</b> Recommend no approval, but a visible notice, and a stronger warning for contacts you have verified.</li>
+    <li><b>Where does the identity key live?</b> (a) Copy on every device, encrypted: any device can add or remove devices; one compromised device can add a rogue one. (b) Offline recovery key only: stronger, but users lose the ability to add devices if they lose it. Recommend (a) with confirmation prompts, and (b) as an advanced option.</li>
+    <li><b>Is backup in the first multi-device release?</b> Recommend no (M6 later), but say clearly in the UI that losing all devices loses history.</li>
+    <li><b>SQLCipher or per-row encryption?</b> Recommend SQLCipher for search and query speed; check its license and build effort.</li>
+    <li><b>Relay blob storage for bundles and attachments:</b> separate blob store with its own quota and TTL, or reuse the message queue? Recommend a separate store.</li>
+    <li><b>Hosted-relay policy:</b> a relay that accepts delivery from anyone invites spam. Do recipients need to approve unknown senders before a relay queues for them? Affects the business model (Agent Network tier) and abuse handling.</li>
+  </ol>
+</section>
+
+<footer>Proposed design for review. Related: ADR 0002 (sessions and prekeys), ADR 0003 (encrypted state), ADR 0004 (durable relay), ADR 0006 (fallback prekey), <code>docs/HANDOFF.md</code>. No part of this is implemented.</footer>
+</div>
