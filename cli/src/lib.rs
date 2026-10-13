@@ -1,6 +1,7 @@
 pub mod client;
 pub mod ops;
 pub mod state;
+pub mod transport;
 
 use spike_core::identity::{DeviceCard, Identity};
 use spike_core::session::{Opened, Sessions};

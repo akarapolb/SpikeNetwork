@@ -5,6 +5,7 @@
 //! with no database path they live in memory and are lost on restart.
 
 pub mod store;
+pub mod tls;
 
 use futures_util::{SinkExt, StreamExt};
 use rand::{rngs::OsRng, RngCore};
@@ -17,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use store::{Enqueued, Store};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 
@@ -35,6 +36,9 @@ pub struct Config {
     pub max_claims_per_conn: usize,
     /// SQLite file for queues and prekeys; `None` keeps them in memory only.
     pub db_path: Option<PathBuf>,
+    /// Terminate TLS in the relay. Without it the relay speaks plain WebSocket
+    /// and must sit behind a TLS-terminating proxy or on loopback.
+    pub tls: Option<tls::TlsFiles>,
 }
 
 impl Default for Config {
@@ -46,6 +50,7 @@ impl Default for Config {
             auth_timeout: Duration::from_secs(10),
             max_claims_per_conn: 20,
             db_path: None,
+            tls: None,
         }
     }
 }
@@ -68,6 +73,7 @@ pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
         state: Mutex::default(),
         store,
     });
+    let acceptor = cfg.tls.as_ref().map(tls::acceptor).transpose()?;
     let cfg = Arc::new(cfg);
     {
         // Expired messages are also dropped lazily; this bounds disk use for idle recipients.
@@ -81,10 +87,23 @@ pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
     }
     loop {
         let (stream, _) = listener.accept().await?;
-        let (state, cfg) = (state.clone(), cfg.clone());
+        let (state, cfg, acceptor) = (state.clone(), cfg.clone(), acceptor.clone());
         tokio::spawn(async move {
             // Connection errors are routine (peers disconnect); never log content.
-            let _ = handle(stream, state, cfg).await;
+            match acceptor {
+                Some(a) => {
+                    // A stalled TLS handshake must not hold a connection slot open.
+                    let Ok(Ok(stream)) =
+                        tokio::time::timeout(cfg.auth_timeout, a.accept(stream)).await
+                    else {
+                        return;
+                    };
+                    let _ = handle(stream, state, cfg).await;
+                }
+                None => {
+                    let _ = handle(stream, state, cfg).await;
+                }
+            }
         });
     }
 }
@@ -104,7 +123,10 @@ where
     tx.send(Message::Text(s)).await.map_err(|_| ())
 }
 
-async fn handle(stream: TcpStream, state: Arc<Shared>, cfg: Arc<Config>) -> Result<(), ()> {
+async fn handle<S>(stream: S, state: Arc<Shared>, cfg: Arc<Config>) -> Result<(), ()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let ws_cfg = WebSocketConfig {
         max_message_size: Some(cfg.max_blob * 2 + 1024),
         max_frame_size: Some(cfg.max_blob * 2 + 1024),

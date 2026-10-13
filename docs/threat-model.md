@@ -1,11 +1,11 @@
-# Threat model (Phase 0 draft, updated through ADR 0004)
+# Threat model (Phase 0 draft, updated through ADR 0005)
 
 Scope: the code in this repository today (`core`, `relay`, `cli`). It will grow with the product. Each item is marked **mitigated**, **partial**, or **open**.
 
 ## What an observer or attacker can see
 | Party | Can see | Cannot see |
 |---|---|---|
-| Network observer on a device ↔ relay link | IP addresses, timing, sizes (**the link is plain `ws://`; put TLS in front of the relay**) | Message content (end-to-end encrypted) |
+| Network observer on a device ↔ relay link | IP addresses, the relay's host name (TLS SNI), connection timing, approximate sizes | Message content (end-to-end encrypted); device ids and protocol messages (TLS). *If an operator opts into plain `ws://`, they also see device ids and timing.* |
 | Relay operator | Recipient device ID, the authenticated uploader's device ID, blob size, timing, IPs, who claims whose prekeys (so it can infer who is starting conversations) | Message plaintext, session keys |
 | Recipient | Nothing about the sender from the relay (sender IDs are not forwarded); sender identity comes from the cryptographic session | |
 | Thief of an *unlocked* device's current state | Future messages until the next honest ratchet step; impersonation of that device | Earlier captured traffic (forward secrecy) |
@@ -20,6 +20,7 @@ No anonymity and no metadata protection is claimed.
 | Relay or attacker modifies a message | Mitigated | Authenticated encryption; tamper test flips bytes at several positions. MAC is truncated to 8 bytes (session config v1, see ADR 0002) |
 | Relay replays or reorders messages | Mitigated for content | Replays are rejected by the protocol; out-of-order works. A relay can still **delay or drop** messages undetectably (no delivery receipts yet) |
 | Impersonation of a sender | Mitigated for known contacts | First messages from unknown keys are dropped and create no session |
+| On-path attacker tampers with or reads the relay connection | Mitigated with `wss://` | rustls, hostname + chain verification, plain `ws://` refused off loopback by default (ADR 0005). Content is protected by E2EE regardless |
 | Impersonation of a device to the relay | Mitigated | Ed25519 challenge-response; wrong-key test |
 | Relay forges or swaps a recipient's prekey | Mitigated | Prekeys are signed by the recipient's key and verified by sender and relay; forged-prekey tests |
 | Key substitution during pairing | Partial | Cards are self-signed (keys can't be mixed). A substituted *whole* card is only caught if users compare the fingerprint out of band; contacts start **UNVERIFIED** and the CLI warns |
@@ -37,4 +38,4 @@ No anonymity and no metadata protection is claimed.
 | Abusive agents | **Open** | Agent permissions and approval flow are Phase 2 |
 
 ## Before any real use
-Independent security review, TLS, per-sender and per-account rate limiting, a fallback prekey, delivery receipts.
+Independent security review, per-sender and per-account rate limiting, a fallback prekey, delivery receipts.

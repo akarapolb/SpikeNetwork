@@ -1,6 +1,6 @@
 //! High-level operations shared by the binary and the tests.
 
-use crate::{client::Relay, process, state::Home, Outcome};
+use crate::{client::Relay, process, state::Home, transport::Target, Outcome};
 use anyhow::{anyhow, Context, Result};
 use spike_core::identity::Identity;
 use std::time::Duration;
@@ -30,7 +30,12 @@ pub struct SendReport {
     pub verified: bool,
 }
 
-pub async fn send(home: &Home, url: &str, name: &str, body: &[u8]) -> Result<SendReport> {
+pub async fn send(
+    home: &Home,
+    relay: impl Into<Target>,
+    name: &str,
+    body: &[u8],
+) -> Result<SendReport> {
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
     let contacts = home.load_contacts()?;
@@ -40,7 +45,7 @@ pub async fn send(home: &Home, url: &str, name: &str, body: &[u8]) -> Result<Sen
         .with_context(|| format!("no contact '{name}'"))?;
     let peer = c.decode()?;
 
-    let mut relay = Relay::connect(url, &me).await?;
+    let mut relay = Relay::connect(relay, &me).await?;
     top_up_prekeys(&mut relay, home, &mut me).await?;
 
     let new_session = !sessions.has_session(&peer);
@@ -66,13 +71,13 @@ pub async fn send(home: &Home, url: &str, name: &str, body: &[u8]) -> Result<Sen
 /// calling `on` for each outcome and acking after it has been persisted.
 pub async fn recv(
     home: &Home,
-    url: &str,
+    relay: impl Into<Target>,
     idle: Option<Duration>,
     mut on: impl FnMut(Outcome),
 ) -> Result<()> {
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
-    let mut relay = Relay::connect(url, &me).await?;
+    let mut relay = Relay::connect(relay, &me).await?;
     top_up_prekeys(&mut relay, home, &mut me).await?;
     while let Some(d) = relay.next_delivery(idle).await? {
         on(process(home, &mut me, &mut sessions, &d.blob)?);
@@ -82,9 +87,9 @@ pub async fn recv(
 }
 
 /// Connect once so the relay holds our prekeys. Returns how many it now has.
-pub async fn publish_keys(home: &Home, url: &str) -> Result<usize> {
+pub async fn publish_keys(home: &Home, relay: impl Into<Target>) -> Result<usize> {
     let mut me = home.load_identity()?;
-    let mut relay = Relay::connect(url, &me).await?;
+    let mut relay = Relay::connect(relay, &me).await?;
     top_up_prekeys(&mut relay, home, &mut me).await?;
     Ok(relay.prekeys)
 }

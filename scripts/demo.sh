@@ -9,9 +9,15 @@ D=.spike-demo; rm -rf "$D"; mkdir -p "$D"
 echo "alice demo passphrase" > "$D/alice.pass"; echo "bob demo passphrase" > "$D/bob.pass"
 A="$BIN/spike --home $D/alice/state --passphrase-file $D/alice.pass"
 B="$BIN/spike --home $D/bob/state --passphrase-file $D/bob.pass"
-export SPIKE_RELAY=ws://127.0.0.1:8799
+export SPIKE_RELAY=wss://127.0.0.1:8799
 
-start_relay() { $BIN/spike-relay --listen 127.0.0.1:8799 --db "$D/relay.db" 2>>"$D/relay.log" & RELAY=$!; sleep 0.5; }
+# Self-signed certificate for the demo relay; devices trust it explicitly.
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+  -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -addext "basicConstraints=critical,CA:FALSE" \
+  -keyout "$D/relay.key" -out "$D/relay.crt" 2>/dev/null
+export SPIKE_RELAY_CA="$D/relay.crt"
+
+start_relay() { $BIN/spike-relay --listen 127.0.0.1:8799 --db "$D/relay.db" --tls-cert "$D/relay.crt" --tls-key "$D/relay.key" 2>>"$D/relay.log" & RELAY=$!; sleep 0.5; }
 start_relay
 trap 'kill $RELAY 2>/dev/null' EXIT
 
@@ -47,4 +53,6 @@ $A recv
 
 echo "== bob reconnects: acked messages must not come back"
 $B recv
+echo "== plain ws:// to a non-loopback host is refused by the client"
+SPIKE_RELAY=ws://relay.example.com:8787 $B recv 2>&1 || true
 echo "== relay log (no content):"; cat "$D/relay.log"

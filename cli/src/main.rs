@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use spike_cli::{
     ops,
     state::{Contact, Home},
+    transport::{Target, TransportOpts},
     Outcome,
 };
 use spike_core::identity::DeviceCard;
@@ -23,6 +24,12 @@ struct Cli {
     /// File containing the passphrase (otherwise SPIKE_PASSPHRASE, otherwise a prompt).
     #[arg(long, global = true)]
     passphrase_file: Option<PathBuf>,
+    /// Extra trusted CA certificate (PEM) for a self-hosted wss:// relay.
+    #[arg(long, env = "SPIKE_RELAY_CA", global = true)]
+    relay_ca: Option<PathBuf>,
+    /// Allow plain ws:// to a non-loopback relay (metadata is then exposed on the network).
+    #[arg(long, global = true)]
+    allow_insecure_transport: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -123,6 +130,15 @@ async fn run() -> Result<()> {
         Home::unlock(&dir, &passphrase(&cli.passphrase_file, false)?)?
     };
 
+    let opts = TransportOpts {
+        ca_file: cli.relay_ca,
+        allow_insecure: cli.allow_insecure_transport,
+    };
+    let target = |url: String| Target {
+        url,
+        opts: opts.clone(),
+    };
+
     match cli.cmd {
         Cmd::Init { .. } => unreachable!("handled above"),
         Cmd::Card => {
@@ -182,7 +198,7 @@ async fn run() -> Result<()> {
             }
         }
         Cmd::Keys { relay } => {
-            let n = ops::publish_keys(&home, &relay).await?;
+            let n = ops::publish_keys(&home, target(relay)).await?;
             println!("relay holds {n} one-time prekeys for this device");
         }
         Cmd::Send {
@@ -190,7 +206,7 @@ async fn run() -> Result<()> {
             message,
             relay,
         } => {
-            let r = ops::send(&home, &relay, &name, message.as_bytes()).await?;
+            let r = ops::send(&home, target(relay), &name, message.as_bytes()).await?;
             if !r.verified {
                 eprintln!(
                     "warning: {name} is UNVERIFIED; the key has not been checked out of band"
@@ -217,7 +233,7 @@ async fn run() -> Result<()> {
                 Some(Duration::from_millis(idle_ms))
             };
             let mut n = 0;
-            ops::recv(&home, &relay, idle, |o| match o {
+            ops::recv(&home, target(relay), idle, |o| match o {
                 Outcome::Message { from, verified, body } => {
                     let tag = if verified { "" } else { " (UNVERIFIED sender)" };
                     println!("[{from}{tag}] {}", String::from_utf8_lossy(&body));

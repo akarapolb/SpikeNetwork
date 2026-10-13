@@ -1,15 +1,14 @@
 //! Minimal relay client: authenticate, send, receive, ack.
-//! Phase 0 speaks `ws://`; put TLS in front of the relay for anything real.
+//! See [`crate::transport`] for how the connection is made (wss, or ws to loopback).
 
+use crate::transport::{dial, Target, Ws};
 use anyhow::{anyhow, bail, Result};
 use futures_util::{SinkExt, StreamExt};
 use spike_core::identity::{Identity, SignedPrekey};
 use spike_core::wire::{ClientMsg, ServerMsg};
 use std::collections::VecDeque;
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub struct Delivery {
     pub id: String,
@@ -17,7 +16,7 @@ pub struct Delivery {
 }
 
 pub struct Relay {
-    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    ws: Ws,
     pending: VecDeque<Delivery>,
     pub device_id: String,
     /// How many of our prekeys the relay held when we connected (updated on publish).
@@ -25,8 +24,8 @@ pub struct Relay {
 }
 
 impl Relay {
-    pub async fn connect(url: &str, me: &Identity) -> Result<Self> {
-        let (ws, _) = tokio_tungstenite::connect_async(url).await?;
+    pub async fn connect(target: impl Into<Target>, me: &Identity) -> Result<Self> {
+        let ws = dial(&target.into()).await?;
         let mut r = Self {
             ws,
             pending: VecDeque::new(),
