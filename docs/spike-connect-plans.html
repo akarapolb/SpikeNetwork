@@ -1,0 +1,314 @@
+<title>Spike Connect Plans</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Schibsted+Grotesk:wght@600;700&display=swap">
+<style>
+/* Layout: sticky section nav above one long reading column; three plans stacked, tables scroll inside their own wrappers. */
+:root{
+  --bg:#f5f7f9; --surface:#ffffff; --fg:#14202b; --muted:#5a6b7a; --line:#d9e0e6;
+  --accent:#0b6b73; --accent-soft:#dff0f1;
+  --paper:#e6ebf0; --paper-fg:#33475a;
+  --prop:#dff0f1; --prop-fg:#0b5a61;
+  --open:#fbeed0; --open-fg:#7a5200;
+  --display:"Schibsted Grotesk","Helvetica Neue",Arial,sans-serif;
+  --body:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e161d; --surface:#15202a; --fg:#e4ebf1; --muted:#94a5b4; --line:#26343f;
+  --accent:#4fc3cc; --accent-soft:#12343a;
+  --paper:#223140; --paper-fg:#b9c8d6; --prop:#12343a; --prop-fg:#7fd6dd;
+  --open:#3a2f12; --open-fg:#f0c866; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e161d; --surface:#15202a; --fg:#e4ebf1; --muted:#94a5b4; --line:#26343f;
+  --accent:#4fc3cc; --accent-soft:#12343a;
+  --paper:#223140; --paper-fg:#b9c8d6; --prop:#12343a; --prop-fg:#7fd6dd;
+  --open:#3a2f12; --open-fg:#f0c866; color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.55;padding-inline:16px;padding-block:0 64px}
+.wrap{max-width:960px;margin:0 auto}
+header.top{padding-block:40px 24px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{font-family:var(--display);font-size:clamp(30px,5vw,44px);line-height:1.1;margin:8px 0 12px;text-wrap:balance}
+.lede{max-width:65ch;color:var(--muted);margin:0}
+nav.tabs{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line);display:flex;gap:4px;flex-wrap:wrap;padding-block:8px;margin-bottom:8px}
+nav.tabs a{font-family:var(--mono);font-size:13px;color:var(--muted);text-decoration:none;padding:6px 12px;border-radius:6px}
+nav.tabs a:hover,nav.tabs a:focus-visible{background:var(--accent-soft);color:var(--accent);outline:none}
+section.plan{padding-block:40px 8px;scroll-margin-top:56px}
+section.plan>h2{font-family:var(--display);font-size:clamp(24px,4vw,32px);margin:0 0 4px;text-wrap:balance}
+.sub{color:var(--muted);margin:0 0 24px;max-width:65ch}
+h3{font-family:var(--display);font-size:19px;margin:32px 0 10px;text-wrap:balance}
+p,li{max-width:70ch}
+ul{padding-left:20px;margin:8px 0}
+li{margin:4px 0}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface);margin:8px 0 16px}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:500;background:var(--bg)}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tr.total td{font-weight:600;background:var(--accent-soft)}
+.tag{display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.04em;padding:1px 7px;border-radius:4px;vertical-align:1px;white-space:nowrap}
+.t-paper{background:var(--paper);color:var(--paper-fg)}
+.t-prop{background:var(--prop);color:var(--prop-fg)}
+.t-open{background:var(--open);color:var(--open-fg)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--muted);margin-top:16px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px;margin:8px 0 16px}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;min-width:0}
+.box h4{margin:0 0 6px;font-family:var(--display);font-size:16px}
+.box p,.box ul{margin:0;font-size:14.5px}
+.callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 8px 8px 0;margin:16px 0;max-width:70ch}
+pre{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 16px;font-family:var(--mono);font-size:13px;line-height:1.5;margin:8px 0 16px}
+code{font-family:var(--mono);font-size:.9em}
+footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <div class="eyebrow">Planning set · 13 Oct 2026 · from strategy paper v1.0</div>
+  <h1>Spike Connect: roadmap, business and engineering plans</h1>
+  <p class="lede">A privacy-first communication network for people, AI agents and devices. Launch with agent coordination and private messaging for Spike OS users and design partners; expand only when the gates pass.</p>
+  <div class="legend">
+    <span><span class="tag t-paper">PAPER</span> from the strategy paper</span>
+    <span><span class="tag t-prop">PROPOSED</span> new suggestion, needs a decision</span>
+    <span><span class="tag t-open">OPEN</span> unresolved</span>
+  </div>
+</header>
+
+<nav class="tabs" aria-label="Plans">
+  <a href="#roadmap">Product roadmap</a>
+  <a href="#business">Business plan</a>
+  <a href="#engineering">Engineering plan</a>
+</nav>
+
+<!-- ============ ROADMAP ============ -->
+<section class="plan" id="roadmap">
+  <h2>Product roadmap</h2>
+  <p class="sub">Spike Connect is the application and service. Spike Network is the interoperable infrastructure underneath it.</p>
+
+  <h3>Pillars</h3>
+  <div class="grid2">
+    <div class="box"><h4>Connect Chat</h4><p>Direct messages, groups, attachments, presence. Read receipts are opt-in.</p></div>
+    <div class="box"><h4>Connect Agents</h4><p>Agent identity, discovery, permission scopes, approval flows, signed requests and receipts.</p></div>
+    <div class="box"><h4>Connect Link</h4><p>Trusted device pairing, file transfer and sync.</p></div>
+    <div class="box"><h4>Connect Network</h4><p>Identity, encrypted transport, routing, relays, push and delivery queues.</p></div>
+    <div class="box"><h4>Connect Admin</h4><p>Org provisioning, policies, retention and observability without content access.</p></div>
+  </div>
+
+  <h3>Phases and exit criteria <span class="tag t-paper">PAPER</span></h3>
+  <div class="tw"><table>
+    <tr><th>Phase</th><th>Window</th><th>Deliverables</th><th>Exit criteria</th></tr>
+    <tr><td><b>0 Feasibility</b></td><td>Days 0–30</td><td>Threat model, protocol decisions, 2-device encrypted chat, identity prototype</td><td>Two devices exchange verified encrypted messages; risks documented</td></tr>
+    <tr><td><b>1 Alpha</b></td><td>Days 31–60</td><td>Relay fallback, offline queue, encrypted local store, pairing, attachment prototype</td><td>Recovers from disconnects; relay never sees plaintext</td></tr>
+    <tr><td><b>2 Pilot</b></td><td>Days 61–90</td><td>Spike OS integration, agent-to-agent requests with approvals, telemetry, security testing</td><td>5–10 pilot orgs or groups; validated task completion</td></tr>
+    <tr><td><b>3 Private beta</b></td><td>Months 4–6</td><td>Mobile, groups, multi-device sync, backup and recovery, admin basics</td><td>Retention and delivery targets met; independent review scheduled</td></tr>
+    <tr><td><b>4 Commercial v1</b></td><td>Months 7–9</td><td>Hosted relays, billing, org accounts, SDK beta, self-host docs</td><td>First paying design partners; support runbooks and incident response</td></tr>
+    <tr><td><b>5 Scale decision</b></td><td>Months 10–12</td><td>Developer onboarding, hardened agent directory, enterprise pilots, external audit</td><td>Expand only if unit economics, reliability and security gates pass</td></tr>
+  </table></div>
+
+  <h3>First-pilot scope <span class="tag t-paper">PAPER</span></h3>
+  <div class="grid2">
+    <div class="box"><h4>Include</h4><ul>
+      <li>Desktop-to-desktop chat</li><li>Identity and device pairing</li><li>E2EE one-to-one, encrypted local history</li><li>Relay fallback and offline queue</li><li>Agent messages with explicit approval</li><li>Basic attachments and diagnostics</li></ul></div>
+    <div class="box"><h4>Defer</h4><ul>
+      <li>Public discovery and large communities</li><li>Custom cryptographic primitives</li><li>Video calling and livestreaming</li><li>Autonomous payments, unbounded agent actions</li><li>Compliance certification claims</li></ul></div>
+  </div>
+
+  <h3>Release gates <span class="tag t-paper">PAPER</span></h3>
+  <p class="sub" style="margin-bottom:8px">Targets, not forecasts.</p>
+  <div class="tw"><table>
+    <tr><th>Gate</th><th>Target</th></tr>
+    <tr><td><b>Delivery</b></td><td>≥99.9% of accepted online messages delivered within SLO in pilot; offline queue measured separately</td></tr>
+    <tr><td><b>Engagement</b></td><td>≥40% weekly active among onboarded pilot users by week 8</td></tr>
+    <tr><td><b>Business</b></td><td>At least 3 paying design partners before significant scale spend</td></tr>
+    <tr><td><b>Security</b></td><td>No unresolved critical findings before public launch; incident response and key recovery tested</td></tr>
+    <tr><td><b>Agent value</b></td><td>≥70% of pilot agent tasks completed with correct authorization and no manual rework</td></tr>
+  </table></div>
+
+  <h3>Proposed refinements <span class="tag t-prop">PROPOSED</span></h3>
+  <ul>
+    <li>Define "weekly active", "accepted message" and "task completed" precisely, and instrument them from Phase 1.</li>
+    <li>Phase 0 demo is two CLI clients and one relay. Build the headless core first, UI later.</li>
+    <li>Keep the data model multi-device and multi-party aware from day one, though groups and sync ship in Phase 3.</li>
+    <li>Run the 15 user interviews during Phase 0, in parallel with the build, so results can change Phase 2 scope.</li>
+    <li>State plainly in every pre-audit release that it has not been independently reviewed.</li>
+  </ul>
+  <div class="callout"><b>Day-90 kill / pivot review.</b> Reconsider scope if fewer than 5 pilot groups engage, weekly active use is well below 40%, no design partner will discuss paying, or agent tasks need frequent manual rework. Pivot options: narrow to device-to-device (Connect Link), or to an agent-channel SDK without a chat client.</div>
+</section>
+
+<!-- ============ BUSINESS ============ -->
+<section class="plan" id="business">
+  <h2>Business plan</h2>
+  <p class="sub">Free private messaging. Paid hosted reliability, enterprise governance and agent connectivity. Funding beyond the 90-day capped pilot depends on retention, reliability and willingness to pay.</p>
+
+  <h3>Segments <span class="tag t-paper">PAPER</span></h3>
+  <div class="tw"><table>
+    <tr><th>Segment</th><th>Pain</th><th>First offer</th></tr>
+    <tr><td><b>Spike OS / Box users</b></td><td>Secure device and agent communication</td><td>Free app plus managed relay upgrade</td></tr>
+    <tr><td><b>SMEs / regulated teams</b></td><td>Data control, secure internal collaboration</td><td>Business workspace, self-hosting</td></tr>
+    <tr><td><b>AI application builders</b></td><td>Reliable authenticated agent channels</td><td>SDK, agent identity, hosted APIs</td></tr>
+    <tr><td><b>Enterprise IT</b></td><td>Policy, provisioning, audit, support</td><td>Managed or private deployment</td></tr>
+  </table></div>
+
+  <h3>Packaging and pricing hypotheses <span class="tag t-paper">PAPER</span></h3>
+  <div class="tw"><table>
+    <tr><th>Tier</th><th>Price hypothesis</th><th>Buys</th></tr>
+    <tr><td><b>Personal Free</b></td><td>$0</td><td>Private chat, basic devices, community or self-host relay</td></tr>
+    <tr><td><b>Personal Plus</b></td><td>$3–6 / user / month</td><td>Managed relay reliability, storage and backup, premium sync</td></tr>
+    <tr><td><b>Business</b></td><td>$5–12 / user / month</td><td>Org controls, managed service, support, policies</td></tr>
+    <tr><td><b>Agent Network</b></td><td>$19–99 / org / month + usage</td><td>Agent directory, verified identities, hosted relay and API quotas</td></tr>
+    <tr><td><b>Enterprise</b></td><td>Custom annual</td><td>Private deployment, SSO, SLA, governance</td></tr>
+  </table></div>
+  <p>Never charge for encryption or imply free users get weaker privacy. Usage billing reflects relay traffic, storage and agent transactions, never message contents. All prices need customer interviews and testing.</p>
+
+  <h3>Illustrative year-two scenario <span class="tag t-paper">PAPER</span></h3>
+  <div class="tw"><table>
+    <tr><th>Driver</th><th>Assumption</th><th class="num">Annual recurring revenue</th></tr>
+    <tr><td>Business seats</td><td>5,000 × $8/mo</td><td class="num">$480,000</td></tr>
+    <tr><td>Personal Plus</td><td>10,000 × $4/mo</td><td class="num">$480,000</td></tr>
+    <tr><td>Agent organizations</td><td>500 × $49/mo</td><td class="num">$294,000</td></tr>
+    <tr><td>Enterprise contracts</td><td>10 × $30,000/yr</td><td class="num">$300,000</td></tr>
+    <tr class="total"><td colspan="2">Total illustrative ARR</td><td class="num">$1,554,000</td></tr>
+  </table></div>
+  <div class="callout">A sensitivity example, not a forecast. It excludes overages, taxes, discounts and churn. About 62% of the total comes from Business seats and Personal Plus, the segments furthest from the stated launch focus.</div>
+
+  <h3>Go-to-market sequence <span class="tag t-paper">PAPER</span></h3>
+  <ol>
+    <li>Bundle with Spike OS and Spike Box for immediate installed-base utility.</li>
+    <li>Recruit 5–10 design partners from existing enterprise relationships. Sell secure agent workflows, not another chat app.</li>
+    <li>Publish the SDK and protocol documentation. Encourage independent clients and agents.</li>
+    <li>Offer managed regional relays and private deployments. Partner with systems integrators.</li>
+  </ol>
+
+  <h3>Validation plan <span class="tag t-prop">PROPOSED</span></h3>
+  <div class="tw"><table>
+    <tr><th>Question</th><th>Method</th><th>By</th><th>Pass signal</th></tr>
+    <tr><td>Is the pain real?</td><td>15 interviews: Spike users, IT buyers, agent developers</td><td>Day 30</td><td>≥8 describe a current workaround they dislike</td></tr>
+    <tr><td>Is agent coordination the hook?</td><td>Show the Phase 0 demo to interviewees</td><td>Day 45</td><td>≥5 ask for a pilot</td></tr>
+    <tr><td>Will anyone pay?</td><td>Price-test Business and Agent Network with design partners</td><td>Day 90</td><td>≥3 paying or signed-intent partners</td></tr>
+    <tr><td>What does it cost to serve?</td><td>Instrument relay bandwidth, storage, push, support time</td><td>Day 90</td><td>Per-tier unit-cost model from real inputs</td></tr>
+  </table></div>
+
+  <h3>Unit economics and IP</h3>
+  <ul>
+    <li><span class="tag t-paper">PAPER</span> Gross margin must cover bandwidth, push, storage, support, security, abuse prevention and enterprise deployment.</li>
+    <li><span class="tag t-prop">PROPOSED</span> Build a spreadsheet before Phase 4: cost per active user per month, support minutes per account, break-even seats per tier. Model the self-host fraction explicitly, since it caps managed-relay pricing.</li>
+    <li><span class="tag t-paper">PAPER</span> Publish specs, SDKs, reference clients and a self-hostable relay under a permissive license. Clear the "Spike Connect" trademark and domain, and review patents, dependencies and export rules before release.</li>
+    <li><span class="tag t-open">OPEN</span> Apache-2.0 is a candidate, not a legal decision. The 90-day budget figure and the product owner are not named in the paper.</li>
+  </ul>
+
+  <h3>Business risks</h3>
+  <div class="tw"><table>
+    <tr><th>Risk</th><th>Mitigation</th></tr>
+    <tr><td>Incumbent network effects</td><td>Start where no big social graph is needed: agents and devices</td></tr>
+    <tr><td>Open-source competitors host the relay</td><td>Differentiate on Spike integration and managed enterprise service</td></tr>
+    <tr><td>Willingness to pay is low</td><td>Gate spend on 3 paying partners; keep Phase 4 scope contingent</td></tr>
+    <tr><td>Brand conflict</td><td>Trademark and domain clearance in the first 30 days</td></tr>
+    <tr><td>Unit costs exceed price</td><td>Instrument real costs during the pilot</td></tr>
+  </table></div>
+</section>
+
+<!-- ============ ENGINEERING ============ -->
+<section class="plan" id="engineering">
+  <h2>Engineering plan</h2>
+  <p class="sub">Local-first, end-to-end encrypted, direct P2P when practical, store-and-forward relay when necessary. Established audited primitives only. No promise of anonymity, zero metadata or serverless delivery.</p>
+
+  <h3>Reference architecture <span class="tag t-paper">PAPER</span></h3>
+<pre>Client (desktop / mobile / Spike Box)
+  → identity + key management
+  → encrypted messaging session
+  → direct P2P transport when possible
+  → encrypted relay / store-and-forward when necessary
+
+Local encrypted DB holds history.
+Cloud: discovery, optional push, availability. Never plaintext.</pre>
+
+  <h3>Proposed stack <span class="tag t-prop">PROPOSED</span> <span class="tag t-open">DECISION PENDING</span></h3>
+  <div class="tw"><table>
+    <tr><th>Area</th><th>Proposal</th><th>Notes</th></tr>
+    <tr><td><b>Core language</b></td><td>Rust</td><td>Memory safety; bindings for desktop, mobile, WASM; strong libp2p and MLS libraries</td></tr>
+    <tr><td><b>Layout</b></td><td>Monorepo: <code>core/</code> <code>relay/</code> <code>cli/</code> <code>docs/</code>; later <code>sdk/</code> <code>app/</code></td><td>Core is a headless library everything else consumes</td></tr>
+    <tr><td><b>1:1 sessions</b></td><td>Audited protocol via an existing library (Noise-based or Double Ratchet)</td><td>Evaluate first; decision record required</td></tr>
+    <tr><td><b>Groups</b></td><td>MLS (RFC 9420), for example openmls</td><td>Phase 3; keep the data model ready</td></tr>
+    <tr><td><b>Transport</b></td><td>Phases 0–1: relay over QUIC or WebSocket. Phase 2+: add libp2p for NAT traversal</td><td>Avoids libp2p complexity before the protocol is stable</td></tr>
+    <tr><td><b>Local storage</b></td><td>Encrypted SQLite, keys from the OS keystore</td><td></td></tr>
+    <tr><td><b>Desktop shell</b></td><td>Tauri or Electron; CLI first</td><td>Open</td></tr>
+    <tr><td><b>Mobile</b></td><td>Native shells over the Rust core, Phase 3</td><td>Push wake-up must not carry content</td></tr>
+  </table></div>
+  <p>Alternative: a TypeScript/Node core prototypes faster and fits Electron and web, with a weaker security and mobile story. Rust is a recommendation, not a decision.</p>
+
+  <h3>Threat model <span class="tag t-paper">PAPER</span></h3>
+  <p>In scope: compromised devices, malicious relays, impersonation, key substitution, spam, metadata inference, abusive agents. Required mitigations: verified device pairing, key-change warnings, forward secrecy where supported, rotation, recovery design and independent review. Document what relays can see (sender and recipient IDs, timing, size) and what we do not protect.</p>
+
+  <h3>Agent security model <span class="tag t-paper">PAPER</span></h3>
+  <ul>
+    <li>Each agent has a keypair and scoped credentials with expiry and revocation.</li>
+    <li>Every request is signed. Consequential actions need explicit human approval above a configurable threshold.</li>
+    <li>Rate limits per agent and per scope.</li>
+    <li>Tamper-evident, hash-chained audit log of agent and admin actions. It records actions and metadata, not message content, so E2EE stays intact.</li>
+    <li>Autonomous payments and unbounded actions are out of the MVP.</li>
+  </ul>
+
+  <h3>Work breakdown <span class="tag t-prop">PROPOSED</span></h3>
+  <div class="grid2">
+    <div class="box"><h4>Phase 0 · days 0–30</h4><ul>
+      <li>Decision records: language, session protocol, transport, storage, license</li>
+      <li>Threat model document</li>
+      <li>Identity: keypairs, device key, safety-number verification</li>
+      <li>1:1 handshake and encryption, with test vectors and property tests</li>
+      <li>CLI: init, pair, send, recv</li>
+      <li>Demo: two devices exchange verified encrypted messages</li></ul></div>
+    <div class="box"><h4>Phase 1 · days 31–60</h4><ul>
+      <li>Relay: ciphertext only, per-recipient queue, TTL, signed-challenge auth</li>
+      <li>Acks, retry, reconnect, with fault-injection tests</li>
+      <li>Encrypted local database and key storage</li>
+      <li>QR or short-code pairing; chunked encrypted attachments</li>
+      <li>CI: lint, tests, dependency audit, parser fuzzing</li></ul></div>
+    <div class="box"><h4>Phase 2 · days 61–90</h4><ul>
+      <li>Agent envelope, signing, scopes, approvals, receipts</li>
+      <li>Spike OS integration</li>
+      <li>Opt-in, content-free telemetry</li>
+      <li>Security testing pass, pilot onboarding tooling</li></ul></div>
+    <div class="box"><h4>Phases 3–5</h4><ul>
+      <li>Mobile, MLS groups, multi-device sync, backup and recovery</li>
+      <li>Admin console, billing, hosted relays</li>
+      <li>SDK beta, self-host docs, external audit</li></ul></div>
+  </div>
+
+  <h3>Quality and operations</h3>
+  <ul>
+    <li>Threat-model review at every phase gate. No custom primitives; pinned and reviewed dependencies; SBOM.</li>
+    <li>Fuzz and property-test every wire parser and state machine.</li>
+    <li>Independent review scheduled before private beta; external audit before public launch.</li>
+    <li>Incident response and key-recovery drills before Phase 4.</li>
+    <li>Relay observability covers counts, latency, queue depth and errors, never content. Minimal logs with stated retention.</li>
+    <li>Define "within SLO" latency before measuring the 99.9% delivery gate.</li>
+  </ul>
+
+  <h3>Core team <span class="tag t-paper">PAPER</span></h3>
+  <p>Product lead 1, protocol and security engineers 2, desktop and mobile engineers 2, backend and relay engineer 1, QA/SRE 1, plus shared design and security review. A staffing model, not a confirmed allocation.</p>
+
+  <h3>Engineering risks</h3>
+  <div class="tw"><table>
+    <tr><th>Risk</th><th>Mitigation</th></tr>
+    <tr><td>Crypto or protocol bugs</td><td>Established libraries, decision records, fuzzing, independent audit</td></tr>
+    <tr><td>P2P fails behind NAT or on mobile</td><td>Relay fallback is core design</td></tr>
+    <tr><td>Scope creep into a full chat clone</td><td>Enforce the MVP exclusion list at each gate</td></tr>
+    <tr><td>Multi-device and recovery complexity</td><td>Model devices and keys properly in the Phase 0 data model</td></tr>
+    <tr><td>Metadata leakage via relays</td><td>Minimize logs, disclose honestly, consider padding and batching later</td></tr>
+    <tr><td>Dependency licenses conflict with Apache-2.0</td><td>License review during Phase 0</td></tr>
+  </table></div>
+
+  <h3>Decisions needed before coding <span class="tag t-open">OPEN</span></h3>
+  <ol>
+    <li>Rust or TypeScript core.</li>
+    <li>Desktop shell: Tauri, Electron, or CLI only for now.</li>
+    <li>libp2p now, or after the protocol stabilizes (recommended).</li>
+    <li>Monorepo as above, or split repos.</li>
+    <li>License (Apache-2.0 is the paper's candidate).</li>
+  </ol>
+</section>
+
+<footer>Source: Spike Connect strategy working paper v1.0, 13 October 2026. Markdown versions live in the repository under <code>docs/</code>.</footer>
+</div>

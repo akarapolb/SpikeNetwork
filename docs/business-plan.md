@@ -31,7 +31,7 @@ Principles: never charge for encryption or imply free users get weaker privacy; 
 | Enterprise | 10 × $30,000/yr | $300,000 |
 | **Total** | | **$1,554,000** |
 
-Excludes overages, taxes, discounts, churn. Arithmetic checks out. Of the total, ~52% depends on Personal Plus and Business seat counts, the segments furthest from the stated launch wedge. Treat as a test of which assumptions matter, not demand evidence.
+Excludes overages, taxes, discounts, churn. Arithmetic checks out. About 62% of the total ($960k of $1,554k) comes from Business and Personal Plus seats, the segments furthest from the stated launch wedge. Treat as a test of which assumptions matter, not demand evidence.
 
 ## 5. Go-to-market sequence [Paper]
 1. Bundle with Spike OS / Box for installed-base utility.
