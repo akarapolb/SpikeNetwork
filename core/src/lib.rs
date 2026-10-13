@@ -1,16 +1,13 @@
-//! Spike Connect core library (Phase 0).
+//! Spike Connect core library.
 //!
 //! Plaintext only ever exists inside this crate's callers; everything that
-//! leaves a device is produced by [`session::seal`] and is opaque to relays.
+//! leaves a device is produced by [`session::Sessions::encrypt`] and is opaque
+//! to relays. Cryptography is delegated to `vodozemac` (Olm: X3DH-style
+//! asynchronous key agreement + Double Ratchet, externally audited).
 
 pub mod identity;
 pub mod session;
 pub mod wire;
-
-/// Noise pattern used for sealed messages. `X` is a one-way pattern: the sender
-/// is authenticated by its static key and the recipient's static key is known
-/// in advance, so a message can be delivered while the recipient is offline.
-pub const NOISE_PARAMS: &str = "Noise_X_25519_ChaChaPoly_BLAKE2s";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -20,10 +17,12 @@ pub enum Error {
     BadSignature,
     #[error("message too large (max {max} bytes)")]
     TooLarge { max: usize },
+    #[error("no session with this contact; a one-time prekey is needed")]
+    NoSession,
     #[error("malformed message")]
     Malformed,
-    #[error("noise: {0}")]
-    Noise(#[from] snow::Error),
+    #[error("session error: {0}")]
+    Session(String),
     #[error("invalid hex: {0}")]
     Hex(#[from] hex::FromHexError),
     #[error("json: {0}")]

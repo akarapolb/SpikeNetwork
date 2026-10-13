@@ -1,6 +1,6 @@
 # ADR 0001: Phase 0 stack and sealed-message protocol
 
-Status: **Proposed** (built so the decision can be tested; reversible)
+Status: **Partly superseded by [ADR 0002](0002-ratcheting-sessions-with-prekeys.md)**: the stack, identity, addressing and relay-transport decisions stand; the Noise_X message pattern and its limitations were replaced.
 Date: 2026-10-13
 
 ## Context

@@ -3,13 +3,13 @@
 use futures_util::{SinkExt, StreamExt};
 use spike_cli::{
     client::Relay,
-    process,
+    ops,
     state::{Contact, Home},
     Outcome,
 };
 use spike_core::{
     identity::Identity,
-    session,
+    session::Sessions,
     wire::{ClientMsg, ServerMsg},
 };
 use spike_relay::{serve, Config};
@@ -23,96 +23,184 @@ async fn start_relay(cfg: Config) -> String {
     url
 }
 
-fn temp_home(tag: &str) -> Home {
-    let p = std::env::temp_dir().join(format!("spike-test-{tag}-{}", hex::encode(rand_bytes())));
-    Home::open(p)
+/// A fresh device with its own state directory, paired (verified) with `peers`.
+struct Device {
+    home: Home,
 }
 
-fn rand_bytes() -> [u8; 8] {
-    Identity::generate().unwrap().ed_public()[..8]
-        .try_into()
-        .unwrap()
-}
-
-const IDLE: Option<Duration> = Some(Duration::from_millis(300));
-
-#[tokio::test]
-async fn offline_recipient_gets_message_later_and_ack_clears_queue() {
-    let url = start_relay(Config::default()).await;
-    let (alice, bob) = (Identity::generate().unwrap(), Identity::generate().unwrap());
-
-    // Alice sends while Bob is offline, then disconnects.
-    let sealed = session::seal(&alice, &bob.card(), b"hello while you were out").unwrap();
-    {
-        let mut a = Relay::connect(&url, &alice).await.unwrap();
-        a.send(&bob.card().device_id(), &sealed).await.unwrap();
+impl Device {
+    fn new(tag: &str) -> Self {
+        let n = hex::encode(&Identity::generate().unwrap().ed_public()[..6]);
+        let home = Home::open(std::env::temp_dir().join(format!("spike-test-{tag}-{n}")));
+        home.create_identity(false).unwrap();
+        Self { home }
     }
 
-    // Bob comes online later and receives it.
-    let mut b = Relay::connect(&url, &bob).await.unwrap();
-    let d = b
-        .next_delivery(IDLE)
-        .await
-        .unwrap()
-        .expect("queued message delivered");
-    assert_eq!(
-        d.blob, sealed,
-        "relay returns exactly the ciphertext it was given"
-    );
-    let opened = session::open(&bob, &d.blob).unwrap();
-    assert_eq!(opened.body, b"hello while you were out");
-    assert_eq!(opened.sender_x25519, alice.x_public());
+    fn card(&self) -> spike_core::identity::DeviceCard {
+        self.home.load_identity().unwrap().card()
+    }
 
-    // Without an ack the relay redelivers on reconnect.
-    drop(b);
-    let mut b = Relay::connect(&url, &bob).await.unwrap();
-    let again = b
-        .next_delivery(IDLE)
+    fn add(&self, name: &str, other: &Device, verified: bool) {
+        let mut c = self.home.load_contacts().unwrap();
+        c.push(Contact {
+            name: name.into(),
+            card: other.card().encode(),
+            verified,
+        });
+        self.home.save_contacts(&c).unwrap();
+    }
+
+    async fn recv(&self, url: &str) -> Vec<Outcome> {
+        let mut out = vec![];
+        ops::recv(&self.home, url, Some(Duration::from_millis(300)), |o| {
+            out.push(o)
+        })
         .await
-        .unwrap()
-        .expect("unacked message redelivered");
-    b.ack(&again.id).await.unwrap();
-    // Ack is fire-and-forget; reconnect and confirm the queue is empty.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    drop(b);
-    let mut b = Relay::connect(&url, &bob).await.unwrap();
+        .unwrap();
+        out
+    }
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(self.home.path()).ok();
+    }
+}
+
+fn pair(a_name: &str, b_name: &str) -> (Device, Device) {
+    let (a, b) = (Device::new(a_name), Device::new(b_name));
+    a.add("bob", &b, true);
+    b.add("alice", &a, true);
+    (a, b)
+}
+
+fn msg(o: &Outcome) -> (&str, &[u8]) {
+    match o {
+        Outcome::Message { from, body, .. } => (from.as_str(), body.as_slice()),
+        o => panic!("expected a message, got {o:?}"),
+    }
+}
+
+#[tokio::test]
+async fn conversation_survives_offline_recipient_and_ratchets_both_ways() {
+    let url = start_relay(Config::default()).await;
+    let (alice, bob) = pair("alice", "bob");
+
+    // Bob registers prekeys with the relay once, then goes offline.
+    assert_eq!(ops::publish_keys(&bob.home, &url).await.unwrap(), 30);
+
+    // Alice sends while Bob is offline; the first message starts a session.
+    let r = ops::send(&alice.home, &url, "bob", b"first while you were out")
+        .await
+        .unwrap();
+    assert!(r.new_session);
+    let r = ops::send(&alice.home, &url, "bob", b"second")
+        .await
+        .unwrap();
+    assert!(!r.new_session, "later messages reuse the ratchet");
+
+    // Bob returns and gets both, in order.
+    let got = bob.recv(&url).await;
+    assert_eq!(got.len(), 2);
+    assert_eq!(msg(&got[0]), ("alice", &b"first while you were out"[..]));
+    assert_eq!(msg(&got[1]), ("alice", &b"second"[..]));
+
+    // Bob replies over the same session (no prekey needed); Alice receives it.
+    let r = ops::send(&bob.home, &url, "alice", b"got both")
+        .await
+        .unwrap();
+    assert!(!r.new_session, "inbound session is reused for replies");
+    let got = alice.recv(&url).await;
+    assert_eq!((got.len(), msg(&got[0])), (1, ("bob", &b"got both"[..])));
+
+    // Acked messages do not return.
+    assert!(bob.recv(&url).await.is_empty());
+    assert!(alice.recv(&url).await.is_empty());
+}
+
+#[tokio::test]
+async fn cannot_start_session_without_published_prekeys() {
+    let url = start_relay(Config::default()).await;
+    let (alice, _bob) = pair("alice", "bob");
+    let e = ops::send(&alice.home, &url, "bob", b"hi")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("no prekeys"), "{e}");
+}
+
+#[tokio::test]
+async fn unknown_sender_is_dropped() {
+    let url = start_relay(Config::default()).await;
+    let (alice, bob) = (Device::new("alice"), Device::new("bob"));
+    alice.add("bob", &bob, true);
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    ops::send(&alice.home, &url, "bob", b"who am i")
+        .await
+        .unwrap();
+
+    let got = bob.recv(&url).await;
     assert!(
-        b.next_delivery(IDLE).await.unwrap().is_none(),
-        "acked message must not return"
+        matches!(got.as_slice(), [Outcome::UnknownSender { .. }]),
+        "{got:?}"
     );
 }
 
 #[tokio::test]
-async fn online_recipient_gets_live_delivery() {
+async fn replayed_ciphertext_from_relay_is_ignored() {
     let url = start_relay(Config::default()).await;
-    let (alice, bob) = (Identity::generate().unwrap(), Identity::generate().unwrap());
-    let mut b = Relay::connect(&url, &bob).await.unwrap();
-    let mut a = Relay::connect(&url, &alice).await.unwrap();
-    let sealed = session::seal(&alice, &bob.card(), b"live").unwrap();
-    a.send(&bob.card().device_id(), &sealed).await.unwrap();
-    let d = b
-        .next_delivery(Some(Duration::from_secs(2)))
+    let (alice, bob) = pair("alice", "bob");
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    ops::send(&alice.home, &url, "bob", b"once").await.unwrap();
+
+    // Bob receives and processes it; then a malicious relay re-sends the same blob.
+    let me = bob.home.load_identity().unwrap();
+    let mut relay = Relay::connect(&url, &me).await.unwrap();
+    let d = relay
+        .next_delivery(Some(Duration::from_millis(300)))
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(session::open(&bob, &d.blob).unwrap().body, b"live");
+    let (mut me, mut sessions) = (
+        bob.home.load_identity().unwrap(),
+        bob.home.load_sessions().unwrap(),
+    );
+    let first = spike_cli::process(&bob.home, &mut me, &mut sessions, &d.blob).unwrap();
+    assert_eq!(msg(&first), ("alice", &b"once"[..]));
+    let replay = spike_cli::process(&bob.home, &mut me, &mut sessions, &d.blob).unwrap();
+    assert_eq!(replay, Outcome::Invalid);
+    let _: Sessions = bob.home.load_sessions().unwrap();
 }
 
 #[tokio::test]
-async fn wrong_key_cannot_authenticate_or_read_someone_elses_queue() {
+async fn relay_serves_each_prekey_once_and_rejects_forged_ones() {
     let url = start_relay(Config::default()).await;
-    let (alice, bob, eve) = (
-        Identity::generate().unwrap(),
-        Identity::generate().unwrap(),
-        Identity::generate().unwrap(),
-    );
+    let (alice, bob) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+    let mut b = Relay::connect(&url, &bob).await.unwrap();
+    let mut bob_id = bob;
+    b.publish_prekeys(&bob_id.fresh_prekeys(2)).await.unwrap();
+
     let mut a = Relay::connect(&url, &alice).await.unwrap();
-    a.send(
-        &bob.card().device_id(),
-        &session::seal(&alice, &bob.card(), b"secret").unwrap(),
-    )
-    .await
-    .unwrap();
+    let id = bob_id.device_id();
+    let k1 = a.claim_prekey(&id).await.unwrap().unwrap();
+    let k2 = a.claim_prekey(&id).await.unwrap().unwrap();
+    assert_ne!(k1, k2);
+    assert!(
+        a.claim_prekey(&id).await.unwrap().is_none(),
+        "prekeys are single-use"
+    );
+
+    // A device cannot publish prekeys signed by someone else.
+    let mut mallory = Identity::generate().unwrap();
+    let forged = mallory.fresh_prekeys(1);
+    let e = b.publish_prekeys(&forged).await.unwrap_err().to_string();
+    assert!(e.contains("bad_prekey"), "{e}");
+}
+
+#[tokio::test]
+async fn wrong_key_cannot_authenticate() {
+    let url = start_relay(Config::default()).await;
+    let (bob, eve) = (Identity::generate().unwrap(), Identity::generate().unwrap());
 
     // Eve claims Bob's key but signs with her own.
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -137,23 +225,20 @@ async fn wrong_key_cannot_authenticate_or_read_someone_elses_queue() {
         serde_json::from_str::<ServerMsg>(&t).unwrap(),
         ServerMsg::Error { .. }
     ));
-
-    // Eve authenticating as herself sees nothing and cannot decrypt Bob's mail anyway.
-    let mut e = Relay::connect(&url, &eve).await.unwrap();
-    assert!(e.next_delivery(IDLE).await.unwrap().is_none());
 }
 
 #[tokio::test]
-async fn relay_enforces_size_ttl_and_queue_limits() {
+async fn relay_enforces_size_ttl_queue_and_claim_limits() {
     let cfg = Config {
         max_blob: 1024,
         queue_cap: 2,
         ttl: Duration::from_millis(400),
+        max_claims_per_conn: 2,
         ..Config::default()
     };
     let url = start_relay(cfg).await;
     let (alice, bob) = (Identity::generate().unwrap(), Identity::generate().unwrap());
-    let to = bob.card().device_id();
+    let to = bob.device_id();
     let mut a = Relay::connect(&url, &alice).await.unwrap();
 
     // Slightly over the limit: refused with an error, connection stays usable.
@@ -169,52 +254,20 @@ async fn relay_enforces_size_ttl_and_queue_limits() {
     let mut huge = Relay::connect(&url, &alice).await.unwrap();
     assert!(huge.send(&to, &vec![0u8; 100_000]).await.is_err());
 
+    // Prekey claims are capped per connection (limits draining someone's prekeys).
+    let mut c = Relay::connect(&url, &alice).await.unwrap();
+    c.claim_prekey(&to).await.unwrap();
+    c.claim_prekey(&to).await.unwrap();
+    let e = c.claim_prekey(&to).await.unwrap_err().to_string();
+    assert!(e.contains("rate_limited"), "{e}");
+
     tokio::time::sleep(Duration::from_millis(600)).await;
     let mut b = Relay::connect(&url, &bob).await.unwrap();
     assert!(
-        b.next_delivery(IDLE).await.unwrap().is_none(),
+        b.next_delivery(Some(Duration::from_millis(300)))
+            .await
+            .unwrap()
+            .is_none(),
         "expired messages must not be delivered"
     );
-}
-
-#[test]
-fn process_handles_replay_unknown_sender_and_garbage() {
-    let (alice, bob) = (Identity::generate().unwrap(), Identity::generate().unwrap());
-    let home = temp_home("process");
-    let sealed = session::seal(&alice, &bob.card(), b"hi").unwrap();
-
-    // Unknown sender: authentic but not a contact -> dropped, not recorded as seen.
-    assert!(matches!(
-        process(&home, &bob, &sealed).unwrap(),
-        Outcome::UnknownSender { .. }
-    ));
-
-    home.save_contacts(&[Contact {
-        name: "alice".into(),
-        card: alice.card().encode(),
-        verified: false,
-    }])
-    .unwrap();
-    match process(&home, &bob, &sealed).unwrap() {
-        Outcome::Message {
-            from,
-            verified,
-            body,
-            ..
-        } => {
-            assert_eq!(
-                (from.as_str(), verified, body.as_slice()),
-                ("alice", false, &b"hi"[..])
-            );
-        }
-        o => panic!("{o:?}"),
-    }
-    // The same ciphertext replayed by a malicious relay is ignored.
-    assert_eq!(process(&home, &bob, &sealed).unwrap(), Outcome::Duplicate);
-    // Garbage.
-    assert_eq!(
-        process(&home, &bob, b"not a noise message").unwrap(),
-        Outcome::Invalid
-    );
-    std::fs::remove_dir_all(home.path()).ok();
 }

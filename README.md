@@ -6,14 +6,15 @@ A privacy-first communication network for people, AI agents and devices. See [`d
 
 ## What works today
 - Device identity and shareable, self-signed device cards with fingerprints
-- End-to-end encrypted one-way messages (Noise_X via the `snow` crate)
-- A store-and-forward relay that holds only ciphertext (auth, size/queue/TTL limits, ack)
-- A CLI: `init`, `card`, `add`, `verify`, `contacts`, `send`, `recv`
-- Contacts start unverified; key changes are refused unless forced; replays are ignored
+- End-to-end encrypted two-way conversations using Olm (Double Ratchet) via the audited-lineage `vodozemac` crate: forward secrecy, replay rejection, out-of-order delivery
+- Asynchronous session start: signed one-time prekeys served by the relay, so you can message someone who is offline
+- A store-and-forward relay that holds only ciphertext (auth, size/queue/TTL limits, ack, prekey store)
+- A CLI: `init`, `card`, `add`, `verify`, `contacts`, `keys`, `send`, `recv`
+- Contacts start unverified; key changes are refused unless forced
 
 ## Try it
 ```sh
-./scripts/demo.sh      # two devices + one relay, recipient offline during send
+./scripts/demo.sh      # two devices + one relay, recipient offline during send, then a reply
 cargo test --all       # unit and end-to-end tests
 ```
 By hand:
@@ -23,6 +24,9 @@ spike --home /tmp/a init;  spike --home /tmp/b init
 spike --home /tmp/a card            # prints card; fingerprint on stderr
 spike --home /tmp/b add alice <card-from-a>
 spike --home /tmp/b verify alice <fingerprint-read-out-of-band>
+spike --home /tmp/b keys            # bob registers prekeys, then can go offline
+spike --home /tmp/a add bob <bob-card> && spike --home /tmp/a send bob "hello"
+spike --home /tmp/b recv
 ```
 
 ## Layout
@@ -35,6 +39,6 @@ spike --home /tmp/b verify alice <fingerprint-read-out-of-band>
 | `docs/threat-model.md` | What is and is not protected |
 
 ## Known limitations (Phase 0)
-No forward secrecy, plaintext key file, `ws://` only, in-memory relay queues, no direct P2P path yet, no attachments, no groups. Details in `docs/threat-model.md` and `docs/adr/0001-*`.
+Secrets stored in plaintext 0600 files, `ws://` only, in-memory relay queues and prekeys, no fallback prekey, no direct P2P path yet, no attachments, no groups, no independent review. Details in `docs/threat-model.md` and `docs/adr/`.
 
 No license has been chosen yet (Apache-2.0 is the candidate).

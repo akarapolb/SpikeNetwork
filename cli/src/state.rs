@@ -4,7 +4,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use spike_core::identity::{DeviceCard, Identity};
-use std::collections::HashSet;
+use spike_core::session::Sessions;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -44,8 +44,26 @@ impl Home {
             );
         }
         let id = Identity::generate()?;
-        write_private(&self.0.join("identity.json"), id.to_json()?.as_bytes())?;
+        self.save_identity(&id)?;
+        // A new identity must not inherit sessions made with the old one.
+        self.save_sessions(&Sessions::default())?;
         Ok(id)
+    }
+
+    pub fn save_identity(&self, id: &Identity) -> Result<()> {
+        write_private(&self.0.join("identity.json"), id.to_json()?.as_bytes())
+    }
+
+    pub fn load_sessions(&self) -> Result<Sessions> {
+        match fs::read_to_string(self.0.join("sessions.json")) {
+            Ok(s) => Ok(Sessions::from_json(&s)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Sessions::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn save_sessions(&self, s: &Sessions) -> Result<()> {
+        write_private(&self.0.join("sessions.json"), s.to_json()?.as_bytes())
     }
 
     pub fn load_identity(&self) -> Result<Identity> {
@@ -63,17 +81,6 @@ impl Home {
             &self.0.join("contacts.json"),
             serde_json::to_string_pretty(c)?.as_bytes(),
         )
-    }
-
-    /// Returns false if `id` was already recorded.
-    pub fn mark_seen(&self, id: &str) -> Result<bool> {
-        let path = self.0.join("seen.json");
-        let mut seen: HashSet<String> = read_json(&path)?.unwrap_or_default();
-        if !seen.insert(id.to_string()) {
-            return Ok(false);
-        }
-        write_private(&path, serde_json::to_string(&seen)?.as_bytes())?;
-        Ok(true)
     }
 }
 

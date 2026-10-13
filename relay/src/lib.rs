@@ -5,8 +5,10 @@
 
 use futures_util::{SinkExt, StreamExt};
 use rand::{rngs::OsRng, RngCore};
-use spike_core::identity::{device_id_from_ed, is_valid_device_id, verify_auth};
-use spike_core::wire::{ClientMsg, ServerMsg};
+use spike_core::identity::{
+    device_id_from_ed, is_valid_device_id, verify_auth, verify_prekey, SignedPrekey, MAX_PREKEYS,
+};
+use spike_core::wire::{ClientMsg, ServerMsg, WirePrekey};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,6 +26,8 @@ pub struct Config {
     pub ttl: Duration,
     /// Time allowed to complete authentication after connecting.
     pub auth_timeout: Duration,
+    /// Prekeys one connection may claim from others before being refused.
+    pub max_claims_per_conn: usize,
 }
 
 impl Default for Config {
@@ -33,6 +37,7 @@ impl Default for Config {
             queue_cap: 1000,
             ttl: Duration::from_secs(7 * 24 * 3600),
             auth_timeout: Duration::from_secs(10),
+            max_claims_per_conn: 20,
         }
     }
 }
@@ -47,6 +52,7 @@ struct Queued {
 struct State {
     queues: HashMap<String, VecDeque<Queued>>,
     online: HashMap<String, (u64, mpsc::UnboundedSender<ServerMsg>)>,
+    prekeys: HashMap<String, VecDeque<WirePrekey>>,
     next_id: u64,
     next_conn: u64,
 }
@@ -116,16 +122,16 @@ async fn handle(stream: TcpStream, state: Shared, cfg: Arc<Config>) -> Result<()
         let ed: [u8; 32] = hex::decode(ed25519).ok()?.try_into().ok()?;
         let sig: [u8; 64] = hex::decode(sig).ok()?.try_into().ok()?;
         verify_auth(&ed, &nonce, &sig).ok()?;
-        Some(device_id_from_ed(&ed))
+        Some((device_id_from_ed(&ed), ed))
     })();
-    let Some(me) = verified else {
+    let Some((me, my_ed)) = verified else {
         let _ = send_json(&mut tx, &err("auth_failed", "signature rejected")).await;
         return Err(());
     };
 
     // 2. Register (replacing any older connection for this device) and flush the queue.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel();
-    let (conn_id, backlog) = {
+    let (conn_id, backlog, prekeys) = {
         let mut st = state.lock().unwrap();
         st.next_conn += 1;
         let conn_id = st.next_conn;
@@ -140,13 +146,15 @@ async fn handle(stream: TcpStream, state: Shared, cfg: Arc<Config>) -> Result<()
                 blob: hex::encode(&m.blob),
             })
             .collect();
-        (conn_id, backlog)
+        let prekeys = st.prekeys.get(&me).map_or(0, |q| q.len());
+        (conn_id, backlog, prekeys)
     };
     let run = async {
         send_json(
             &mut tx,
             &ServerMsg::Ready {
                 device_id: me.clone(),
+                prekeys,
             },
         )
         .await?;
@@ -155,6 +163,7 @@ async fn handle(stream: TcpStream, state: Shared, cfg: Arc<Config>) -> Result<()
         }
 
         // 3. Serve.
+        let mut claims = 0usize;
         loop {
             tokio::select! {
                 Some(m) = out_rx.recv() => send_json(&mut tx, &m).await?,
@@ -167,6 +176,15 @@ async fn handle(stream: TcpStream, state: Shared, cfg: Arc<Config>) -> Result<()
                     let reply = match serde_json::from_str::<ClientMsg>(&text) {
                         Ok(ClientMsg::Send { to, blob }) => on_send(&state, &cfg, &to, &blob),
                         Ok(ClientMsg::Ack { id }) => { on_ack(&state, &me, &id); None }
+                        Ok(ClientMsg::PublishPrekeys { keys }) => Some(on_publish(&state, &me, &my_ed, &keys)),
+                        Ok(ClientMsg::ClaimPrekey { device }) => {
+                            claims += 1;
+                            if claims > cfg.max_claims_per_conn {
+                                Some(err("rate_limited", "too many prekey claims on this connection"))
+                            } else {
+                                Some(on_claim(&state, &device))
+                            }
+                        }
                         _ => Some(err("bad_request", "unexpected message")),
                     };
                     if let Some(r) = reply { send_json(&mut tx, &r).await?; }
@@ -219,5 +237,49 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
 fn on_ack(state: &Shared, me: &str, id: &str) {
     if let Some(q) = state.lock().unwrap().queues.get_mut(me) {
         q.retain(|m| m.id != id);
+    }
+}
+
+fn on_publish(state: &Shared, me: &str, my_ed: &[u8; 32], keys: &[WirePrekey]) -> ServerMsg {
+    // Reject the whole batch if any key is not signed by this device: a relay
+    // that stores forgeries would hand them to senders.
+    let mut parsed = Vec::with_capacity(keys.len());
+    for w in keys {
+        match SignedPrekey::from_wire(w) {
+            Ok(p) if verify_prekey(my_ed, &p).is_ok() => parsed.push(w.clone()),
+            _ => {
+                return err(
+                    "bad_prekey",
+                    "prekey is malformed or not signed by this device",
+                )
+            }
+        }
+    }
+    let mut st = state.lock().unwrap();
+    let q = st.prekeys.entry(me.to_string()).or_default();
+    for w in parsed {
+        if q.len() >= MAX_PREKEYS {
+            break;
+        }
+        if !q.iter().any(|k| k.key == w.key) {
+            q.push_back(w);
+        }
+    }
+    ServerMsg::Published { prekeys: q.len() }
+}
+
+fn on_claim(state: &Shared, device: &str) -> ServerMsg {
+    if !is_valid_device_id(device) {
+        return err("bad_request", "invalid device id");
+    }
+    let prekey = state
+        .lock()
+        .unwrap()
+        .prekeys
+        .get_mut(device)
+        .and_then(|q| q.pop_front());
+    ServerMsg::Prekey {
+        device: device.to_string(),
+        prekey,
     }
 }

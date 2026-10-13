@@ -21,12 +21,20 @@ echo "== pairing (fingerprints compared out of band)"
 $A add bob "$BCARD" >/dev/null;   $A verify bob "$BFP"
 $B add alice "$ACARD" >/dev/null; $B verify alice "$AFP"
 
-echo "== alice sends while bob is offline"
+echo "== bob registers one-time prekeys with the relay, then goes offline"
+$B keys
+
+echo "== alice sends while bob is offline (first message starts a ratcheting session)"
 $A send bob "meet at the usual place, 3pm"
+$A send bob "bring the documents"
 
 echo "== bob comes online later"
 $B recv
 
-echo "== bob reconnects: acked message must not come back"
+echo "== bob replies over the same session; alice receives"
+$B send alice "on my way"
+$A recv
+
+echo "== bob reconnects: acked messages must not come back"
 $B recv
 echo "== relay log (no content):"; cat "$D/relay.log"

@@ -3,12 +3,10 @@ name = "spike-core"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
-description = "Spike Connect core: device identity, sealed messages, relay wire protocol"
+description = "Spike Connect core: device identity, ratcheting sessions, relay wire protocol"
 
 [dependencies]
-snow = "0.9"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
+vodozemac = "0.11"
 sha2 = "0.10"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }

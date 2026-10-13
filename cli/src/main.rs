@@ -1,12 +1,11 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use spike_cli::{
-    client::Relay,
-    process,
+    ops,
     state::{Contact, Home},
     Outcome,
 };
-use spike_core::{identity::DeviceCard, session};
+use spike_core::identity::DeviceCard;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -42,6 +41,11 @@ enum Cmd {
     Verify { name: String, fingerprint: String },
     /// List contacts.
     Contacts,
+    /// Connect to a relay so others can start encrypted sessions with you while you are offline.
+    Keys {
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
     /// Send an encrypted message through a relay.
     Send {
         name: String,
@@ -135,29 +139,29 @@ async fn main() -> Result<()> {
                 println!("{:<16} {:<10} {}", c.name, tag, c.decode()?.fingerprint());
             }
         }
+        Cmd::Keys { relay } => {
+            let n = ops::publish_keys(&home, &relay).await?;
+            println!("relay holds {n} one-time prekeys for this device");
+        }
         Cmd::Send {
             name,
             message,
             relay,
         } => {
-            let me = home.load_identity()?;
-            let contacts = home.load_contacts()?;
-            let c = contacts
-                .iter()
-                .find(|c| c.name == name)
-                .with_context(|| format!("no contact '{name}'"))?;
-            if !c.verified {
+            let r = ops::send(&home, &relay, &name, message.as_bytes()).await?;
+            if !r.verified {
                 eprintln!(
                     "warning: {name} is UNVERIFIED; the key has not been checked out of band"
                 );
             }
-            let peer = c.decode()?;
-            let sealed = session::seal(&me, &peer, message.as_bytes())?;
-            let mut r = Relay::connect(&relay, &me).await?;
-            let id = r.send(&peer.device_id(), &sealed).await?;
+            let kind = if r.new_session {
+                "new session"
+            } else {
+                "ratchet"
+            };
             println!(
-                "queued at relay (id {id}); {} bytes of ciphertext",
-                sealed.len()
+                "queued at relay (id {}); {} bytes of ciphertext ({kind})",
+                r.relay_id, r.bytes
             );
         }
         Cmd::Recv {
@@ -165,34 +169,24 @@ async fn main() -> Result<()> {
             idle_ms,
             follow,
         } => {
-            let me = home.load_identity()?;
-            let mut r = Relay::connect(&relay, &me).await?;
             let idle = if follow {
                 None
             } else {
                 Some(Duration::from_millis(idle_ms))
             };
             let mut n = 0;
-            while let Some(d) = r.next_delivery(idle).await? {
-                match process(&home, &me, &d.blob)? {
-                    Outcome::Message {
-                        from,
-                        verified,
-                        body,
-                        ..
-                    } => {
-                        let tag = if verified { "" } else { " (UNVERIFIED sender)" };
-                        println!("[{from}{tag}] {}", String::from_utf8_lossy(&body));
-                        n += 1;
-                    }
-                    Outcome::Duplicate => {}
-                    Outcome::UnknownSender { fingerprint_hint } => {
-                        eprintln!("dropped message from unknown key {fingerprint_hint}…; add them with `spike add` to receive");
-                    }
-                    Outcome::Invalid => eprintln!("dropped undecryptable message"),
+            ops::recv(&home, &relay, idle, |o| match o {
+                Outcome::Message { from, verified, body } => {
+                    let tag = if verified { "" } else { " (UNVERIFIED sender)" };
+                    println!("[{from}{tag}] {}", String::from_utf8_lossy(&body));
+                    n += 1;
                 }
-                r.ack(&d.id).await?;
-            }
+                Outcome::UnknownSender { fingerprint_hint } => {
+                    eprintln!("dropped message from unknown key {fingerprint_hint}…; add them with `spike add` to receive");
+                }
+                Outcome::Invalid => eprintln!("dropped undecryptable or replayed message"),
+            })
+            .await?;
             if !follow && n == 0 {
                 eprintln!("no new messages");
             }

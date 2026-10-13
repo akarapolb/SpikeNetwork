@@ -14,6 +14,7 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | Doc | Purpose |
 |---|---|
 | [threat-model.md](threat-model.md) | Phase 0 threat model with honest status per threat |
-| [adr/0001-phase0-stack-and-sealed-messages.md](adr/0001-phase0-stack-and-sealed-messages.md) | Stack and protocol decisions, with known limitations |
+| [adr/0001-phase0-stack-and-sealed-messages.md](adr/0001-phase0-stack-and-sealed-messages.md) | Stack decisions (message pattern superseded by 0002) |
+| [adr/0002-ratcheting-sessions-with-prekeys.md](adr/0002-ratcheting-sessions-with-prekeys.md) | Olm ratcheting sessions, prekeys, accepted limits |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [spike-connect-plans.html](spike-connect-plans.html) | All three plans in one page |

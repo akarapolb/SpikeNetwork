@@ -1,128 +1,389 @@
-//! Sealed one-shot messages using Noise_X (via the `snow` crate).
+//! Asynchronous, ratcheting 1:1 sessions (Olm via `vodozemac`).
 //!
-//! Properties: confidential to the recipient's static key, authenticated as
-//! coming from the sender's static key, deliverable while the recipient is
-//! offline. Limitations (see docs/adr/0001): no forward secrecy against later
-//! compromise of the recipient's static key, and no replay protection in the
-//! transport; callers must de-duplicate on [`Opened::id`].
+//! Starting a session needs one of the peer's signed one-time prekeys (served
+//! by a relay). After that every message advances a Double Ratchet, which
+//! gives forward secrecy and post-compromise recovery, and rejects replays
+//! because each message key is used once and then deleted. The first message
+//! in a session is a "pre-key" message that lets the recipient derive the same
+//! state without being online.
 
-use crate::identity::{DeviceCard, Identity};
-use crate::{Error, Result, NOISE_PARAMS};
-use rand::{rngs::OsRng, RngCore};
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::identity::{verify_prekey, DeviceCard, Identity, SignedPrekey};
+use crate::{Error, Result};
+use std::collections::BTreeMap;
+use vodozemac::olm::{OlmMessage, Session, SessionConfig, SessionPickle};
+use vodozemac::Curve25519PublicKey;
 
 pub const MAX_BODY: usize = 60_000;
-const HEADER: usize = 16 + 8;
+/// Sessions kept per peer. Simultaneous first messages can create two.
+const MAX_SESSIONS_PER_PEER: usize = 4;
+
+/// All sessions on this device, keyed by the peer's hex Curve25519 identity key.
+/// Most recently used first. Persist it after every encrypt/decrypt.
+#[derive(Default)]
+pub struct Sessions {
+    by_peer: BTreeMap<String, Vec<Session>>,
+}
 
 #[derive(Debug)]
-pub struct Opened {
-    /// Authenticated X25519 static key of the sender. Map it to a contact.
-    pub sender_x25519: [u8; 32],
-    /// Random per-message id, for de-duplication by the receiver.
-    pub id: [u8; 16],
-    /// Sender's clock, seconds since the epoch. Informational only.
-    pub ts: u64,
-    pub body: Vec<u8>,
+pub enum Opened {
+    /// `contact` indexes into the `contacts` slice passed to [`Sessions::decrypt`].
+    Message { contact: usize, body: Vec<u8> },
+    /// A valid-looking first message from a key that is not a contact. No
+    /// session is created and no prekey is consumed.
+    UnknownSender { identity_key: [u8; 32] },
 }
 
-pub fn seal(me: &Identity, peer: &DeviceCard, body: &[u8]) -> Result<Vec<u8>> {
-    if body.len() > MAX_BODY {
-        return Err(Error::TooLarge { max: MAX_BODY });
-    }
-    let mut id = [0u8; 16];
-    OsRng.fill_bytes(&mut id);
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let mut payload = Vec::with_capacity(HEADER + body.len());
-    payload.extend_from_slice(&id);
-    payload.extend_from_slice(&ts.to_be_bytes());
-    payload.extend_from_slice(body);
-
-    let mut hs = snow::Builder::new(NOISE_PARAMS.parse()?)
-        .local_private_key(me.x_secret())
-        .remote_public_key(&peer.x25519)
-        .build_initiator()?;
-    // e (32) + encrypted s (32 + 16) + encrypted payload (+16 tag)
-    let mut out = vec![0u8; payload.len() + 96];
-    let n = hs.write_message(&payload, &mut out)?;
-    out.truncate(n);
-    Ok(out)
+fn peer_key(x25519: &[u8; 32]) -> String {
+    hex::encode(x25519)
 }
 
-pub fn open(me: &Identity, sealed: &[u8]) -> Result<Opened> {
-    let mut hs = snow::Builder::new(NOISE_PARAMS.parse()?)
-        .local_private_key(me.x_secret())
-        .build_responder()?;
-    let mut buf = vec![0u8; sealed.len()];
-    let n = hs.read_message(sealed, &mut buf)?;
-    let sender: [u8; 32] = hs
-        .get_remote_static()
-        .and_then(|k| k.try_into().ok())
-        .ok_or(Error::Malformed)?;
-    if n < HEADER {
-        return Err(Error::Malformed);
+fn session_err(e: impl std::fmt::Display) -> Error {
+    Error::Session(e.to_string())
+}
+
+impl Sessions {
+    pub fn to_json(&self) -> Result<String> {
+        let m: BTreeMap<&String, Vec<SessionPickle>> = self
+            .by_peer
+            .iter()
+            .map(|(k, v)| (k, v.iter().map(Session::pickle).collect()))
+            .collect();
+        Ok(serde_json::to_string_pretty(&m)?)
     }
-    Ok(Opened {
-        sender_x25519: sender,
-        id: buf[..16].try_into().unwrap(),
-        ts: u64::from_be_bytes(buf[16..24].try_into().unwrap()),
-        body: buf[HEADER..n].to_vec(),
-    })
+
+    pub fn from_json(s: &str) -> Result<Self> {
+        let m: BTreeMap<String, Vec<SessionPickle>> = serde_json::from_str(s)?;
+        Ok(Self {
+            by_peer: m
+                .into_iter()
+                .map(|(k, v)| (k, v.into_iter().map(Session::from_pickle).collect()))
+                .collect(),
+        })
+    }
+
+    pub fn has_session(&self, peer: &DeviceCard) -> bool {
+        self.by_peer
+            .get(&peer_key(&peer.x25519))
+            .is_some_and(|v| !v.is_empty())
+    }
+
+    /// Begin a session with `peer` using one of their prekeys. The prekey's
+    /// signature is checked against the peer's card, so a relay cannot
+    /// substitute its own.
+    pub fn start_outbound(
+        &mut self,
+        me: &Identity,
+        peer: &DeviceCard,
+        prekey: &SignedPrekey,
+    ) -> Result<()> {
+        verify_prekey(&peer.ed25519, prekey)?;
+        let session = me
+            .account()
+            .create_outbound_session(
+                SessionConfig::default(),
+                Curve25519PublicKey::from_slice(&peer.x25519).map_err(session_err)?,
+                Curve25519PublicKey::from_slice(&prekey.key).map_err(session_err)?,
+            )
+            .map_err(session_err)?;
+        self.insert(peer_key(&peer.x25519), session);
+        Ok(())
+    }
+
+    /// Encrypt `body` for `peer`. Returns the opaque blob to hand to a relay.
+    pub fn encrypt(&mut self, peer: &DeviceCard, body: &[u8]) -> Result<Vec<u8>> {
+        if body.len() > MAX_BODY {
+            return Err(Error::TooLarge { max: MAX_BODY });
+        }
+        let session = self
+            .by_peer
+            .get_mut(&peer_key(&peer.x25519))
+            .and_then(|v| v.first_mut())
+            .ok_or(Error::NoSession)?;
+        let (kind, bytes) = session.encrypt(body).map_err(session_err)?.to_parts();
+        let mut out = Vec::with_capacity(1 + bytes.len());
+        out.push(kind as u8);
+        out.extend_from_slice(&bytes);
+        Ok(out)
+    }
+
+    /// Decrypt a blob from any contact. `me` is mutated when a pre-key message
+    /// consumes one of our one-time prekeys, so persist both afterwards.
+    pub fn decrypt(
+        &mut self,
+        me: &mut Identity,
+        contacts: &[DeviceCard],
+        blob: &[u8],
+    ) -> Result<Opened> {
+        let (&kind, bytes) = blob.split_first().ok_or(Error::Malformed)?;
+        let msg = OlmMessage::from_parts(kind as usize, bytes).map_err(|_| Error::Malformed)?;
+
+        match &msg {
+            OlmMessage::PreKey(pk) => {
+                let sender = pk.identity_key().to_bytes();
+                let Some(idx) = contacts.iter().position(|c| c.x25519 == sender) else {
+                    return Ok(Opened::UnknownSender {
+                        identity_key: sender,
+                    });
+                };
+                let key = peer_key(&sender);
+                // Already have the session this message belongs to? Use it (this
+                // is how a replayed pre-key message is rejected).
+                if let Some(list) = self.by_peer.get_mut(&key) {
+                    if let Some(pos) = list.iter().position(|s| s.session_id() == pk.session_id()) {
+                        let body = list[pos].decrypt(&msg).map_err(session_err)?;
+                        list[..=pos].rotate_right(1);
+                        return Ok(Opened::Message { contact: idx, body });
+                    }
+                }
+                let r = me
+                    .account_mut()
+                    .create_inbound_session(SessionConfig::default(), pk.identity_key(), pk)
+                    .map_err(session_err)?;
+                self.insert(key, r.session);
+                Ok(Opened::Message {
+                    contact: idx,
+                    body: r.plaintext,
+                })
+            }
+            OlmMessage::Normal(_) => {
+                for (idx, c) in contacts.iter().enumerate() {
+                    let Some(list) = self.by_peer.get_mut(&peer_key(&c.x25519)) else {
+                        continue;
+                    };
+                    for pos in 0..list.len() {
+                        if let Ok(body) = list[pos].decrypt(&msg) {
+                            list[..=pos].rotate_right(1);
+                            return Ok(Opened::Message { contact: idx, body });
+                        }
+                    }
+                }
+                Err(Error::Session(
+                    "no session could decrypt this message".into(),
+                ))
+            }
+        }
+    }
+
+    fn insert(&mut self, key: String, session: Session) {
+        let list = self.by_peer.entry(key).or_default();
+        list.insert(0, session);
+        list.truncate(MAX_SESSIONS_PER_PEER);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn roundtrip_authenticates_sender() {
-        let (a, b) = (Identity::generate().unwrap(), Identity::generate().unwrap());
-        let sealed = seal(&a, &b.card(), b"hello bob").unwrap();
-        let o = open(&b, &sealed).unwrap();
-        assert_eq!(o.body, b"hello bob");
-        assert_eq!(o.sender_x25519, a.x_public());
+    struct Dev {
+        id: Identity,
+        sessions: Sessions,
     }
 
-    #[test]
-    fn plaintext_not_in_ciphertext() {
-        let (a, b) = (Identity::generate().unwrap(), Identity::generate().unwrap());
-        let secret = b"very-recognisable-plaintext";
-        let sealed = seal(&a, &b.card(), secret).unwrap();
-        assert!(!sealed.windows(secret.len()).any(|w| w == secret));
+    fn dev() -> Dev {
+        Dev {
+            id: Identity::generate().unwrap(),
+            sessions: Sessions::default(),
+        }
     }
 
-    #[test]
-    fn third_party_cannot_open() {
-        let (a, b, eve) = (
-            Identity::generate().unwrap(),
-            Identity::generate().unwrap(),
-            Identity::generate().unwrap(),
-        );
-        let sealed = seal(&a, &b.card(), b"x").unwrap();
-        assert!(open(&eve, &sealed).is_err());
+    /// Alice starts a session with Bob using one of Bob's prekeys.
+    fn connect(a: &mut Dev, b: &mut Dev) {
+        let pk = b.id.fresh_prekeys(1).remove(0);
+        a.sessions.start_outbound(&a.id, &b.id.card(), &pk).unwrap();
     }
 
-    #[test]
-    fn tampering_is_detected() {
-        let (a, b) = (Identity::generate().unwrap(), Identity::generate().unwrap());
-        let sealed = seal(&a, &b.card(), b"x").unwrap();
-        for i in [0, 40, sealed.len() - 1] {
-            let mut t = sealed.clone();
-            t[i] ^= 1;
-            assert!(open(&b, &t).is_err(), "flip at {i} accepted");
+    fn open(d: &mut Dev, from: &DeviceCard, blob: &[u8]) -> Result<Vec<u8>> {
+        match d
+            .sessions
+            .decrypt(&mut d.id, std::slice::from_ref(from), blob)?
+        {
+            Opened::Message { body, .. } => Ok(body),
+            Opened::UnknownSender { .. } => Err(Error::Malformed),
         }
     }
 
     #[test]
-    fn oversize_rejected() {
-        let (a, b) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+    fn two_way_conversation_ratchets() {
+        let (mut a, mut b) = (dev(), dev());
+        connect(&mut a, &mut b);
+        let (ac, bc) = (a.id.card(), b.id.card());
+        let m1 = a.sessions.encrypt(&bc, b"hi bob").unwrap();
+        assert_eq!(open(&mut b, &ac, &m1).unwrap(), b"hi bob");
+        let m2 = b.sessions.encrypt(&ac, b"hi alice").unwrap();
+        assert_eq!(open(&mut a, &bc, &m2).unwrap(), b"hi alice");
+        for i in 0..5 {
+            let m = a
+                .sessions
+                .encrypt(&bc, format!("msg {i}").as_bytes())
+                .unwrap();
+            assert_eq!(
+                open(&mut b, &ac, &m).unwrap(),
+                format!("msg {i}").as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn plaintext_not_in_ciphertext() {
+        let (mut a, mut b) = (dev(), dev());
+        connect(&mut a, &mut b);
+        let secret = b"very-recognisable-plaintext";
+        let m = a.sessions.encrypt(&b.id.card(), secret).unwrap();
+        assert!(!m.windows(secret.len()).any(|w| w == secret));
+    }
+
+    #[test]
+    fn out_of_order_delivery_works() {
+        let (mut a, mut b) = (dev(), dev());
+        connect(&mut a, &mut b);
+        let (ac, bc) = (a.id.card(), b.id.card());
+        let m1 = a.sessions.encrypt(&bc, b"one").unwrap();
+        let m2 = a.sessions.encrypt(&bc, b"two").unwrap();
+        let m3 = a.sessions.encrypt(&bc, b"three").unwrap();
+        assert_eq!(open(&mut b, &ac, &m1).unwrap(), b"one");
+        assert_eq!(open(&mut b, &ac, &m3).unwrap(), b"three");
+        assert_eq!(open(&mut b, &ac, &m2).unwrap(), b"two");
+    }
+
+    #[test]
+    fn replay_is_rejected() {
+        let (mut a, mut b) = (dev(), dev());
+        connect(&mut a, &mut b);
+        let (ac, bc) = (a.id.card(), b.id.card());
+        let first = a.sessions.encrypt(&bc, b"first").unwrap();
+        assert!(open(&mut b, &ac, &first).is_ok());
+        assert!(
+            open(&mut b, &ac, &first).is_err(),
+            "replayed pre-key message accepted"
+        );
+        let second = a.sessions.encrypt(&bc, b"second").unwrap();
+        assert!(open(&mut b, &ac, &second).is_ok());
+        assert!(
+            open(&mut b, &ac, &second).is_err(),
+            "replayed message accepted"
+        );
+    }
+
+    #[test]
+    fn tampering_is_detected() {
+        let (mut a, mut b) = (dev(), dev());
+        connect(&mut a, &mut b);
+        let (ac, bc) = (a.id.card(), b.id.card());
+        let m = a.sessions.encrypt(&bc, b"x").unwrap();
+        for i in [1, m.len() / 2, m.len() - 1] {
+            let mut t = m.clone();
+            t[i] ^= 1;
+            assert!(open(&mut b, &ac, &t).is_err(), "flip at {i} accepted");
+        }
+        // The untouched original still works afterwards.
+        assert_eq!(open(&mut b, &ac, &m).unwrap(), b"x");
+    }
+
+    #[test]
+    fn third_party_cannot_read() {
+        let (mut a, mut b, mut eve) = (dev(), dev(), dev());
+        connect(&mut a, &mut b);
+        let m = a.sessions.encrypt(&b.id.card(), b"x").unwrap();
+        assert!(open(&mut eve, &a.id.card(), &m).is_err());
+    }
+
+    #[test]
+    fn unknown_sender_creates_no_session_and_keeps_prekey() {
+        let (mut a, mut b) = (dev(), dev());
+        connect(&mut a, &mut b);
+        let m = a.sessions.encrypt(&b.id.card(), b"x").unwrap();
+        let r = b.sessions.decrypt(&mut b.id, &[], &m).unwrap();
+        assert!(matches!(r, Opened::UnknownSender { .. }));
+        // Bob can still accept it once Alice is a contact.
+        assert!(open(&mut b, &a.id.card(), &m).is_ok());
+    }
+
+    #[test]
+    fn forged_prekey_is_refused() {
+        let (mut a, b, mut evil) = (dev(), dev(), dev());
+        let forged = evil.id.fresh_prekeys(1).remove(0);
+        assert!(a
+            .sessions
+            .start_outbound(&a.id, &b.id.card(), &forged)
+            .is_err());
         assert!(matches!(
-            seal(&a, &b.card(), &vec![0; MAX_BODY + 1]),
+            a.sessions.encrypt(&b.id.card(), b"x"),
+            Err(Error::NoSession)
+        ));
+    }
+
+    #[test]
+    fn prekey_is_single_use() {
+        let (mut a, mut b, mut c) = (dev(), dev(), dev());
+        let pk = b.id.fresh_prekeys(1).remove(0);
+        a.sessions.start_outbound(&a.id, &b.id.card(), &pk).unwrap();
+        c.sessions.start_outbound(&c.id, &b.id.card(), &pk).unwrap();
+        let ma = a.sessions.encrypt(&b.id.card(), b"from a").unwrap();
+        let mc = c.sessions.encrypt(&b.id.card(), b"from c").unwrap();
+        let contacts = [a.id.card(), c.id.card()];
+        assert!(matches!(
+            b.sessions.decrypt(&mut b.id, &contacts, &ma).unwrap(),
+            Opened::Message { .. }
+        ));
+        assert!(
+            b.sessions.decrypt(&mut b.id, &contacts, &mc).is_err(),
+            "reused prekey must not open a second session"
+        );
+    }
+
+    #[test]
+    fn stolen_state_cannot_read_past_messages() {
+        // Forward secrecy: an attacker who copies Bob's *current* keys and sessions and
+        // also holds earlier captured ciphertext still cannot read it.
+        let (mut a, mut b) = (dev(), dev());
+        connect(&mut a, &mut b);
+        let (ac, bc) = (a.id.card(), b.id.card());
+        let m1 = a.sessions.encrypt(&bc, b"old secret 1").unwrap();
+        open(&mut b, &ac, &m1).unwrap();
+        let r1 = b.sessions.encrypt(&ac, b"reply").unwrap();
+        open(&mut a, &bc, &r1).unwrap();
+        let m2 = a.sessions.encrypt(&bc, b"old secret 2").unwrap();
+        open(&mut b, &ac, &m2).unwrap();
+        let m3 = a.sessions.encrypt(&bc, b"newest").unwrap();
+        open(&mut b, &ac, &m3).unwrap();
+
+        // "Theft": serialize Bob's full state, restore it elsewhere.
+        let mut thief = Dev {
+            id: Identity::from_json(&b.id.to_json().unwrap()).unwrap(),
+            sessions: Sessions::from_json(&b.sessions.to_json().unwrap()).unwrap(),
+        };
+        for captured in [&m1, &m2, &m3] {
+            assert!(
+                open(&mut thief, &ac, captured).is_err(),
+                "stolen state decrypted past traffic"
+            );
+        }
+    }
+
+    #[test]
+    fn state_survives_persistence() {
+        let (mut a, mut b) = (dev(), dev());
+        connect(&mut a, &mut b);
+        let (ac, bc) = (a.id.card(), b.id.card());
+        let m1 = a.sessions.encrypt(&bc, b"one").unwrap();
+        open(&mut b, &ac, &m1).unwrap();
+        let mut a2 = Dev {
+            id: Identity::from_json(&a.id.to_json().unwrap()).unwrap(),
+            sessions: Sessions::from_json(&a.sessions.to_json().unwrap()).unwrap(),
+        };
+        let m2 = a2.sessions.encrypt(&bc, b"two").unwrap();
+        assert_eq!(open(&mut b, &ac, &m2).unwrap(), b"two");
+    }
+
+    #[test]
+    fn oversize_rejected() {
+        let (mut a, mut b) = (dev(), dev());
+        connect(&mut a, &mut b);
+        assert!(matches!(
+            a.sessions.encrypt(&b.id.card(), &vec![0; MAX_BODY + 1]),
             Err(Error::TooLarge { .. })
         ));
-        assert!(seal(&a, &b.card(), &vec![0; MAX_BODY]).is_ok());
     }
 
     #[test]
@@ -130,17 +391,9 @@ mod tests {
         let a = Identity::generate().unwrap();
         let c = a.card();
         assert_eq!(DeviceCard::decode(&c.encode()).unwrap(), c);
-        // Swapping in a different X25519 key must break the signature.
         let other = Identity::generate().unwrap().card();
         let mut raw = hex::decode(&c.encode()["spike1:".len()..]).unwrap();
         raw[32..64].copy_from_slice(&other.x25519);
         assert!(DeviceCard::decode(&format!("spike1:{}", hex::encode(raw))).is_err());
-    }
-
-    #[test]
-    fn identity_persists() {
-        let a = Identity::generate().unwrap();
-        let b = Identity::from_json(&a.to_json().unwrap()).unwrap();
-        assert_eq!(a.card(), b.card());
     }
 }

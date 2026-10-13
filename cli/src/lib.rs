@@ -1,8 +1,9 @@
 pub mod client;
+pub mod ops;
 pub mod state;
 
-use spike_core::identity::Identity;
-use spike_core::session;
+use spike_core::identity::{DeviceCard, Identity};
+use spike_core::session::{Opened, Sessions};
 use state::Home;
 
 /// What happened to one delivered blob. Every outcome is safe to acknowledge
@@ -12,40 +13,41 @@ pub enum Outcome {
     Message {
         from: String,
         verified: bool,
-        ts: u64,
         body: Vec<u8>,
     },
-    /// Already processed (relay redelivery or a replayed ciphertext).
-    Duplicate,
-    /// Authentic, but the sender's key is not in our contacts.
+    /// A first message from a key that is not a contact. Dropped; no session is created.
     UnknownSender { fingerprint_hint: String },
-    /// Not decryptable or malformed: corrupted, tampered, or not for us.
+    /// Not decryptable: corrupted, tampered, replayed, or not for us.
     Invalid,
 }
 
-pub fn process(home: &Home, me: &Identity, blob: &[u8]) -> anyhow::Result<Outcome> {
-    let Ok(opened) = session::open(me, blob) else {
-        return Ok(Outcome::Invalid);
-    };
+/// Decrypt one blob and persist the resulting ratchet state *before* returning,
+/// so the caller can safely ack afterwards.
+pub fn process(
+    home: &Home,
+    me: &mut Identity,
+    sessions: &mut Sessions,
+    blob: &[u8],
+) -> anyhow::Result<Outcome> {
     let contacts = home.load_contacts()?;
-    let sender = contacts.iter().find(|c| {
-        c.decode()
-            .map(|card| card.x25519 == opened.sender_x25519)
-            .unwrap_or(false)
-    });
-    let Some(sender) = sender else {
-        return Ok(Outcome::UnknownSender {
-            fingerprint_hint: hex::encode(&opened.sender_x25519[..6]),
-        });
-    };
-    // Record before the caller acks, so a crash re-delivers rather than loses.
-    if !home.mark_seen(&hex::encode(opened.id))? {
-        return Ok(Outcome::Duplicate);
+    let cards: Vec<DeviceCard> = contacts
+        .iter()
+        .map(|c| c.decode())
+        .collect::<anyhow::Result<_>>()?;
+    match sessions.decrypt(me, &cards, blob) {
+        Ok(Opened::Message { contact, body }) => {
+            home.save_sessions(sessions)?;
+            home.save_identity(me)?;
+            let c = &contacts[contact];
+            Ok(Outcome::Message {
+                from: c.name.clone(),
+                verified: c.verified,
+                body,
+            })
+        }
+        Ok(Opened::UnknownSender { identity_key }) => Ok(Outcome::UnknownSender {
+            fingerprint_hint: hex::encode(&identity_key[..6]),
+        }),
+        Err(_) => Ok(Outcome::Invalid),
     }
-    Ok(Outcome::Message {
-        from: sender.name.clone(),
-        verified: sender.verified,
-        ts: opened.ts,
-        body: opened.body,
-    })
 }
