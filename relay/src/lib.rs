@@ -1,7 +1,10 @@
 //! Store-and-forward relay. Holds opaque blobs per recipient device until the
 //! recipient acknowledges them or they expire. It authenticates devices by
 //! Ed25519 challenge-response, enforces size/queue/TTL limits, and logs no
-//! message content. Queues are in memory in Phase 0 (lost on restart).
+//! message content. Queues and prekeys are stored in SQLite (see [`store`]);
+//! with no database path they live in memory and are lost on restart.
+
+pub mod store;
 
 use futures_util::{SinkExt, StreamExt};
 use rand::{rngs::OsRng, RngCore};
@@ -9,9 +12,11 @@ use spike_core::identity::{
     device_id_from_ed, is_valid_device_id, verify_auth, verify_prekey, SignedPrekey, MAX_PREKEYS,
 };
 use spike_core::wire::{ClientMsg, ServerMsg, WirePrekey};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use store::{Enqueued, Store};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
@@ -28,6 +33,8 @@ pub struct Config {
     pub auth_timeout: Duration,
     /// Prekeys one connection may claim from others before being refused.
     pub max_claims_per_conn: usize,
+    /// SQLite file for queues and prekeys; `None` keeps them in memory only.
+    pub db_path: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -38,30 +45,40 @@ impl Default for Config {
             ttl: Duration::from_secs(7 * 24 * 3600),
             auth_timeout: Duration::from_secs(10),
             max_claims_per_conn: 20,
+            db_path: None,
         }
     }
 }
 
-struct Queued {
-    id: String,
-    blob: Vec<u8>,
-    expires: Instant,
-}
-
 #[derive(Default)]
 struct State {
-    queues: HashMap<String, VecDeque<Queued>>,
     online: HashMap<String, (u64, mpsc::UnboundedSender<ServerMsg>)>,
-    prekeys: HashMap<String, VecDeque<WirePrekey>>,
-    next_id: u64,
     next_conn: u64,
 }
 
-type Shared = Arc<Mutex<State>>;
+/// `State` is always locked before the store; keep that order.
+struct Shared {
+    state: Mutex<State>,
+    store: Store,
+}
 
 pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
-    let state: Shared = Arc::default();
+    let store = Store::open(cfg.db_path.as_deref()).map_err(std::io::Error::other)?;
+    let state = Arc::new(Shared {
+        state: Mutex::default(),
+        store,
+    });
     let cfg = Arc::new(cfg);
+    {
+        // Expired messages are also dropped lazily; this bounds disk use for idle recipients.
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                let _ = state.store.purge_expired();
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+    }
     loop {
         let (stream, _) = listener.accept().await?;
         let (state, cfg) = (state.clone(), cfg.clone());
@@ -87,7 +104,7 @@ where
     tx.send(Message::Text(s)).await.map_err(|_| ())
 }
 
-async fn handle(stream: TcpStream, state: Shared, cfg: Arc<Config>) -> Result<(), ()> {
+async fn handle(stream: TcpStream, state: Arc<Shared>, cfg: Arc<Config>) -> Result<(), ()> {
     let ws_cfg = WebSocketConfig {
         max_message_size: Some(cfg.max_blob * 2 + 1024),
         max_frame_size: Some(cfg.max_blob * 2 + 1024),
@@ -131,23 +148,28 @@ async fn handle(stream: TcpStream, state: Shared, cfg: Arc<Config>) -> Result<()
 
     // 2. Register (replacing any older connection for this device) and flush the queue.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel();
-    let (conn_id, backlog, prekeys) = {
-        let mut st = state.lock().unwrap();
+    let registered = (|| {
+        let mut st = state.state.lock().unwrap();
         st.next_conn += 1;
         let conn_id = st.next_conn;
         st.online.insert(me.clone(), (conn_id, out_tx));
-        let now = Instant::now();
-        let q = st.queues.entry(me.clone()).or_default();
-        q.retain(|m| m.expires > now);
-        let backlog: Vec<ServerMsg> = q
-            .iter()
+        // Hold the state lock while reading the backlog so a message sent in
+        // between is either in the backlog or delivered live, never both.
+        let backlog: Vec<ServerMsg> = state
+            .store
+            .backlog(&me)?
+            .into_iter()
             .map(|m| ServerMsg::Deliver {
-                id: m.id.clone(),
+                id: m.id.to_string(),
                 blob: hex::encode(&m.blob),
             })
             .collect();
-        let prekeys = st.prekeys.get(&me).map_or(0, |q| q.len());
-        (conn_id, backlog, prekeys)
+        let prekeys = state.store.prekey_count(&me)?;
+        Ok::<_, rusqlite::Error>((conn_id, backlog, prekeys))
+    })();
+    let Ok((conn_id, backlog, prekeys)) = registered else {
+        let _ = send_json(&mut tx, &err("internal", "storage error")).await;
+        return Err(());
     };
     let run = async {
         send_json(
@@ -194,11 +216,15 @@ async fn handle(stream: TcpStream, state: Shared, cfg: Arc<Config>) -> Result<()
     };
     let result = run.await;
 
-    let mut st = state.lock().unwrap();
+    let mut st = state.state.lock().unwrap();
     if st.online.get(&me).map(|(c, _)| *c) == Some(conn_id) {
         st.online.remove(&me);
     }
     result
+}
+
+fn internal() -> ServerMsg {
+    err("internal", "storage error")
 }
 
 fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<ServerMsg> {
@@ -211,20 +237,15 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
     let Ok(blob) = hex::decode(blob_hex) else {
         return Some(err("bad_request", "blob is not hex"));
     };
-    let mut st = state.lock().unwrap();
-    let now = Instant::now();
-    st.next_id += 1;
-    let id = st.next_id.to_string();
-    let q = st.queues.entry(to.to_string()).or_default();
-    q.retain(|m| m.expires > now);
-    if q.len() >= cfg.queue_cap {
-        return Some(err("queue_full", "recipient queue is full"));
-    }
-    q.push_back(Queued {
-        id: id.clone(),
-        blob,
-        expires: now + cfg.ttl,
-    });
+    let st = state.state.lock().unwrap();
+    let id = match state
+        .store
+        .enqueue(to, &blob, cfg.ttl.as_millis() as i64, cfg.queue_cap)
+    {
+        Ok(Enqueued::Id(id)) => id.to_string(),
+        Ok(Enqueued::Full) => return Some(err("queue_full", "recipient queue is full")),
+        Err(_) => return Some(internal()),
+    };
     if let Some((_, live)) = st.online.get(to) {
         let _ = live.send(ServerMsg::Deliver {
             id: id.clone(),
@@ -235,18 +256,17 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
 }
 
 fn on_ack(state: &Shared, me: &str, id: &str) {
-    if let Some(q) = state.lock().unwrap().queues.get_mut(me) {
-        q.retain(|m| m.id != id);
+    if let Ok(id) = id.parse::<i64>() {
+        let _ = state.store.ack(me, id);
     }
 }
 
 fn on_publish(state: &Shared, me: &str, my_ed: &[u8; 32], keys: &[WirePrekey]) -> ServerMsg {
     // Reject the whole batch if any key is not signed by this device: a relay
     // that stores forgeries would hand them to senders.
-    let mut parsed = Vec::with_capacity(keys.len());
     for w in keys {
         match SignedPrekey::from_wire(w) {
-            Ok(p) if verify_prekey(my_ed, &p).is_ok() => parsed.push(w.clone()),
+            Ok(p) if verify_prekey(my_ed, &p).is_ok() => {}
             _ => {
                 return err(
                     "bad_prekey",
@@ -255,31 +275,21 @@ fn on_publish(state: &Shared, me: &str, my_ed: &[u8; 32], keys: &[WirePrekey]) -
             }
         }
     }
-    let mut st = state.lock().unwrap();
-    let q = st.prekeys.entry(me.to_string()).or_default();
-    for w in parsed {
-        if q.len() >= MAX_PREKEYS {
-            break;
-        }
-        if !q.iter().any(|k| k.key == w.key) {
-            q.push_back(w);
-        }
+    match state.store.publish_prekeys(me, keys, MAX_PREKEYS) {
+        Ok(n) => ServerMsg::Published { prekeys: n },
+        Err(_) => internal(),
     }
-    ServerMsg::Published { prekeys: q.len() }
 }
 
 fn on_claim(state: &Shared, device: &str) -> ServerMsg {
     if !is_valid_device_id(device) {
         return err("bad_request", "invalid device id");
     }
-    let prekey = state
-        .lock()
-        .unwrap()
-        .prekeys
-        .get_mut(device)
-        .and_then(|q| q.pop_front());
-    ServerMsg::Prekey {
-        device: device.to_string(),
-        prekey,
+    match state.store.claim_prekey(device) {
+        Ok(prekey) => ServerMsg::Prekey {
+            device: device.to_string(),
+            prekey,
+        },
+        Err(_) => internal(),
     }
 }

@@ -345,3 +345,117 @@ fn init_refuses_to_overwrite_existing_state() {
         "--force makes a new identity"
     );
 }
+
+fn temp_db(tag: &str) -> std::path::PathBuf {
+    let n = hex::encode(&Identity::generate().unwrap().ed_public()[..6]);
+    let dir = std::env::temp_dir().join(format!("spike-relay-{tag}-{n}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("relay.db")
+}
+
+/// Start a relay with a database and return a handle that can "crash" it.
+async fn start_durable(
+    db: &std::path::Path,
+    cfg: Config,
+) -> (String, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}", l.local_addr().unwrap());
+    let cfg = Config {
+        db_path: Some(db.to_path_buf()),
+        ..cfg
+    };
+    (url, tokio::spawn(serve(l, cfg)))
+}
+
+#[tokio::test]
+async fn queue_acks_and_prekeys_survive_relay_restart() {
+    let db = temp_db("restart");
+    let (alice, bob) = pair("alice", "bob");
+
+    let (url, relay) = start_durable(&db, Config::default()).await;
+    assert_eq!(ops::publish_keys(&bob.home, &url).await.unwrap(), 30);
+    ops::send(&alice.home, &url, "bob", b"before the crash")
+        .await
+        .unwrap();
+    ops::send(&alice.home, &url, "bob", b"also before")
+        .await
+        .unwrap();
+    relay.abort();
+    let _ = relay.await;
+
+    // New process, same database: queued messages and the remaining prekeys are intact.
+    let (url, relay) = start_durable(&db, Config::default()).await;
+    let got = bob.recv(&url).await;
+    assert_eq!(got.len(), 2);
+    assert_eq!(msg(&got[0]).1, b"before the crash");
+    assert_eq!(msg(&got[1]).1, b"also before");
+    relay.abort();
+    let _ = relay.await;
+
+    // Acks were durable too: nothing is redelivered after another restart.
+    let (url, relay) = start_durable(&db, Config::default()).await;
+    assert!(bob.recv(&url).await.is_empty());
+    // 30 published, one consumed by Alice's session start, and it stayed consumed.
+    assert_eq!(ops::publish_keys(&bob.home, &url).await.unwrap(), 29);
+    relay.abort();
+    std::fs::remove_dir_all(db.parent().unwrap()).ok();
+}
+
+#[tokio::test]
+async fn expiry_holds_across_restart() {
+    let db = temp_db("ttl");
+    let cfg = || Config {
+        ttl: Duration::from_millis(400),
+        ..Config::default()
+    };
+    let (alice, bob) = pair("alice", "bob");
+    let (url, relay) = start_durable(&db, cfg()).await;
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    ops::send(&alice.home, &url, "bob", b"too slow")
+        .await
+        .unwrap();
+    relay.abort();
+    let _ = relay.await;
+
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let (url, relay) = start_durable(&db, cfg()).await;
+    assert!(
+        bob.recv(&url).await.is_empty(),
+        "expired message must not survive a restart"
+    );
+    relay.abort();
+    std::fs::remove_dir_all(db.parent().unwrap()).ok();
+}
+
+#[tokio::test]
+async fn relay_disk_holds_no_plaintext_and_is_private() {
+    let db = temp_db("disk");
+    let (alice, bob) = pair("alice", "bob");
+    let (url, relay) = start_durable(&db, Config::default()).await;
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    let marker = b"persistent-marker-xyz-123";
+    ops::send(&alice.home, &url, "bob", marker).await.unwrap();
+    relay.abort();
+    let _ = relay.await;
+
+    let dir = db.parent().unwrap();
+    let mut total = 0;
+    for e in std::fs::read_dir(dir).unwrap() {
+        let bytes = std::fs::read(e.unwrap().path()).unwrap();
+        total += bytes.len();
+        assert!(
+            !bytes.windows(marker.len()).any(|w| w == marker),
+            "plaintext found in relay storage"
+        );
+    }
+    assert!(total > 0, "the database should hold the queued ciphertext");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&db).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    std::fs::remove_dir_all(dir).ok();
+}

@@ -1,4 +1,4 @@
-# Threat model (Phase 0 draft, updated for ADR 0002 and 0003)
+# Threat model (Phase 0 draft, updated through ADR 0004)
 
 Scope: the code in this repository today (`core`, `relay`, `cli`). It will grow with the product. Each item is marked **mitigated**, **partial**, or **open**.
 
@@ -30,10 +30,11 @@ No anonymity and no metadata protection is claimed.
 | Rollback to an older valid state file | **Open** | An attacker with write access could restore an old ratchet state; needs a monotonic counter / hardware keystore |
 | Compromised running endpoint (malware, debugger) | **Open** | Keys are in memory while unlocked; out of scope for Phase 0 |
 | Relay resource abuse / spam | Partial | Size, per-recipient queue cap and TTL enforced; no per-sender rate limit or abuse controls |
-| Relay restart loses queues and prekeys | Known gap | In memory; recipients re-publish prekeys on next connect |
+| Relay crash or restart loses queues and prekeys | Mitigated with `--db` | Durable SQLite storage (ADR 0004); verified by tests and a real `kill -9`. Without `--db` the relay is in-memory and says so. Single disk, no replication: a lost disk loses undelivered messages |
+| Theft of the relay database | Partial | Contains ciphertext and routing metadata only (recipient IDs, sizes, timing), `0600`; not encrypted by the relay itself, so use an encrypted volume |
 | Message lost on crash between persist and display | Known gap | At-most-once display (ADR 0002) |
 | Metadata inference | **Open** | Needs padding/batching research; documented, not solved |
 | Abusive agents | **Open** | Agent permissions and approval flow are Phase 2 |
 
 ## Before any real use
-Independent security review, TLS, persistent relay queues and prekeys, per-sender and per-account rate limiting, a fallback prekey, delivery receipts.
+Independent security review, TLS, per-sender and per-account rate limiting, a fallback prekey, delivery receipts.

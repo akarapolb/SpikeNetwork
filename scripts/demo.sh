@@ -11,9 +11,9 @@ A="$BIN/spike --home $D/alice/state --passphrase-file $D/alice.pass"
 B="$BIN/spike --home $D/bob/state --passphrase-file $D/bob.pass"
 export SPIKE_RELAY=ws://127.0.0.1:8799
 
-$BIN/spike-relay --listen 127.0.0.1:8799 2>"$D/relay.log" & RELAY=$!
+start_relay() { $BIN/spike-relay --listen 127.0.0.1:8799 --db "$D/relay.db" 2>>"$D/relay.log" & RELAY=$!; sleep 0.5; }
+start_relay
 trap 'kill $RELAY 2>/dev/null' EXIT
-sleep 0.5
 
 echo "== identities (encrypted state, Argon2id)"; $A init >/dev/null; $B init >/dev/null
 echo "files on disk:"; ls "$D/alice/state"; echo -n "first bytes of identity.enc: "; head -c 4 "$D/alice/state/identity.enc"; echo
@@ -33,6 +33,10 @@ $B keys
 echo "== alice sends while bob is offline (first message starts a ratcheting session)"
 $A send bob "meet at the usual place, 3pm"
 $A send bob "bring the documents"
+
+echo "== relay is killed with SIGKILL and restarted (queue is on disk)"
+kill -9 $RELAY; wait $RELAY 2>/dev/null || true
+start_relay
 
 echo "== bob comes online later"
 $B recv
