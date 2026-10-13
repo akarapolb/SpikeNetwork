@@ -92,14 +92,14 @@ a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   <h2>Summary</h2>
   <p class="sub">What we recommend, and what we need you to decide.</p>
   <div class="callout">
-    <b>Recommendation.</b> Give every person one <b>identity key</b> that signs a list of their <b>devices</b>. Senders encrypt each message separately for every device in that list (<b>fan-out</b>), including the sender's own other devices. Each device keeps history in an <b>encrypted local message store</b>. A new device gets old messages only when an existing device sends it a <b>history bundle</b> during verified linking, or from an optional <b>encrypted backup</b>. A continuous sync log comes later, only if needed.
+    <b>Recommendation.</b> Give every person one <b>identity key</b> that signs a list of their <b>devices</b>. Senders encrypt each message separately for every device in that list (<b>fan-out</b>), including the sender's own other devices. Each device keeps history in an <b>encrypted local message store</b>. A new device gets old messages only when an existing device sends it a <b>history bundle</b> during verified linking, or from an optional <b>encrypted backup</b>. By default the bundle carries <b>all text history</b> plus <b>recent attachments</b> (30 days); older attachments are fetched on demand from another of your devices. A continuous sync log comes later, only if needed.
   </div>
   <ul>
     <li><b>No server holds messages, accounts or history.</b> History lives on your devices.</li>
     <li><b>Servers are still needed</b> for offline delivery, key lookup, mobile wake-ups and NAT. They hold only ciphertext and signed public data, and anyone can run one. See <a href="#servers">the next section</a>.</li>
     <li><b>Existing code stays valid.</b> Today's single-device identity becomes a one-device list.</li>
   </ul>
-  <p><b>Decisions needed:</b> see <a href="#open">Open questions</a>. The main ones are the default history window for new devices, whether contacts must approve a new device, and whether the first release supports backup.</p>
+  <p><b>Decisions needed:</b> see <a href="#open">Open questions</a>. The main ones are where the identity key lives, whether contacts must approve a new device, and whether the first release supports backup. The default history policy was settled in review: a 30-day window was too short, so text history is copied in full (details in <a href="#linking">Adding a device</a>).</p>
 </section>
 
 <section id="servers">
@@ -230,7 +230,7 @@ a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 <pre>conversations(conv_id PK, peer_identity, created, retention_days NULL)
 messages(msg_id PK, conv_id, sender_device, lamport, ts, kind, body BLOB, state, edited_of NULL, deleted BOOL)
 receipts(msg_id, device, kind, ts)                   -- delivered / read, per device
-attachments(att_id PK, msg_id, name, size, sha256, state)
+attachments(att_id PK, msg_id, name, size, sha256, state, held_by)   -- state: local | remote; held_by = device that has the bytes
 sync_cursor(peer_device PK, last_seen_lamport)        -- used by milestone M5</pre>
   <ul>
     <li>Same vault key and AEAD-with-file-name pattern as ADR 0003, applied to a database. Options: encrypt per row, or SQLCipher. <b>Recommendation: SQLCipher</b>, so queries and full-text search work. Open question 5.</li>
@@ -293,10 +293,12 @@ sync_cursor(peer_device PK, last_seen_lamport)        -- used by milestone M5</p
 
   <h3>History bundle</h3>
   <ul>
-    <li>Selectable window: <b>last 30 days</b> by default, <b>all</b>, or <b>none</b> ("start fresh"). Per-conversation exclusion. Attachments are optional and off by default (size).</li>
+    <li><b>Default: all text history.</b> Text is small (on the order of tens of MB for 100,000 messages), so a time limit on text would only look like data loss. Attachments dominate size, so they are handled separately: <b>recent ones (last 30 days) travel in the bundle</b>; older ones stay on the device that has them and are <b>fetched on demand</b> when opened (shown as "available on your laptop" if that device is off).</li>
+    <li><b>Choices on the linking screen:</b> <b>everything</b> (including all attachments), <b>default</b> (as above), <b>recent only</b> (text from the last N days), or <b>start fresh</b>. Per-conversation exclusion.</li>
+    <li><b>Retention is always honored.</b> Messages past a conversation's disappearing-message timer, and locally deleted messages, are never exported.</li>
     <li>Encrypted to N's device key with a fresh random bundle key; split into chunks with per-chunk hashes in a signed manifest. Same chunking design as attachments (shared code).</li>
     <li>The relay stores the chunks as opaque blobs with a short TTL and a size cap, deleted on completion.</li>
-    <li><b>Privacy cost:</b> old plaintext now exists on one more device. This is a deliberate trade against forward secrecy of history, so the window defaults to bounded and the choice is shown to the user.</li>
+    <li><b>Privacy cost:</b> old plaintext now exists on one more device. The extra exposure is small: the new device is only added after a person confirms the code on both screens, it already receives every future message, and its store is encrypted like the others. This does not weaken the wire protocol or forward secrecy in transit. It does mean a compromised new device exposes old history as well as new messages, so the linking screen states exactly what will be copied and offers the narrower choices.</li>
   </ul>
   <h3>If no existing device is available</h3>
   <p>A new device cannot get history, only new messages. Optional <b>encrypted backup</b> (milestone M6) covers this and total device loss: a random 256-bit recovery key shown once as words, backup blobs encrypted under it, stored wherever the user chooses (file, own server, relay with a quota). Restore creates a new device, not a clone of the old one.</p>
@@ -311,6 +313,7 @@ sync_cursor(peer_device PK, last_seen_lamport)        -- used by milestone M5</p
     <tr><td>Edit</td><td>Fan-out envelope <code>kind=edit</code></td><td>Highest <code>(lamport, device_id)</code> wins</td></tr>
     <tr><td>Delete for everyone</td><td>Fan-out <code>kind=delete</code></td><td>Tombstone; always wins over edit</td></tr>
     <tr><td>Read state, local deletes, settings</td><td>Sync message to own devices only (<code>kind=sync-control</code>) over the A1-A2 sessions</td><td>Read: max lamport. Local delete: tombstone per device group</td></tr>
+    <tr><td>Opening an old attachment that was not in the bundle</td><td>Fetch request to another own device (<code>kind=sync-control</code>); chunks sent back encrypted, same format as the history bundle</td><td>Attachment state moves <code>remote</code> to <code>local</code>; if no own device is online, the UI shows where it is available</td></tr>
     <tr><td>A device that was offline for weeks</td><td>Its relay queue (until TTL), then <b>catch-up</b> from another own device using <code>sync_cursor</code></td><td>Send all events after the cursor</td></tr>
   </table></div>
   <p>This reuses the existing channel instead of adding a new protocol: sync traffic is ordinary end-to-end messages between your own devices. A full replicated event log is only needed if catch-up proves too slow.</p>
@@ -355,7 +358,7 @@ sync_cursor(peer_device PK, last_seen_lamport)        -- used by milestone M5</p
     <tr><td><b>M1 Message store</b></td><td>Encrypted DB, envelope with <code>msg_id</code>, <code>spike history</code>, <code>recv</code> writes to it</td><td>Idempotent insert; tamper/wrong key; retention; no plaintext on disk</td><td>~1 wk</td></tr>
     <tr><td><b>M2 Identity vs device</b></td><td>Identity key, signed DeviceList v1, card v2, v1 cards still accepted as one-device lists</td><td>Rollback refused; unsigned list refused; v1 compatibility</td><td>~1 wk</td></tr>
     <tr><td><b>M3 Fan-out + home relay</b></td><td>Per-device sessions, sent copies, device-list publish/fetch on relay, relay address per device</td><td>Message appears on both recipient devices and own other device; offline device catches up; contact adds device mid-conversation</td><td>~2 wk</td></tr>
-    <tr><td><b>M4 Linking + history bundle</b></td><td>QR pairing, safety code, chunked encrypted bundle via relay blobs</td><td>MITM at pairing fails; interrupted transfer resumes; tampered chunk rejected; window honored</td><td>~2 wk</td></tr>
+    <tr><td><b>M4 Linking + history bundle</b></td><td>QR pairing, safety code, chunked encrypted bundle via relay blobs</td><td>MITM at pairing fails; interrupted transfer resumes; tampered chunk rejected; all text copied; only recent attachments copied by default; expired and deleted messages never exported</td><td>~2 wk</td></tr>
     <tr><td><b>M5 Own-device sync</b></td><td>Edits, deletes, read state, cursor catch-up</td><td>Concurrent edits converge; delete beats edit; long-offline device catches up</td><td>~1.5 wk</td></tr>
     <tr><td><b>M6 Backup (optional)</b></td><td>Recovery key, encrypted backup/restore</td><td>Restore on clean machine; wrong key fails; backup contains no plaintext</td><td>~1.5 wk</td></tr>
   </table></div>
@@ -366,7 +369,7 @@ sync_cursor(peer_device PK, last_seen_lamport)        -- used by milestone M5</p
   <h2>Open questions</h2>
   <p class="sub">Each changes the build; a recommended answer is given.</p>
   <ol>
-    <li><b>Default history window for a new device?</b> Recommend 30 days, with an explicit "all" and "none" choice.</li>
+    <li><b>Default history for a new device?</b> <span class="tag t-ok">Settled in review</span> All text; attachments from the last 30 days; older attachments on demand. Remaining detail: is 30 days the right attachment window, and should "everything including attachments" be offered at link time? Recommend yes to the latter.</li>
     <li><b>Must contacts approve a new device?</b> Recommend no approval, but a visible notice, and a stronger warning for contacts you have verified.</li>
     <li><b>Where does the identity key live?</b> (a) Copy on every device, encrypted: any device can add or remove devices; one compromised device can add a rogue one. (b) Offline recovery key only: stronger, but users lose the ability to add devices if they lose it. Recommend (a) with confirmation prompts, and (b) as an advanced option.</li>
     <li><b>Is backup in the first multi-device release?</b> Recommend no (M6 later), but say clearly in the UI that losing all devices loses history.</li>
