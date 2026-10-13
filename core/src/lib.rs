@@ -7,6 +7,7 @@
 
 pub mod identity;
 pub mod session;
+pub mod vault;
 pub mod wire;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +22,10 @@ pub enum Error {
     NoSession,
     #[error("malformed message")]
     Malformed,
+    #[error("wrong passphrase or corrupted vault")]
+    WrongPassphrase,
+    #[error("stored data is corrupted or was tampered with")]
+    Corrupted,
     #[error("session error: {0}")]
     Session(String),
     #[error("invalid hex: {0}")]

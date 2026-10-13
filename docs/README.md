@@ -16,5 +16,6 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [threat-model.md](threat-model.md) | Phase 0 threat model with honest status per threat |
 | [adr/0001-phase0-stack-and-sealed-messages.md](adr/0001-phase0-stack-and-sealed-messages.md) | Stack decisions (message pattern superseded by 0002) |
 | [adr/0002-ratcheting-sessions-with-prekeys.md](adr/0002-ratcheting-sessions-with-prekeys.md) | Olm ratcheting sessions, prekeys, accepted limits |
+| [adr/0003-encrypted-state-at-rest.md](adr/0003-encrypted-state-at-rest.md) | Passphrase-encrypted local state: what it covers and what it does not |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [spike-connect-plans.html](spike-connect-plans.html) | All three plans in one page |

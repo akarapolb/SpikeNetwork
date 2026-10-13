@@ -5,14 +5,20 @@ cd "$(dirname "$0")/.."
 cargo build -q
 BIN=target/debug
 D=.spike-demo; rm -rf "$D"; mkdir -p "$D"
-A="$BIN/spike --home $D/alice"; B="$BIN/spike --home $D/bob"
+# Each device has its own passphrase file (state is encrypted at rest).
+echo "alice demo passphrase" > "$D/alice.pass"; echo "bob demo passphrase" > "$D/bob.pass"
+A="$BIN/spike --home $D/alice/state --passphrase-file $D/alice.pass"
+B="$BIN/spike --home $D/bob/state --passphrase-file $D/bob.pass"
 export SPIKE_RELAY=ws://127.0.0.1:8799
 
 $BIN/spike-relay --listen 127.0.0.1:8799 2>"$D/relay.log" & RELAY=$!
 trap 'kill $RELAY 2>/dev/null' EXIT
 sleep 0.5
 
-echo "== identities"; $A init >/dev/null; $B init >/dev/null
+echo "== identities (encrypted state, Argon2id)"; $A init >/dev/null; $B init >/dev/null
+echo "files on disk:"; ls "$D/alice/state"; echo -n "first bytes of identity.enc: "; head -c 4 "$D/alice/state/identity.enc"; echo
+echo -n "wrong passphrase: "; echo "nope nope nope" > "$D/bad.pass"
+$BIN/spike --home "$D/alice/state" --passphrase-file "$D/bad.pass" contacts 2>&1 || true
 ACARD=$($A card 2>/dev/null); BCARD=$($B card 2>/dev/null)
 AFP=$($A card 2>&1 >/dev/null | sed -n 's/^fingerprint: //p')
 BFP=$($B card 2>&1 >/dev/null | sed -n 's/^fingerprint: //p')

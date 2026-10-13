@@ -1,14 +1,26 @@
-//! On-disk state. Phase 0 stores keys in a 0600 file; encrypted storage and
-//! OS keystore integration are Phase 1 work.
+//! On-disk state. Every file is sealed with the vault key (see
+//! `spike_core::vault`); nothing secret or identifying is stored in the clear.
+//! The vault header (salt, KDF parameters) is the only plaintext file.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use spike_core::identity::{DeviceCard, Identity};
 use spike_core::session::Sessions;
+use spike_core::vault::{KdfParams, Vault, VaultHeader};
+use spike_core::Error as CoreError;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub struct Home(PathBuf);
+const HEADER_FILE: &str = "vault.json";
+const IDENTITY: &str = "identity.enc";
+const SESSIONS: &str = "sessions.enc";
+const CONTACTS: &str = "contacts.enc";
+
+/// An unlocked state directory.
+pub struct Home {
+    dir: PathBuf,
+    vault: Vault,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Contact {
@@ -24,88 +36,110 @@ impl Contact {
 }
 
 impl Home {
-    pub fn open(path: impl Into<PathBuf>) -> Self {
-        Self(path.into())
+    pub fn exists(dir: &Path) -> bool {
+        dir.join(HEADER_FILE).exists()
+    }
+
+    /// Create a new vault and a fresh identity. Refuses to overwrite existing
+    /// state unless `force`.
+    pub fn create(
+        dir: impl Into<PathBuf>,
+        passphrase: &str,
+        kdf: KdfParams,
+        force: bool,
+    ) -> Result<Self> {
+        let dir = dir.into();
+        if Self::exists(&dir) && !force {
+            bail!("state already exists in {} (use --force to replace it, destroying the old identity)", dir.display());
+        }
+        make_private_dir(&dir)?;
+        let (vault, header) = Vault::create(passphrase, kdf)?;
+        write_private(&dir.join(HEADER_FILE), header.to_json()?.as_bytes())?;
+        let home = Self { dir, vault };
+        home.save_identity(&Identity::generate()?)?;
+        home.save_sessions(&Sessions::default())?;
+        home.save_contacts(&[])?;
+        Ok(home)
+    }
+
+    pub fn unlock(dir: impl Into<PathBuf>, passphrase: &str) -> Result<Self> {
+        let dir = dir.into();
+        let header = fs::read_to_string(dir.join(HEADER_FILE))
+            .with_context(|| format!("no state in {} (run `spike init`)", dir.display()))?;
+        let vault = match Vault::unlock(passphrase, &VaultHeader::from_json(&header)?) {
+            Ok(v) => v,
+            Err(CoreError::WrongPassphrase) => bail!("wrong passphrase"),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Self { dir, vault })
     }
 
     pub fn path(&self) -> &Path {
-        &self.0
-    }
-
-    pub fn has_identity(&self) -> bool {
-        self.0.join("identity.json").exists()
-    }
-
-    pub fn create_identity(&self, force: bool) -> Result<Identity> {
-        if self.has_identity() && !force {
-            bail!(
-                "identity already exists in {} (use --force to replace it)",
-                self.0.display()
-            );
-        }
-        let id = Identity::generate()?;
-        self.save_identity(&id)?;
-        // A new identity must not inherit sessions made with the old one.
-        self.save_sessions(&Sessions::default())?;
-        Ok(id)
-    }
-
-    pub fn save_identity(&self, id: &Identity) -> Result<()> {
-        write_private(&self.0.join("identity.json"), id.to_json()?.as_bytes())
-    }
-
-    pub fn load_sessions(&self) -> Result<Sessions> {
-        match fs::read_to_string(self.0.join("sessions.json")) {
-            Ok(s) => Ok(Sessions::from_json(&s)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Sessions::default()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    pub fn save_sessions(&self, s: &Sessions) -> Result<()> {
-        write_private(&self.0.join("sessions.json"), s.to_json()?.as_bytes())
+        &self.dir
     }
 
     pub fn load_identity(&self) -> Result<Identity> {
-        let s = fs::read_to_string(self.0.join("identity.json"))
-            .with_context(|| format!("no identity in {} (run `spike init`)", self.0.display()))?;
-        Ok(Identity::from_json(&s)?)
+        Ok(Identity::from_json(std::str::from_utf8(
+            &self.read(IDENTITY)?,
+        )?)?)
+    }
+
+    pub fn save_identity(&self, id: &Identity) -> Result<()> {
+        self.write(IDENTITY, id.to_json()?.as_bytes())
+    }
+
+    pub fn load_sessions(&self) -> Result<Sessions> {
+        Ok(Sessions::from_json(std::str::from_utf8(
+            &self.read(SESSIONS)?,
+        )?)?)
+    }
+
+    pub fn save_sessions(&self, s: &Sessions) -> Result<()> {
+        self.write(SESSIONS, s.to_json()?.as_bytes())
     }
 
     pub fn load_contacts(&self) -> Result<Vec<Contact>> {
-        read_json(&self.0.join("contacts.json")).map(|o| o.unwrap_or_default())
+        Ok(serde_json::from_slice(&self.read(CONTACTS)?)?)
     }
 
     pub fn save_contacts(&self, c: &[Contact]) -> Result<()> {
-        write_private(
-            &self.0.join("contacts.json"),
-            serde_json::to_string_pretty(c)?.as_bytes(),
-        )
+        self.write(CONTACTS, serde_json::to_string_pretty(c)?.as_bytes())
+    }
+
+    fn read(&self, name: &str) -> Result<Vec<u8>> {
+        let sealed = fs::read(self.dir.join(name)).with_context(|| format!("reading {name}"))?;
+        self.vault.open(name, &sealed).map_err(|e| {
+            anyhow::anyhow!("{name}: {e} (modified, truncated, or copied from another vault)")
+        })
+    }
+
+    fn write(&self, name: &str, plaintext: &[u8]) -> Result<()> {
+        write_private(&self.dir.join(name), &self.vault.seal(name, plaintext)?)
     }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {
-    match fs::read_to_string(path) {
-        Ok(s) => Ok(Some(
-            serde_json::from_str(&s).with_context(|| format!("parsing {}", path.display()))?,
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Atomic write with owner-only permissions.
-fn write_private(path: &Path, data: &[u8]) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, data)?;
+fn make_private_dir(dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
     }
+    Ok(())
+}
+
+/// Atomic write with owner-only permissions: write a temp file, fsync, rename.
+fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    let mut f = fs::File::create(&tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    f.write_all(data)?;
+    f.sync_all()?;
     fs::rename(&tmp, path)?;
     Ok(())
 }

@@ -7,6 +7,7 @@ use spike_cli::{
     state::{Contact, Home},
     Outcome,
 };
+use spike_core::vault::KdfParams;
 use spike_core::{
     identity::Identity,
     session::Sessions,
@@ -15,6 +16,8 @@ use spike_core::{
 use spike_relay::{serve, Config};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
+
+const PASS: &str = "test passphrase for e2e";
 
 async fn start_relay(cfg: Config) -> String {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -31,8 +34,8 @@ struct Device {
 impl Device {
     fn new(tag: &str) -> Self {
         let n = hex::encode(&Identity::generate().unwrap().ed_public()[..6]);
-        let home = Home::open(std::env::temp_dir().join(format!("spike-test-{tag}-{n}")));
-        home.create_identity(false).unwrap();
+        let dir = std::env::temp_dir().join(format!("spike-test-{tag}-{n}"));
+        let home = Home::create(dir, PASS, KdfParams::insecure_for_tests(), false).unwrap();
         Self { home }
     }
 
@@ -269,5 +272,76 @@ async fn relay_enforces_size_ttl_queue_and_claim_limits() {
             .unwrap()
             .is_none(),
         "expired messages must not be delivered"
+    );
+}
+
+#[test]
+fn nothing_secret_or_identifying_is_stored_in_the_clear() {
+    let (alice, bob) = pair("alice", "bob");
+    let card = bob.card().encode();
+    let dir = alice.home.path().to_path_buf();
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        let bytes = std::fs::read(&path).unwrap();
+        if name == "vault.json" {
+            continue; // salt + KDF parameters only
+        }
+        assert_eq!(&bytes[..4], b"SPK1", "{name} is not sealed");
+        let text = String::from_utf8_lossy(&bytes);
+        for needle in ["bob", "alice", &card[7..39], "ed25519", "verified"] {
+            assert!(!text.contains(needle), "{name} leaks {needle}");
+        }
+        checked += 1;
+    }
+    assert_eq!(
+        checked, 3,
+        "identity, sessions and contacts must all be sealed"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("identity.enc")), 0o600);
+    }
+}
+
+#[test]
+fn wrong_passphrase_and_swapped_files_are_refused() {
+    let (alice, bob) = pair("alice", "bob");
+    let a = alice.home.path().to_path_buf();
+    assert!(Home::unlock(&a, "not the passphrase")
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("wrong passphrase"));
+    assert!(Home::unlock(&a, PASS).is_ok());
+
+    // Replace Alice's contacts with Bob's (sealed under a different key and name): refused.
+    let b = bob.home.path().to_path_buf();
+    std::fs::copy(b.join("contacts.enc"), a.join("contacts.enc")).unwrap();
+    assert!(alice.home.load_contacts().is_err());
+    // Even a file copied from another vault under the *same* name and passphrase fails: different salt.
+    // And truncation is caught.
+    let sessions = std::fs::read(a.join("sessions.enc")).unwrap();
+    std::fs::write(a.join("sessions.enc"), &sessions[..sessions.len() - 1]).unwrap();
+    assert!(alice.home.load_sessions().is_err());
+}
+
+#[test]
+fn init_refuses_to_overwrite_existing_state() {
+    let (alice, _bob) = pair("alice", "bob");
+    let a = alice.home.path().to_path_buf();
+    assert!(Home::create(&a, PASS, KdfParams::insecure_for_tests(), false).is_err());
+    let before = alice.card();
+    let fresh = Home::create(&a, PASS, KdfParams::insecure_for_tests(), true)
+        .ok()
+        .unwrap();
+    assert_ne!(
+        fresh.load_identity().unwrap().card(),
+        before,
+        "--force makes a new identity"
     );
 }

@@ -6,6 +6,10 @@ use spike_cli::{
     Outcome,
 };
 use spike_core::identity::DeviceCard;
+use spike_core::vault::KdfParams;
+use zeroize::Zeroizing;
+
+const MIN_PASSPHRASE_CHARS: usize = 10;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -16,6 +20,9 @@ struct Cli {
     /// State directory.
     #[arg(long, env = "SPIKE_HOME", global = true)]
     home: Option<PathBuf>,
+    /// File containing the passphrase (otherwise SPIKE_PASSPHRASE, otherwise a prompt).
+    #[arg(long, global = true)]
+    passphrase_file: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -66,23 +73,58 @@ enum Cmd {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Passphrase from `--passphrase-file`, then `SPIKE_PASSPHRASE`, then a prompt.
+/// The environment variable is visible to other processes of the same user;
+/// prefer the file or the prompt.
+fn passphrase(file: &Option<PathBuf>, confirm: bool) -> Result<Zeroizing<String>> {
+    let p = if let Some(f) = file {
+        let s = std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?;
+        Zeroizing::new(s.trim_end_matches(['\n', '\r']).to_string())
+    } else if let Ok(v) = std::env::var("SPIKE_PASSPHRASE") {
+        Zeroizing::new(v)
+    } else {
+        let p = Zeroizing::new(rpassword::prompt_password("Passphrase: ").context(
+            "cannot prompt for a passphrase here; use --passphrase-file or SPIKE_PASSPHRASE",
+        )?);
+        if confirm && *p != *Zeroizing::new(rpassword::prompt_password("Repeat passphrase: ")?) {
+            bail!("passphrases do not match");
+        }
+        p
+    };
+    if p.is_empty() {
+        bail!("empty passphrase");
+    }
+    Ok(p)
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
-    let home = Home::open(match cli.home {
+    let dir = match cli.home {
         Some(p) => p,
         None => {
             PathBuf::from(std::env::var("HOME").context("HOME not set")?).join(".spike-connect")
         }
-    });
+    };
+
+    // `init` creates the vault; every other command unlocks it.
+    let home = if let Cmd::Init { force } = &cli.cmd {
+        let p = passphrase(&cli.passphrase_file, true)?;
+        if p.chars().count() < MIN_PASSPHRASE_CHARS {
+            bail!("passphrase must be at least {MIN_PASSPHRASE_CHARS} characters");
+        }
+        let home = Home::create(&dir, &p, KdfParams::default(), *force)?;
+        let id = home.load_identity()?;
+        println!("created encrypted state in {}", home.path().display());
+        println!("device id:   {}", id.device_id());
+        println!("fingerprint: {}", id.card().fingerprint());
+        println!("If you lose the passphrase the identity cannot be recovered.");
+        return Ok(());
+    } else {
+        Home::unlock(&dir, &passphrase(&cli.passphrase_file, false)?)?
+    };
 
     match cli.cmd {
-        Cmd::Init { force } => {
-            let id = home.create_identity(force)?;
-            println!("created identity in {}", home.path().display());
-            println!("device id:   {}", id.device_id());
-            println!("fingerprint: {}", id.card().fingerprint());
-        }
+        Cmd::Init { .. } => unreachable!("handled above"),
         Cmd::Card => {
             let id = home.load_identity()?;
             let card = id.card();
@@ -193,4 +235,13 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn main() {
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    if let Err(e) = rt.block_on(run()) {
+        // One readable line; no backtrace regardless of RUST_BACKTRACE.
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
 }

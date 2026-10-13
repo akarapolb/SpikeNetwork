@@ -9,6 +9,7 @@ A privacy-first communication network for people, AI agents and devices. See [`d
 - End-to-end encrypted two-way conversations using Olm (Double Ratchet) via the audited-lineage `vodozemac` crate: forward secrecy, replay rejection, out-of-order delivery
 - Asynchronous session start: signed one-time prekeys served by the relay, so you can message someone who is offline
 - A store-and-forward relay that holds only ciphertext (auth, size/queue/TTL limits, ack, prekey store)
+- All local state (keys, sessions, contacts) encrypted at rest: Argon2id passphrase KDF + XChaCha20-Poly1305
 - A CLI: `init`, `card`, `add`, `verify`, `contacts`, `keys`, `send`, `recv`
 - Contacts start unverified; key changes are refused unless forced
 
@@ -17,9 +18,10 @@ A privacy-first communication network for people, AI agents and devices. See [`d
 ./scripts/demo.sh      # two devices + one relay, recipient offline during send, then a reply
 cargo test --all       # unit and end-to-end tests
 ```
-By hand:
+State is encrypted with a passphrase. Supply it with `--passphrase-file`, `SPIKE_PASSPHRASE`, or at the prompt. By hand:
 ```sh
 cargo run -q -p spike-relay -- --listen 127.0.0.1:8787 &
+export SPIKE_PASSPHRASE="a long passphrase"   # demo only; prefer --passphrase-file or the prompt
 spike --home /tmp/a init;  spike --home /tmp/b init
 spike --home /tmp/a card            # prints card; fingerprint on stderr
 spike --home /tmp/b add alice <card-from-a>
@@ -39,6 +41,6 @@ spike --home /tmp/b recv
 | `docs/threat-model.md` | What is and is not protected |
 
 ## Known limitations (Phase 0)
-Secrets stored in plaintext 0600 files, `ws://` only, in-memory relay queues and prekeys, no fallback prekey, no direct P2P path yet, no attachments, no groups, no independent review. Details in `docs/threat-model.md` and `docs/adr/`.
+No passphrase change or recovery, no rollback protection, keys live in memory while the CLI runs, `ws://` only, in-memory relay queues and prekeys, no fallback prekey, no direct P2P path yet, no attachments, no groups, no independent review. Details in `docs/threat-model.md` and `docs/adr/`.
 
 No license has been chosen yet (Apache-2.0 is the candidate).

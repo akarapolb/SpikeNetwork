@@ -28,8 +28,8 @@ Use **Olm** (X3DH-style asynchronous key agreement + Double Ratchet) through the
 3. **No fallback to one-time-key-less sessions.** If no prekey is available the send fails with an explanatory error rather than weakening security.
 4. **Sessions per peer capped at 4;** simultaneous first messages from both sides create two sessions and both remain usable.
 5. **At-most-once display.** State is persisted before the ack, so a crash after persisting but before printing loses that message from the UI (it is not redelivered).
-6. **State at rest is still plaintext** (0600 files): account and sessions pickles are serialized unencrypted. Encrypted storage is next.
+6. State at rest is encrypted by [ADR 0003](0003-encrypted-state-at-rest.md).
 7. Groups remain out of scope (MLS, Phase 3).
 
 ## Consequences
-Phase 0 messages now have forward secrecy and replay protection by design, but the code is still unreviewed by an independent party and still stores secrets in plaintext files. The "do not use for real secrets" statement stays until storage encryption and independent review are done.
+Phase 0 messages now have forward secrecy and replay protection by design, but the code is still unreviewed by an independent party. The "do not use for real secrets" statement stays until independent review is done.
