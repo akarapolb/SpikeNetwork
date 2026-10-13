@@ -1,0 +1,204 @@
+<title>Spike Connect Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Schibsted+Grotesk:wght@600;700&display=swap">
+<style>
+/* Layout: two stacked figures, each in a <figure> with a claim caption; SVGs scale by viewBox and scroll inside their own wrapper on phones. */
+:root{
+  --bg:#f5f7f9; --surface:#ffffff; --fg:#14202b; --muted:#5a6b7a; --line:#d9e0e6;
+  --accent:#0b6b73; --accent-soft:#dff0f1; --warn:#9a5b00; --warn-soft:#fbeed0;
+  --display:"Schibsted Grotesk","Helvetica Neue",Arial,sans-serif;
+  --body:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e161d; --surface:#15202a; --fg:#e4ebf1; --muted:#94a5b4; --line:#26343f;
+  --accent:#4fc3cc; --accent-soft:#12343a; --warn:#f0c866; --warn-soft:#3a2f12; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e161d; --surface:#15202a; --fg:#e4ebf1; --muted:#94a5b4; --line:#26343f;
+  --accent:#4fc3cc; --accent-soft:#12343a; --warn:#f0c866; --warn-soft:#3a2f12; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.55;padding-inline:16px;padding-block:40px 64px}
+.wrap{max-width:1000px;margin:0 auto}
+h1{font-family:var(--display);font-size:clamp(28px,5vw,40px);line-height:1.1;margin:0 0 8px;text-wrap:balance}
+.lede{color:var(--muted);max-width:65ch;margin:0 0 32px}
+figure{margin:0 0 40px}
+.fw{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px}
+svg{display:block;width:100%;min-width:760px;height:auto;color:var(--fg);font-family:var(--body)}
+figcaption{margin-top:10px;color:var(--muted);font-size:14.5px;max-width:75ch}
+figcaption b{color:var(--fg)}
+h2{font-family:var(--display);font-size:22px;margin:0 0 10px;text-wrap:balance}
+/* svg element classes */
+.box{fill:var(--surface);stroke:currentColor;stroke-width:1.2}
+.dev{fill:none;stroke:var(--muted);stroke-width:1.2}
+.core{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.6}
+.ext{fill:var(--warn-soft);stroke:var(--warn);stroke-width:1.4}
+.ln{fill:none;stroke:currentColor;stroke-width:1.5}
+.lnA{fill:none;stroke:var(--accent);stroke-width:2}
+.dash{stroke-dasharray:6 4}
+.dot{stroke-dasharray:2 4}
+.t{font-size:12.5px;fill:currentColor}
+.tb{font-size:13px;font-weight:600;fill:currentColor}
+.ts{font-size:11px;fill:var(--muted)}
+.tw{font-size:11px;fill:var(--warn)}
+.ta{font-size:11px;font-weight:600;fill:var(--accent)}
+.bd{fill:var(--accent)}
+.bn{font-size:11px;font-weight:700;fill:var(--surface);text-anchor:middle}
+.mk{fill:currentColor}
+.mkA{fill:var(--accent)}
+</style>
+
+<div class="wrap">
+<h1>Spike Connect architecture</h1>
+<p class="lede">How a message travels between two devices, and what happens when an agent asks another agent to act. Both diagrams follow the engineering plan: proposed design, not yet built.</p>
+
+<figure>
+  <div class="fw">
+  <svg viewBox="0 0 960 430" role="img" aria-label="Two devices exchange encrypted messages directly when possible, or through an untrusted relay that only holds ciphertext. Plaintext exists only inside each device's core library.">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk"/></marker>
+      <marker id="arA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mkA"/></marker>
+    </defs>
+
+    <!-- Device A -->
+    <rect class="dev" x="20" y="40" width="250" height="360" rx="8"/>
+    <text class="tb" x="36" y="62">Device A · Spike Desktop</text>
+    <rect class="box" x="36" y="74" width="218" height="44" rx="5"/>
+    <text class="t" x="145" y="93" text-anchor="middle">CLI · desktop UI · local AI</text>
+    <text class="ts" x="145" y="108" text-anchor="middle">user-facing apps</text>
+    <rect class="box" x="36" y="128" width="218" height="44" rx="5"/>
+    <text class="t" x="145" y="147" text-anchor="middle">Agent host</text>
+    <text class="ts" x="145" y="162" text-anchor="middle">scoped credentials, approval gate</text>
+    <rect class="core" x="36" y="182" width="218" height="140" rx="6"/>
+    <text class="ta" x="46" y="200">Core library (plaintext only here)</text>
+    <rect class="box" x="48" y="210" width="194" height="26" rx="4"/>
+    <text class="t" x="145" y="227" text-anchor="middle">Identity &amp; device keys</text>
+    <rect class="box" x="48" y="242" width="194" height="26" rx="4"/>
+    <text class="t" x="145" y="259" text-anchor="middle">E2EE session</text>
+    <rect class="box" x="48" y="274" width="194" height="26" rx="4"/>
+    <text class="t" x="145" y="291" text-anchor="middle">Transport</text>
+    <rect class="box" x="36" y="334" width="218" height="52" rx="5"/>
+    <text class="t" x="145" y="355" text-anchor="middle">Encrypted local database</text>
+    <text class="ts" x="145" y="371" text-anchor="middle">history; key from OS keystore</text>
+
+    <!-- Device B -->
+    <rect class="dev" x="690" y="40" width="250" height="360" rx="8"/>
+    <text class="tb" x="706" y="62">Device B · Spike Box / laptop</text>
+    <rect class="box" x="706" y="74" width="218" height="44" rx="5"/>
+    <text class="t" x="815" y="93" text-anchor="middle">CLI · desktop UI · local AI</text>
+    <text class="ts" x="815" y="108" text-anchor="middle">user-facing apps</text>
+    <rect class="box" x="706" y="128" width="218" height="44" rx="5"/>
+    <text class="t" x="815" y="147" text-anchor="middle">Agent host</text>
+    <text class="ts" x="815" y="162" text-anchor="middle">scoped credentials, approval gate</text>
+    <rect class="core" x="706" y="182" width="218" height="140" rx="6"/>
+    <text class="ta" x="716" y="200">Core library (plaintext only here)</text>
+    <rect class="box" x="718" y="210" width="194" height="26" rx="4"/>
+    <text class="t" x="815" y="227" text-anchor="middle">Identity &amp; device keys</text>
+    <rect class="box" x="718" y="242" width="194" height="26" rx="4"/>
+    <text class="t" x="815" y="259" text-anchor="middle">E2EE session</text>
+    <rect class="box" x="718" y="274" width="194" height="26" rx="4"/>
+    <text class="t" x="815" y="291" text-anchor="middle">Transport</text>
+    <rect class="box" x="706" y="334" width="218" height="52" rx="5"/>
+    <text class="t" x="815" y="355" text-anchor="middle">Encrypted local database</text>
+    <text class="ts" x="815" y="371" text-anchor="middle">history; key from OS keystore</text>
+
+    <!-- Relay -->
+    <rect class="ext" x="360" y="90" width="240" height="120" rx="8"/>
+    <text class="tb" x="480" y="113" text-anchor="middle">Relay (untrusted)</text>
+    <text class="t" x="480" y="136" text-anchor="middle">② queues ciphertext, with TTL</text>
+    <text class="ts" x="480" y="158" text-anchor="middle">sees: sender ID, recipient ID, size, timing</text>
+    <text class="tw" x="480" y="178" text-anchor="middle" font-weight="600">never sees message plaintext</text>
+    <text class="ts" x="480" y="196" text-anchor="middle">QUIC / WebSocket first; libp2p later</text>
+
+    <!-- Directory -->
+    <rect class="ext" x="360" y="340" width="240" height="60" rx="8"/>
+    <text class="tb" x="480" y="362" text-anchor="middle">Directory &amp; push (untrusted)</text>
+    <text class="ts" x="480" y="382" text-anchor="middle">public keys · wake-up hints, no content</text>
+
+    <!-- Relay path (fallback) -->
+    <path class="lnA" d="M270 281 L315 281 L315 150 L360 150" marker-end="url(#arA)"/>
+    <path class="lnA" d="M600 150 L645 150 L645 281 L690 281" marker-end="url(#arA)"/>
+    <circle class="bd" cx="315" cy="215" r="9"/><text class="bn" x="315" y="219">1</text>
+    <circle class="bd" cx="645" cy="215" r="9"/><text class="bn" x="645" y="219">3</text>
+    <text class="ta" x="304" y="252" text-anchor="end">relay path</text>
+    <text class="ts" x="304" y="266" text-anchor="end">fallback</text>
+
+    <!-- Direct path -->
+    <path class="ln dash" d="M270 297 L690 297" marker-start="url(#ar)" marker-end="url(#ar)"/>
+    <text class="t" x="480" y="320" text-anchor="middle">direct P2P, preferred: no relay hop</text>
+    <text class="ts" x="480" y="336" text-anchor="middle">used when NAT traversal succeeds</text>
+
+    <!-- Directory lookups -->
+    <path class="ln dot" d="M270 372 L360 372" marker-end="url(#ar)"/>
+    <path class="ln dot" d="M690 372 L600 372" marker-end="url(#ar)"/>
+    <text class="ts" x="315" y="364" text-anchor="middle">lookup</text>
+    <text class="ts" x="645" y="364" text-anchor="middle">lookup</text>
+  </svg>
+  </div>
+  <figcaption><b>Plaintext exists only inside each device's core library.</b> Messages go straight to the other device when the network allows it (dashed). Otherwise they take the relay path: ① send ciphertext, ② relay queues it until the recipient is online, ③ deliver. The relay and the directory are untrusted by design; they see identifiers, size and timing, which is why the plan promises no anonymity.</figcaption>
+</figure>
+
+<figure>
+  <div class="fw">
+  <svg viewBox="0 100 960 290" role="img" aria-label="An agent request is signed, sent over the encrypted channel, checked for identity, scope and rate limit, then either executed directly or held for human approval if consequential. Every step writes to a tamper-evident audit log.">
+    <defs>
+      <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk"/></marker>
+    </defs>
+
+    <rect class="box" x="20" y="140" width="130" height="64" rx="6"/>
+    <text class="tb" x="85" y="164" text-anchor="middle">Agent request</text>
+    <text class="ts" x="85" y="182" text-anchor="middle">signed, scoped</text>
+    <text class="ts" x="85" y="195" text-anchor="middle">credential</text>
+
+    <rect class="core" x="186" y="140" width="130" height="64" rx="6"/>
+    <text class="tb" x="251" y="164" text-anchor="middle">E2EE channel</text>
+    <text class="ts" x="251" y="182" text-anchor="middle">direct or via relay</text>
+
+    <rect class="box" x="352" y="140" width="140" height="64" rx="6"/>
+    <text class="tb" x="422" y="162" text-anchor="middle">Verify</text>
+    <text class="ts" x="422" y="179" text-anchor="middle">identity · scope</text>
+    <text class="ts" x="422" y="192" text-anchor="middle">expiry · rate limit</text>
+
+    <path d="M565 122 L625 172 L565 222 L505 172 z" class="box"/>
+    <text class="tb" x="565" y="170" text-anchor="middle">Consequential?</text>
+    <text class="ts" x="565" y="186" text-anchor="middle">per policy threshold</text>
+
+    <rect class="box" x="680" y="140" width="120" height="64" rx="6"/>
+    <text class="tb" x="740" y="168" text-anchor="middle">Execute</text>
+    <text class="ts" x="740" y="186" text-anchor="middle">within scope</text>
+
+    <rect class="box" x="836" y="140" width="104" height="64" rx="6"/>
+    <text class="tb" x="888" y="164" text-anchor="middle">Signed</text>
+    <text class="tb" x="888" y="180" text-anchor="middle">receipt</text>
+    <text class="ts" x="888" y="196" text-anchor="middle">back to sender</text>
+
+    <rect class="ext" x="495" y="252" width="140" height="54" rx="6"/>
+    <text class="tb" x="565" y="274" text-anchor="middle">Human approval</text>
+    <text class="ts" x="565" y="291" text-anchor="middle">deny: signed rejection</text>
+
+    <!-- main flow -->
+    <path class="ln" d="M150 172 L186 172" marker-end="url(#ar2)"/>
+    <path class="ln" d="M316 172 L352 172" marker-end="url(#ar2)"/>
+    <path class="ln" d="M492 172 L505 172" marker-end="url(#ar2)"/>
+    <path class="ln" d="M625 172 L680 172" marker-end="url(#ar2)"/>
+    <text class="ts" x="652" y="164" text-anchor="middle">no</text>
+    <path class="ln" d="M800 172 L836 172" marker-end="url(#ar2)"/>
+    <!-- approval branch -->
+    <path class="ln" d="M565 222 L565 252" marker-end="url(#ar2)"/>
+    <text class="ts" x="573" y="241">yes</text>
+    <path class="ln" d="M635 279 L710 279 L710 204" marker-end="url(#ar2)"/>
+    <text class="ts" x="672" y="271" text-anchor="middle">approve</text>
+
+    <!-- audit -->
+    <rect class="box" x="20" y="340" width="920" height="36" rx="6"/>
+    <text class="tb" x="480" y="356" text-anchor="middle">Tamper-evident audit log: hash-chained, signed</text>
+    <text class="ts" x="480" y="370" text-anchor="middle">records actions and metadata, never message content</text>
+    <path class="ln dot" d="M422 204 L422 340" marker-end="url(#ar2)"/>
+    <path class="ln dot" d="M565 306 L565 340" marker-end="url(#ar2)"/>
+    <path class="ln dot" d="M770 204 L770 340" marker-end="url(#ar2)"/>
+    <text class="ts" x="430" y="300">verify result</text>
+    <text class="ts" x="578" y="328">decision</text>
+    <text class="ts" x="778" y="300">action taken</text>
+
+  </svg>
+  </div>
+  <figcaption><b>Nothing consequential runs without a person.</b> A request must pass identity, scope, expiry and rate-limit checks. Below the policy threshold it runs and a signed receipt returns. Above it, the request waits for a human decision. Verification, the decision and the action each append to the audit log, which keeps who did what without exposing message content.</figcaption>
+</figure>
+</div>
