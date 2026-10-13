@@ -4,6 +4,7 @@ Source: *Spike Connect: Product Vision, Roadmap, Business Model* (strategy worki
 
 | Doc | Purpose |
 |---|---|
+| [HANDOFF.md](HANDOFF.md) | **Start here in a new session:** status, code map, gaps, next steps |
 | [product-roadmap.md](product-roadmap.md) | What we build, in what order, and the gates between phases |
 | [business-plan.md](business-plan.md) | Segments, packaging, pricing hypotheses, go-to-market, validation |
 | [engineering-plan.md](engineering-plan.md) | Architecture, work breakdown, security approach, team, risks |

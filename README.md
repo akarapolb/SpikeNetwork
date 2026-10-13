@@ -2,6 +2,8 @@
 
 A privacy-first communication network for people, AI agents and devices. See [`docs/`](docs/) for the roadmap, business plan, engineering plan and architecture diagrams.
 
+**Picking this up? Read [`docs/HANDOFF.md`](docs/HANDOFF.md) first.**
+
 **Status: Phase 0 prototype. Not independently reviewed. Do not use it for real secrets.**
 
 ## What works today
