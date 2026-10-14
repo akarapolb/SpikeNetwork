@@ -9,6 +9,7 @@ pub mod attachment;
 pub mod envelope;
 pub mod identity;
 pub mod link;
+pub mod merge;
 pub mod owner;
 pub mod session;
 pub mod vault;

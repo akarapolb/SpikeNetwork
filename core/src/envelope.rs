@@ -17,6 +17,10 @@ pub const MAX_TEXT: usize = 50_000;
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Text,
+    /// Replace the text of an earlier message by the same author (`target`).
+    Edit,
+    /// Delete an earlier message by the same author (`target`).
+    Delete,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -27,6 +31,14 @@ pub struct Envelope {
     /// Sender's clock, milliseconds since the Unix epoch. Display only; never trusted for ordering security.
     pub ts: u64,
     pub kind: Kind,
+    /// Logical clock (Lamport): the sender's counter after seeing everything it
+    /// has seen. Orders concurrent edits from different devices without
+    /// trusting wall clocks. 0 on messages from older versions.
+    #[serde(default)]
+    pub lamport: u64,
+    /// The message an edit or delete applies to (its envelope id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     pub body: String,
     /// The conversation's other person (their owner key, hex). Set on every
     /// message so that copies delivered to the sender's *own* other devices
@@ -54,10 +66,28 @@ impl Envelope {
             id: hex::encode(id),
             ts,
             kind: Kind::Text,
+            lamport: 0,
+            target: None,
             body: body.to_string(),
             to: None,
             attachment: None,
         })
+    }
+
+    /// An edit: new full text for message `target`.
+    pub fn edit(target: &str, body: &str) -> Result<Self> {
+        let mut e = Self::text(body)?;
+        e.kind = Kind::Edit;
+        e.target = Some(target.to_string());
+        Ok(e)
+    }
+
+    /// A delete of message `target`.
+    pub fn delete(target: &str) -> Result<Self> {
+        let mut e = Self::text("")?;
+        e.kind = Kind::Delete;
+        e.target = Some(target.to_string());
+        Ok(e)
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -78,7 +108,28 @@ impl Envelope {
                     .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
         });
         let att_ok = e.attachment.as_ref().is_none_or(|a| a.validate().is_ok());
-        if e.v != VERSION || !id_ok || !to_ok || !att_ok || e.body.len() > MAX_TEXT {
+        let target_ok = match e.kind {
+            Kind::Text => e.target.is_none(),
+            Kind::Edit | Kind::Delete => e.target.as_ref().is_some_and(|t| {
+                t.len() == 32
+                    && t.bytes()
+                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            }),
+        };
+        // Edits carry text only; deletes carry nothing.
+        let shape_ok = match e.kind {
+            Kind::Text => true,
+            Kind::Edit => e.attachment.is_none(),
+            Kind::Delete => e.attachment.is_none() && e.body.is_empty(),
+        };
+        if e.v != VERSION
+            || !id_ok
+            || !to_ok
+            || !att_ok
+            || !target_ok
+            || !shape_ok
+            || e.body.len() > MAX_TEXT
+        {
             return Err(Error::Malformed);
         }
         Ok(e)
@@ -145,6 +196,27 @@ mod tests {
         );
         e.attachment = Some(crate::attachment::Attachment { chunks: 99, ..att });
         assert!(Envelope::from_bytes(&e.to_bytes()).is_err());
+    }
+
+    #[test]
+    fn edit_and_delete_envelopes_validate() {
+        let t = "ab".repeat(16);
+        let e = Envelope::edit(&t, "fixed typo").unwrap();
+        assert_eq!(Envelope::from_bytes(&e.to_bytes()).unwrap(), e);
+        let d = Envelope::delete(&t).unwrap();
+        assert_eq!(Envelope::from_bytes(&d.to_bytes()).unwrap(), d);
+        // Missing, malformed or misplaced targets are refused.
+        let mut no_target = e.clone();
+        no_target.target = None;
+        let mut bad_target = e.clone();
+        bad_target.target = Some("zz".into());
+        let mut text_with_target = Envelope::text("x").unwrap();
+        text_with_target.target = Some(t.clone());
+        let mut delete_with_body = d.clone();
+        delete_with_body.body = "x".into();
+        for bad in [no_target, bad_target, text_with_target, delete_with_body] {
+            assert!(Envelope::from_bytes(&bad.to_bytes()).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

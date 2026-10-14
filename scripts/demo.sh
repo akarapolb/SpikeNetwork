@@ -83,6 +83,16 @@ $L fetch "$FILEID" --out "$D/plan-received.txt"
 cmp "$D/plan.txt" "$D/plan-received.txt" && echo "received file is identical"
 echo -n "file content visible in relay storage? "; if grep -qa "Floor 3 layout" "$D"/relay.db*; then echo YES; else echo no; fi
 
+echo "== alice fixes a typo and deletes a message; every device follows"
+$A send bob "see you at 3 oclock, bring the plan" >/dev/null
+MID=$($A history bob | tail -1 | sed -n 's/.*(\([0-9a-f]\{8\}\))$/\1/p')
+$A edit "$MID" "see you at 4 oclock, bring the plan"
+echo -n "bob:    "; $B recv 2>/dev/null; $B history alice | tail -1
+echo -n "laptop: "; $L recv 2>/dev/null; $L history bob | tail -1
+$A delete "$MID"
+echo -n "bob:    "; $B recv 2>/dev/null; $B history alice | tail -1
+echo -n "laptop: "; $L recv 2>/dev/null; $L history bob | tail -1
+
 echo "== plain ws:// to a non-loopback host is refused by the client"
 SPIKE_RELAY=ws://relay.example.com:8787 $B recv 2>&1 || true
 echo "== relay log (no content):"; cat "$D/relay.log"

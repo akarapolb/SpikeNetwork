@@ -11,7 +11,7 @@ use crate::state::{Added, OwnUpdate};
 use crate::{client::Relay, process, state::Home, transport::Target, Outcome};
 use anyhow::{anyhow, bail, Context, Result};
 use spike_core::attachment::{seal_file, Attachment};
-use spike_core::envelope::Envelope;
+use spike_core::envelope::{Envelope, Kind};
 use spike_core::identity::{DeviceCard, Identity};
 use spike_core::owner::IdentityCard;
 use spike_core::session::Sessions;
@@ -285,6 +285,47 @@ pub async fn fetch_attachment(
     Ok((att, bytes))
 }
 
+/// Edit a message you sent. The new text reaches every device of the
+/// recipient and your own other devices, which all merge it the same way.
+pub async fn edit(
+    home: &Home,
+    relay: impl Into<Target>,
+    msg_id: &str,
+    new_text: &str,
+) -> Result<SendReport> {
+    let (m, contact) = own_message(home, msg_id)?;
+    if m.deleted {
+        bail!("that message was deleted");
+    }
+    deliver(
+        home,
+        relay.into(),
+        &contact,
+        Envelope::edit(&m.id, new_text)?,
+    )
+    .await
+}
+
+/// Delete a message you sent, on every device that has it.
+pub async fn delete(home: &Home, relay: impl Into<Target>, msg_id: &str) -> Result<SendReport> {
+    let (m, contact) = own_message(home, msg_id)?;
+    deliver(home, relay.into(), &contact, Envelope::delete(&m.id)?).await
+}
+
+/// The message with this id (or unique prefix) if you wrote it, and the contact's name.
+fn own_message(home: &Home, msg_id: &str) -> Result<(StoredMessage, String)> {
+    let m = home.messages()?.find(msg_id)?;
+    if m.direction != Direction::Out {
+        bail!("you can only edit or delete messages you sent");
+    }
+    let contacts = home.load_contacts()?;
+    let c = contacts
+        .iter()
+        .find(|c| c.conversation_key().ok().as_deref() == Some(m.peer.as_str()))
+        .ok_or_else(|| anyhow!("no contact for this conversation any more"))?;
+    Ok((m.clone(), c.name.clone()))
+}
+
 async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Result<SendReport> {
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
@@ -308,6 +349,7 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
         .with_context(|| format!("no contact '{name}'"))?;
     let peer = c.identity()?;
     env.to = Some(peer.owner_hex());
+    env.lamport = home.next_lamport()?;
     let plaintext = env.to_bytes();
 
     let my_id = me.device_id();
@@ -351,15 +393,23 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
             why.join("; ")
         );
     }
-    // Stored once at least one of the recipient's devices has it.
-    home.messages()?.insert(&StoredMessage {
-        id: env.id.clone(),
-        peer: peer.owner_hex(),
-        direction: Direction::Out,
-        ts: env.ts,
-        body: env.body,
-        attachment: env.attachment,
-    })?;
+    // Applied locally once at least one of the recipient's devices has it.
+    if env.kind == Kind::Text {
+        home.messages()?.insert(&StoredMessage {
+            id: env.id.clone(),
+            peer: peer.owner_hex(),
+            direction: Direction::Out,
+            ts: env.ts,
+            body: env.body,
+            attachment: env.attachment,
+            lamport: env.lamport,
+            stamp_device: my_id.clone(),
+            edited: false,
+            deleted: false,
+        })?;
+    } else {
+        crate::apply_change(home, &env, true, &peer.owner_hex(), &my_id)?;
+    }
     Ok(SendReport {
         id: env.id,
         verified: c.verified,

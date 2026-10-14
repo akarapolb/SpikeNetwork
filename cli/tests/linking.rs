@@ -180,6 +180,10 @@ async fn history_choice_is_honoured() {
         .unwrap()
         .insert(&StoredMessage {
             attachment: None,
+            lamport: 0,
+            stamp_device: String::new(),
+            edited: false,
+            deleted: false,
             id: "aa".repeat(16),
             peer: owner(&bob),
             direction: Direction::In,

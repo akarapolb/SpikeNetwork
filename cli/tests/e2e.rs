@@ -344,8 +344,8 @@ async fn nothing_secret_or_identifying_is_stored_in_the_clear() {
             }
         }
         assert_eq!(
-            sealed, 5,
-            "identity, sessions, contacts, owner key and device list must all be sealed"
+            sealed, 6,
+            "identity, sessions, contacts, owner key, device list and logical clock must all be sealed"
         );
         assert!(dir.join("messages.db").exists(), "history must be stored");
         #[cfg(unix)]

@@ -12,12 +12,13 @@ A privacy-first communication network for people, AI agents and devices. See [`d
 - Asynchronous session start: signed one-time prekeys served by the relay, so you can message someone who is offline, plus a rotating fallback prekey so a drained device stays reachable
 - A store-and-forward relay that holds only ciphertext (auth, size/queue/TTL limits, ack, prekey store), durable across crashes with `--db`, TLS (`wss://`) with `--tls-cert/--tls-key`; plain `ws://` is refused off loopback by default
 - All local state (keys, sessions, contacts) encrypted at rest: Argon2id passphrase KDF + XChaCha20-Poly1305
+- Edits and deletes that merge identically on every device (logical clocks, delete always wins, only the author may change a message): `spike edit` / `spike delete`
 - Encrypted attachments up to 100 MiB: encrypted before upload, stored on the relay as opaque chunks with expiry and quotas, integrity-checked after download, kept sealed on each device (`spike send-file` / `spike fetch`)
 - Device linking: a new device shows a link code, both screens show the same safety code, then your identity, contacts and history are copied over encrypted (`spike link-new` / `spike link-device`)
 - Multi-device delivery: every message is encrypted separately for each of the recipient's devices and copied to your own other devices, each delivered to that device's home relay; signed device lists are published on relays so contacts learn new devices automatically
 - One identity per person: an owner key signs a versioned list of that person's devices; contacts verify the person once; rollbacks and conflicting lists are refused; older single-device cards still work
 - Encrypted local message history: every sent and received message stored per conversation, sealed row by row, exactly once even across crashes
-- A CLI: `init`, `card`, `add`, `verify`, `contacts`, `keys`, `send`, `recv`, `history`, `prune`, `link-new`, `link-device`, `send-file`, `fetch`
+- A CLI: `init`, `card`, `add`, `verify`, `contacts`, `keys`, `send`, `recv`, `history`, `prune`, `link-new`, `link-device`, `send-file`, `fetch`, `edit`, `delete`
 - Contacts start unverified; key changes are refused unless forced
 
 ## Try it

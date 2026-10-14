@@ -34,6 +34,28 @@ pub struct StoredMessage {
     /// The file sent with this message, if any (the key lives only in the sealed row).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<spike_core::attachment::Attachment>,
+    /// Logical clock of the message or of its latest accepted edit (see `spike_core::merge`).
+    #[serde(default)]
+    pub lamport: u64,
+    /// Device that produced the version with that clock value; breaks ties.
+    #[serde(default)]
+    pub stamp_device: String,
+    #[serde(default)]
+    pub edited: bool,
+    /// Tombstone: the text and attachment are gone; the row stays so the
+    /// message cannot reappear from a late or replayed copy.
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+impl StoredMessage {
+    pub fn merge_state(&self) -> spike_core::merge::State {
+        spike_core::merge::State {
+            authored_by_me: self.direction == Direction::Out,
+            deleted: self.deleted,
+            stamp: (self.lamport, self.stamp_device.clone()),
+        }
+    }
 }
 
 /// (seq, id_tag, conv_tag, sealed) as read from the table.
@@ -161,6 +183,39 @@ impl<'v> MessageStore<'v> {
         }
     }
 
+    /// The stored message with exactly this id, if any.
+    pub fn get(&self, id: &str) -> Result<Option<StoredMessage>> {
+        let id_tag = self.vault.index_tag("msg-id", id.as_bytes());
+        let row: Option<(Vec<u8>, Vec<u8>)> = self
+            .conn
+            .query_row(
+                "SELECT conv_tag, sealed FROM messages WHERE id_tag = ?1",
+                [&id_tag[..]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(conv_tag, sealed)| self.unseal(&id_tag, &conv_tag, &sealed))
+            .transpose()
+    }
+
+    /// Replace the content of an already stored message (same id and conversation).
+    pub fn update(&self, m: &StoredMessage) -> Result<()> {
+        let (id_tag, conv_tag) = self.tags(&m.id, &m.peer);
+        let sealed = self
+            .vault
+            .seal(&aad(&id_tag, &conv_tag), &serde_json::to_vec(m)?)?;
+        let n = self.conn.execute(
+            "UPDATE messages SET sealed = ?1 WHERE id_tag = ?2 AND conv_tag = ?3",
+            params![sealed, &id_tag[..], &conv_tag[..]],
+        )?;
+        if n != 1 {
+            return Err(anyhow!(
+                "cannot update a message that is not stored in that conversation"
+            ));
+        }
+        Ok(())
+    }
+
     /// Every stored message, oldest first (used to build history bundles).
     pub fn all(&self) -> Result<Vec<StoredMessage>> {
         let mut stmt = self
@@ -252,6 +307,10 @@ mod tests {
     fn msg(id: &str, peer: &str, ts: u64, body: &str, d: Direction) -> StoredMessage {
         StoredMessage {
             attachment: None,
+            lamport: 0,
+            stamp_device: String::new(),
+            edited: false,
+            deleted: false,
             id: id.into(),
             peer: peer.into(),
             direction: d,

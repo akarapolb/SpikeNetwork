@@ -19,6 +19,7 @@ const SESSIONS: &str = "sessions.enc";
 const CONTACTS: &str = "contacts.enc";
 const MESSAGES: &str = "messages.db";
 const OWNER: &str = "owner.enc";
+const LAMPORT: &str = "lamport.enc";
 const DEVICE_LIST: &str = "devicelist.enc";
 
 /// An unlocked state directory.
@@ -287,6 +288,39 @@ impl Home {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Remove a locally kept attachment (best effort), e.g. when its message is deleted.
+    pub fn delete_attachment(&self, msg_id: &str) -> Result<()> {
+        let tag = hex::encode(self.vault.index_tag("attachment", msg_id.as_bytes()));
+        match fs::remove_file(self.dir.join("attachments").join(format!("{tag}.enc"))) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn lamport(&self) -> u64 {
+        self.read(LAMPORT)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Next value of this device's logical clock (monotonic, persisted).
+    pub fn next_lamport(&self) -> Result<u64> {
+        let n = self.lamport() + 1;
+        self.write(LAMPORT, n.to_string().as_bytes())?;
+        Ok(n)
+    }
+
+    /// Fold in a clock value seen on a received message.
+    pub fn observe_lamport(&self, seen: u64) -> Result<()> {
+        if seen > self.lamport() {
+            self.write(LAMPORT, seen.to_string().as_bytes())?;
+        }
+        Ok(())
     }
 
     /// Encrypted message history (see [`crate::messages`]).

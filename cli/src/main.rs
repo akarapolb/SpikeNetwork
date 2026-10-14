@@ -90,6 +90,19 @@ enum Cmd {
         #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
         relay: String,
     },
+    /// Edit a message you sent (by id or its first 6+ characters from `spike history`).
+    Edit {
+        id: String,
+        text: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Delete a message you sent, on every device that has it.
+    Delete {
+        id: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
     /// Save a received attachment, by message id (or its first 6+ characters from `spike history`).
     Fetch {
         id: String,
@@ -315,7 +328,13 @@ async fn run() -> Result<()> {
                     Direction::Out => "you",
                     Direction::In => name.as_str(),
                 };
-                println!("{}  {who}: {}", fmt_utc(m.ts), m.body);
+                let short = &m.id[..8];
+                if m.deleted {
+                    println!("{}  {who}: [message deleted]  ({short})", fmt_utc(m.ts));
+                    continue;
+                }
+                let edited = if m.edited { " (edited)" } else { "" };
+                println!("{}  {who}: {}{edited}  ({short})", fmt_utc(m.ts), m.body);
                 if let Some(a) = &m.attachment {
                     let here = if home.load_attachment(&m.id)?.is_some() {
                         "on this device"
@@ -363,6 +382,26 @@ async fn run() -> Result<()> {
             }
             let theirs = r.devices.iter().filter(|d| !d.own).count();
             println!("sent {file_name} ({} bytes, encrypted) to {} of {name}'s {theirs} device(s); message id {}", bytes.len(), r.delivered(), &r.id[..8]);
+        }
+        Cmd::Edit { id, text, relay } => {
+            let r = ops::edit(&home, target(relay), &id, &text).await?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            println!(
+                "edit sent to {} of their devices and your other devices",
+                r.delivered()
+            );
+        }
+        Cmd::Delete { id, relay } => {
+            let r = ops::delete(&home, target(relay), &id).await?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            println!(
+                "delete sent to {} of their devices and your other devices",
+                r.delivered()
+            );
         }
         Cmd::Fetch {
             id,
@@ -463,7 +502,10 @@ async fn run() -> Result<()> {
                     eprintln!("dropped message from unknown key {fingerprint_hint}…; add them with `spike add` to receive");
                 }
                 Outcome::Invalid => eprintln!("dropped undecryptable or replayed message"),
-                Outcome::Duplicate => {}
+                Outcome::Duplicate | Outcome::Ignored => {}
+                Outcome::Edited { who, id } => println!("[{who} edited message {}]", &id[..8]),
+                Outcome::Deleted { who, id } => println!("[{who} deleted message {}]", &id[..8]),
+                Outcome::Rejected { reason } => eprintln!("ignored a change: {reason}"),
                 Outcome::SentCopy { to, body, .. } => {
                     println!("[you -> {to}, sent from your other device] {}", String::from_utf8_lossy(&body));
                 }
