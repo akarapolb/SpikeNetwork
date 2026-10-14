@@ -44,12 +44,21 @@ pub fn process(
     blob: &[u8],
 ) -> anyhow::Result<Outcome> {
     let contacts = home.load_contacts()?;
-    let cards: Vec<DeviceCard> = contacts
-        .iter()
-        .map(|c| c.decode())
-        .collect::<anyhow::Result<_>>()?;
+    // Every device of every contact, remembering which contact it belongs to.
+    let mut cards: Vec<DeviceCard> = Vec::new();
+    let mut owner_of: Vec<usize> = Vec::new();
+    for (i, c) in contacts.iter().enumerate() {
+        for d in c.identity()?.devices() {
+            cards.push(d.clone());
+            owner_of.push(i);
+        }
+    }
     match sessions.decrypt(me, &cards, blob) {
-        Ok(Opened::Message { contact, body }) => {
+        Ok(Opened::Message {
+            contact: device,
+            body,
+        }) => {
+            let contact = owner_of[device];
             let Ok(env) = Envelope::from_bytes(&body) else {
                 // Authentic but not something we understand: keep the ratchet in step, drop it.
                 home.save_sessions(sessions)?;
@@ -58,7 +67,7 @@ pub fn process(
             };
             let fresh = home.messages()?.insert(&StoredMessage {
                 id: env.id.clone(),
-                peer: hex::encode(cards[contact].x25519),
+                peer: contacts[contact].conversation_key()?,
                 direction: Direction::In,
                 ts: env.ts,
                 body: env.body.clone(),

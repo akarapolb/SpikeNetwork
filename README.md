@@ -12,6 +12,7 @@ A privacy-first communication network for people, AI agents and devices. See [`d
 - Asynchronous session start: signed one-time prekeys served by the relay, so you can message someone who is offline, plus a rotating fallback prekey so a drained device stays reachable
 - A store-and-forward relay that holds only ciphertext (auth, size/queue/TTL limits, ack, prekey store), durable across crashes with `--db`, TLS (`wss://`) with `--tls-cert/--tls-key`; plain `ws://` is refused off loopback by default
 - All local state (keys, sessions, contacts) encrypted at rest: Argon2id passphrase KDF + XChaCha20-Poly1305
+- One identity per person: an owner key signs a versioned list of that person's devices; contacts verify the person once; rollbacks and conflicting lists are refused; older single-device cards still work
 - Encrypted local message history: every sent and received message stored per conversation, sealed row by row, exactly once even across crashes
 - A CLI: `init`, `card`, `add`, `verify`, `contacts`, `keys`, `send`, `recv`, `history`, `prune`
 - Contacts start unverified; key changes are refused unless forced

@@ -7,6 +7,7 @@
 
 pub mod envelope;
 pub mod identity;
+pub mod owner;
 pub mod session;
 pub mod vault;
 pub mod wire;
@@ -23,6 +24,14 @@ pub enum Error {
     NoSession,
     #[error("malformed message")]
     Malformed,
+    #[error("invalid device list: {0}")]
+    BadDeviceList(&'static str),
+    #[error("device list rollback refused: already saw version {seen}, offered {offered}")]
+    Rollback { seen: u64, offered: u64 },
+    #[error("two different device lists both claim version {0}: possible equivocation, refused")]
+    Equivocation(u64),
+    #[error("identity key changed")]
+    KeyChange,
     #[error("wrong passphrase or corrupted vault")]
     WrongPassphrase,
     #[error("stored data is corrupted or was tampered with")]

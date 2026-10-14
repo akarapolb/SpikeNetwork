@@ -6,6 +6,7 @@ use crate::messages::MessageStore;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use spike_core::identity::{DeviceCard, Identity};
+use spike_core::owner::{DeviceEntry, DeviceList, IdentityCard, OwnerKey, Update};
 use spike_core::session::Sessions;
 use spike_core::vault::{KdfParams, Vault, VaultHeader};
 use spike_core::Error as CoreError;
@@ -17,6 +18,8 @@ const IDENTITY: &str = "identity.enc";
 const SESSIONS: &str = "sessions.enc";
 const CONTACTS: &str = "contacts.enc";
 const MESSAGES: &str = "messages.db";
+const OWNER: &str = "owner.enc";
+const DEVICE_LIST: &str = "devicelist.enc";
 
 /// An unlocked state directory.
 pub struct Home {
@@ -32,9 +35,35 @@ pub struct Contact {
 }
 
 impl Contact {
-    pub fn decode(&self) -> Result<DeviceCard> {
-        Ok(DeviceCard::decode(&self.card)?)
+    /// The person: owner key and signed device list (or a legacy single-device card).
+    pub fn identity(&self) -> Result<IdentityCard> {
+        Ok(IdentityCard::decode(&self.card)?)
     }
+
+    /// The device to message. One per contact until fan-out (milestone M3).
+    pub fn decode(&self) -> Result<DeviceCard> {
+        Ok(self.identity()?.devices()[0].clone())
+    }
+
+    /// Stable key for this person's conversation: their owner key, hex.
+    pub fn conversation_key(&self) -> Result<String> {
+        Ok(self.identity()?.owner_hex())
+    }
+}
+
+/// What `add_contact` did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Added {
+    New,
+    AlreadyKnown,
+    /// Same person, newer signed device list. Verification is kept: it covers the owner key.
+    Updated {
+        version: u64,
+    },
+    /// A legacy single-device contact moved to a signed identity. Must be re-verified.
+    Upgraded,
+    /// Different owner key, replaced because `force` was given. Must be re-verified.
+    Replaced,
 }
 
 impl Home {
@@ -58,7 +87,19 @@ impl Home {
         let (vault, header) = Vault::create(passphrase, kdf)?;
         write_private(&dir.join(HEADER_FILE), header.to_json()?.as_bytes())?;
         let home = Self { dir, vault };
-        home.save_identity(&Identity::generate()?)?;
+        let device = Identity::generate()?;
+        let owner = OwnerKey::generate();
+        let list = DeviceList::sign(
+            &owner,
+            1,
+            vec![DeviceEntry {
+                card: device.card().encode(),
+                relay: None,
+            }],
+        )?;
+        home.save_identity(&device)?;
+        home.write(OWNER, owner.to_hex().as_bytes())?;
+        home.save_device_list(&list)?;
         home.save_sessions(&Sessions::default())?;
         home.save_contacts(&[])?;
         Ok(home)
@@ -98,6 +139,61 @@ impl Home {
 
     pub fn save_sessions(&self, s: &Sessions) -> Result<()> {
         self.write(SESSIONS, s.to_json()?.as_bytes())
+    }
+
+    pub fn load_owner(&self) -> Result<OwnerKey> {
+        Ok(OwnerKey::from_hex(std::str::from_utf8(
+            &self.read(OWNER)?,
+        )?)?)
+    }
+
+    pub fn load_device_list(&self) -> Result<DeviceList> {
+        Ok(serde_json::from_slice(&self.read(DEVICE_LIST)?)?)
+    }
+
+    pub fn save_device_list(&self, l: &DeviceList) -> Result<()> {
+        l.verify()?;
+        self.write(DEVICE_LIST, &serde_json::to_vec(l)?)
+    }
+
+    /// The card to share with people: `spike2:` + this person's signed device list.
+    pub fn identity_card(&self) -> Result<String> {
+        Ok(IdentityCard::encode(&self.load_device_list()?))
+    }
+
+    /// Add a contact, or update one from a newer card. Refuses rollbacks and
+    /// equivocation always, and owner-key changes unless `force`.
+    pub fn add_contact(&self, name: &str, card: &str, force: bool) -> Result<Added> {
+        let new = IdentityCard::decode(card)?;
+        let mut contacts = self.load_contacts()?;
+        let Some(existing) = contacts.iter_mut().find(|c| c.name == name) else {
+            contacts.push(Contact {
+                name: name.into(),
+                card: card.trim().into(),
+                verified: false,
+            });
+            self.save_contacts(&contacts)?;
+            return Ok(Added::New);
+        };
+        let added = match existing.identity()?.check_update(&new) {
+            Ok(Update::Same) => return Ok(Added::AlreadyKnown),
+            Ok(Update::Newer) => Added::Updated { version: new.version() },
+            Ok(Update::Upgrade) => {
+                existing.verified = false;
+                Added::Upgraded
+            }
+            Err(CoreError::KeyChange) if force => {
+                existing.verified = false;
+                Added::Replaced
+            }
+            Err(CoreError::KeyChange) => bail!(
+                "KEY CHANGE: '{name}' already exists with a different identity key. If you expect this, re-run with --force and re-verify."
+            ),
+            Err(e) => bail!("refused update for '{name}': {e}"),
+        };
+        existing.card = card.trim().into();
+        self.save_contacts(&contacts)?;
+        Ok(added)
     }
 
     /// Encrypted message history (see [`crate::messages`]).

@@ -91,7 +91,7 @@ pub async fn send(
     // Stored once the relay has accepted it; a failed send is not in history.
     home.messages()?.insert(&StoredMessage {
         id: env.id.clone(),
-        peer: hex::encode(peer.x25519),
+        peer: c.conversation_key()?,
         direction: Direction::Out,
         ts: env.ts,
         body: env.body,

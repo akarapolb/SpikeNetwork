@@ -3,11 +3,11 @@ use clap::{Parser, Subcommand};
 use spike_cli::{
     messages::Direction,
     ops,
-    state::{Contact, Home},
+    state::{Added, Home},
     transport::{Target, TransportOpts},
     Outcome,
 };
-use spike_core::identity::DeviceCard;
+use spike_core::owner::IdentityCard;
 use spike_core::vault::KdfParams;
 use zeroize::Zeroizing;
 
@@ -134,9 +134,13 @@ async fn run() -> Result<()> {
         }
         let home = Home::create(&dir, &p, KdfParams::default(), *force)?;
         let id = home.load_identity()?;
+        let me = IdentityCard::decode(&home.identity_card()?)?;
         println!("created encrypted state in {}", home.path().display());
         println!("device id:   {}", id.device_id());
-        println!("fingerprint: {}", id.card().fingerprint());
+        println!(
+            "fingerprint: {}  (your identity; stays the same when you add devices)",
+            me.fingerprint()
+        );
         println!("If you lose the passphrase the identity cannot be recovered.");
         return Ok(());
     } else {
@@ -155,40 +159,39 @@ async fn run() -> Result<()> {
     match cli.cmd {
         Cmd::Init { .. } => unreachable!("handled above"),
         Cmd::Card => {
-            let id = home.load_identity()?;
-            let card = id.card();
-            println!("{}", card.encode());
-            eprintln!("device id:   {}", card.device_id());
-            eprintln!("fingerprint: {}", card.fingerprint());
+            let card = home.identity_card()?;
+            let me = IdentityCard::decode(&card)?;
+            println!("{card}");
+            eprintln!("device id:   {}", home.load_identity()?.device_id());
+            eprintln!(
+                "devices:     {} (signed list v{})",
+                me.devices().len(),
+                me.version()
+            );
+            eprintln!("fingerprint: {}", me.fingerprint());
             eprintln!("Share the card; compare the fingerprint over a second channel.");
         }
         Cmd::Add { name, card, force } => {
-            let new = DeviceCard::decode(&card)?;
-            let mut contacts = home.load_contacts()?;
-            if let Some(existing) = contacts.iter_mut().find(|c| c.name == name) {
-                if existing.decode()? == new {
-                    println!("{name} already added");
-                    return Ok(());
+            let new = IdentityCard::decode(&card)?;
+            match home.add_contact(&name, &card, force)? {
+                Added::AlreadyKnown => println!("{name} already added, nothing changed"),
+                Added::Updated { version } => {
+                    println!("updated {name}'s device list to v{version} ({} devices); verification kept", new.devices().len());
                 }
-                if !force {
-                    bail!("KEY CHANGE: '{name}' already exists with a different key. If you expect this, re-run with --force and re-verify.");
+                outcome => {
+                    let what = match outcome {
+                        Added::Upgraded => "upgraded to a signed identity",
+                        Added::Replaced => "REPLACED (identity key changed)",
+                        _ => "added",
+                    };
+                    println!("{name} {what} (UNVERIFIED)");
+                    if new.is_legacy() {
+                        println!("note: this is an older single-device card");
+                    }
+                    println!("fingerprint: {}", new.fingerprint());
+                    println!("Compare it with {name} over a second channel, then: spike verify {name} <fingerprint>");
                 }
-                *existing = Contact {
-                    name: name.clone(),
-                    card,
-                    verified: false,
-                };
-            } else {
-                contacts.push(Contact {
-                    name: name.clone(),
-                    card,
-                    verified: false,
-                });
             }
-            home.save_contacts(&contacts)?;
-            println!("added {name} (UNVERIFIED)");
-            println!("fingerprint: {}", new.fingerprint());
-            println!("Compare it with {name} over a second channel, then: spike verify {name} <fingerprint>");
         }
         Cmd::Verify { name, fingerprint } => {
             let mut contacts = home.load_contacts()?;
@@ -196,7 +199,7 @@ async fn run() -> Result<()> {
                 .iter_mut()
                 .find(|c| c.name == name)
                 .with_context(|| format!("no contact '{name}'"))?;
-            let actual = c.decode()?.fingerprint();
+            let actual = c.identity()?.fingerprint();
             if actual != fingerprint.trim().to_lowercase() {
                 bail!("fingerprint does NOT match (stored key is {actual}); not verified");
             }
@@ -207,7 +210,13 @@ async fn run() -> Result<()> {
         Cmd::Contacts => {
             for c in home.load_contacts()? {
                 let tag = if c.verified { "verified" } else { "UNVERIFIED" };
-                println!("{:<16} {:<10} {}", c.name, tag, c.decode()?.fingerprint());
+                let id = c.identity()?;
+                let devices = if id.is_legacy() {
+                    "legacy card".to_string()
+                } else {
+                    format!("{} device(s), list v{}", id.devices().len(), id.version())
+                };
+                println!("{:<16} {:<10} {}  {devices}", c.name, tag, id.fingerprint());
             }
         }
         Cmd::Keys { relay } => {
@@ -241,7 +250,7 @@ async fn run() -> Result<()> {
                 .iter()
                 .find(|c| c.name == name)
                 .with_context(|| format!("no contact '{name}'"))?;
-            let peer = hex::encode(c.decode()?.x25519);
+            let peer = c.conversation_key()?;
             let msgs = home.messages()?.conversation(&peer, limit)?;
             if msgs.is_empty() {
                 eprintln!("no stored messages with {name}");

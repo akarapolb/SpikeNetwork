@@ -43,11 +43,32 @@ impl Device {
         self.home.load_identity().unwrap().card()
     }
 
+    /// This person's signed `spike2:` identity card.
+    fn identity_card(&self) -> String {
+        self.home.identity_card().unwrap()
+    }
+
+    /// Conversation key others file this person under (their owner key).
+    fn owner(&self) -> String {
+        spike_core::owner::IdentityCard::decode(&self.identity_card())
+            .unwrap()
+            .owner_hex()
+    }
+
     fn add(&self, name: &str, other: &Device, verified: bool) {
+        self.add_card(name, &other.identity_card(), verified);
+    }
+
+    /// Add using an older single-device `spike1:` card.
+    fn add_legacy(&self, name: &str, other: &Device, verified: bool) {
+        self.add_card(name, &other.card().encode(), verified);
+    }
+
+    fn add_card(&self, name: &str, card: &str, verified: bool) {
         let mut c = self.home.load_contacts().unwrap();
         c.push(Contact {
             name: name.into(),
-            card: other.card().encode(),
+            card: card.into(),
             verified,
         });
         self.home.save_contacts(&c).unwrap();
@@ -323,8 +344,8 @@ async fn nothing_secret_or_identifying_is_stored_in_the_clear() {
             }
         }
         assert_eq!(
-            sealed, 3,
-            "identity, sessions and contacts must all be sealed"
+            sealed, 5,
+            "identity, sessions, contacts, owner key and device list must all be sealed"
         );
         assert!(dir.join("messages.db").exists(), "history must be stored");
         #[cfg(unix)]
@@ -353,7 +374,7 @@ async fn history_records_both_directions_on_each_side() {
     alice.recv(&url).await;
 
     let view = |d: &Device, peer: &Device| {
-        let key = hex::encode(peer.card().x25519);
+        let key = peer.owner();
         d.home
             .messages()
             .unwrap()
@@ -427,7 +448,7 @@ async fn crash_between_storing_and_saving_ratchet_neither_loses_nor_doubles() {
         spike_cli::process(&bob.home, &mut me, &mut sessions, &d.blob).unwrap(),
         Outcome::Duplicate
     );
-    let key = hex::encode(alice.card().x25519);
+    let key = alice.owner();
     let stored = bob.home.messages().unwrap().conversation(&key, 10).unwrap();
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].body, "exactly once");
@@ -708,4 +729,132 @@ async fn fallback_rotates_when_old_and_forgeries_are_refused() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("bad_prekey"), "{e}");
+}
+
+#[tokio::test]
+async fn legacy_single_device_cards_still_interoperate() {
+    let url = start_relay(Config::default()).await;
+    let (alice, bob) = (Device::new("alice"), Device::new("bob"));
+    // Alice only has Bob's old spike1 card; Bob has Alice's new signed card.
+    alice.add_legacy("bob", &bob, true);
+    bob.add("alice", &alice, true);
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    ops::send(&alice.home, &url, "bob", b"old card, new code")
+        .await
+        .unwrap();
+    let got = bob.recv(&url).await;
+    assert_eq!(msg(&got[0]), ("alice", &b"old card, new code"[..]));
+    ops::send(&bob.home, &url, "alice", b"works both ways")
+        .await
+        .unwrap();
+    let got = alice.recv(&url).await;
+    assert_eq!(msg(&got[0]), ("bob", &b"works both ways"[..]));
+}
+
+#[test]
+fn contact_updates_follow_the_device_list_rules() {
+    use spike_cli::state::Added;
+    use spike_core::owner::{DeviceEntry, DeviceList};
+    let (alice, bob) = (Device::new("alice"), Device::new("bob"));
+    let v1 = bob.identity_card();
+    assert_eq!(
+        alice.home.add_contact("bob", &v1, false).unwrap(),
+        Added::New
+    );
+    assert_eq!(
+        alice.home.add_contact("bob", &v1, false).unwrap(),
+        Added::AlreadyKnown
+    );
+
+    // Mark verified, then Bob adds a tablet: newer signed list keeps verification.
+    let mut c = alice.home.load_contacts().unwrap();
+    c[0].verified = true;
+    alice.home.save_contacts(&c).unwrap();
+    let owner = bob.home.load_owner().unwrap();
+    let tablet = Identity::generate().unwrap();
+    let v2 = bob
+        .home
+        .load_device_list()
+        .unwrap()
+        .with_device(
+            &owner,
+            DeviceEntry {
+                card: tablet.card().encode(),
+                relay: None,
+            },
+        )
+        .unwrap();
+    bob.home.save_device_list(&v2).unwrap();
+    let v2_card = bob.identity_card();
+    assert_eq!(
+        alice.home.add_contact("bob", &v2_card, false).unwrap(),
+        Added::Updated { version: 2 }
+    );
+    let c = alice.home.load_contacts().unwrap();
+    assert!(
+        c[0].verified,
+        "verifying the person covers devices their identity key signs"
+    );
+    assert_eq!(c[0].identity().unwrap().devices().len(), 2);
+
+    // Rollback to v1 is refused, even with --force.
+    let e = alice
+        .home
+        .add_contact("bob", &v1, true)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("rollback"), "{e}");
+    // A different list claiming the same version (a fork) is refused.
+    let fork = DeviceList::sign(
+        &owner,
+        2,
+        vec![DeviceEntry {
+            card: Identity::generate().unwrap().card().encode(),
+            relay: None,
+        }],
+    )
+    .unwrap();
+    let e = alice
+        .home
+        .add_contact("bob", &spike_core::owner::IdentityCard::encode(&fork), true)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("equivocation"), "{e}");
+    // A different person under the same name needs --force and loses verification.
+    let mallory = Device::new("mallory");
+    let e = alice
+        .home
+        .add_contact("bob", &mallory.identity_card(), false)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("KEY CHANGE"), "{e}");
+    assert_eq!(
+        alice
+            .home
+            .add_contact("bob", &mallory.identity_card(), true)
+            .unwrap(),
+        Added::Replaced
+    );
+    assert!(!alice.home.load_contacts().unwrap()[0].verified);
+}
+
+#[test]
+fn legacy_contact_upgrades_to_signed_identity_and_must_reverify() {
+    use spike_cli::state::Added;
+    let (alice, bob) = (Device::new("alice"), Device::new("bob"));
+    alice.add_legacy("bob", &bob, true);
+    // Bob's signed card still contains the device Alice already knew: an upgrade, not a key change.
+    assert_eq!(
+        alice
+            .home
+            .add_contact("bob", &bob.identity_card(), false)
+            .unwrap(),
+        Added::Upgraded
+    );
+    let c = &alice.home.load_contacts().unwrap()[0];
+    assert!(
+        !c.verified,
+        "the new identity key has not been compared yet"
+    );
+    assert!(!c.identity().unwrap().is_legacy());
 }
