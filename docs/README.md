@@ -24,6 +24,7 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [adr/0007-local-message-store.md](adr/0007-local-message-store.md) | Encrypted message history (multi-device M1): envelope ids, sealed rows, crash-safe receive |
 | [adr/0008-identity-and-device-lists.md](adr/0008-identity-and-device-lists.md) | Owner key and signed device lists (multi-device M2): card v2, update rules, legacy cards |
 | [adr/0009-fan-out-and-relay-directory.md](adr/0009-fan-out-and-relay-directory.md) | Fan-out to every device, sent copies, home relays, relay device-list directory (multi-device M3) |
+| [adr/0010-device-linking.md](adr/0010-device-linking.md) | Linking a new device: link code, safety code, encrypted history bundle (multi-device M4) |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [multi-device-design.html](multi-device-design.html) | **Proposed** design: message history across multiple devices, fan-out, device linking, and which servers are still needed |
 | [multi-device-demo.html](multi-device-demo.html) | **Interactive simulation** of that design (no real crypto): fan-out, offline catch-up, device linking, edits, relay outage, attacks. Open in a browser |

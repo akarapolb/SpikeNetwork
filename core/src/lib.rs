@@ -7,6 +7,7 @@
 
 pub mod envelope;
 pub mod identity;
+pub mod link;
 pub mod owner;
 pub mod session;
 pub mod vault;

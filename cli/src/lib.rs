@@ -1,4 +1,5 @@
 pub mod client;
+pub mod link;
 pub mod messages;
 pub mod ops;
 pub mod state;

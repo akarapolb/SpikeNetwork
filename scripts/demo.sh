@@ -56,6 +56,24 @@ $B history alice
 
 echo "== bob reconnects: acked messages must not come back"
 $B recv
+echo "== alice links a laptop: the laptop shows a link code, both screens show the same safety code"
+echo "alice laptop passphrase" > "$D/alice-laptop.pass"
+L="$BIN/spike --home $D/alice-laptop/state --passphrase-file $D/alice-laptop.pass"
+$L init >/dev/null
+$L link-new --yes --timeout-secs 30 >"$D/link.out" 2>"$D/link.err" & LINKPID=$!
+CODE=""
+for _ in $(seq 100); do CODE=$(grep -m1 '^spikelink1:' "$D/link.out" || true); [ -n "$CODE" ] && break; sleep 0.1; done
+echo "phone (existing device):"; $A link-device "$CODE" --yes | sed "s/^/  /"
+wait $LINKPID
+echo "laptop (new device):"; grep "^safety code" "$D/link.out" | sed "s/^/  /"
+grep '^linked' "$D/link.out"
+echo "laptop history with bob:"; $L history bob
+
+echo "== bob writes once; both of alice's devices receive it"
+$B send alice "welcome to your laptop"
+echo -n "phone:  "; $A recv
+echo -n "laptop: "; $L recv
+
 echo "== plain ws:// to a non-loopback host is refused by the client"
 SPIKE_RELAY=ws://relay.example.com:8787 $B recv 2>&1 || true
 echo "== relay log (no content):"; cat "$D/relay.log"

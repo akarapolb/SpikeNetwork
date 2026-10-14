@@ -1,4 +1,4 @@
-# Threat model (Phase 0 draft, updated through ADR 0009)
+# Threat model (Phase 0 draft, updated through ADR 0010)
 
 Scope: the code in this repository today (`core`, `relay`, `cli`). It will grow with the product. Each item is marked **mitigated**, **partial**, or **open**.
 
@@ -26,6 +26,8 @@ No anonymity and no metadata protection is claimed.
 | Key substitution during pairing | Partial | Cards are self-signed (keys can't be mixed). A substituted *whole* card is only caught if users compare the fingerprint out of band; contacts start **UNVERIFIED** and the CLI warns |
 | Device-list rollback, equivocation, or a device added without the owner key | Mitigated | Lists are signed by the person's owner key; lower versions and two different lists with one version are refused even with `--force` (ADR 0008). Lists are published on relays (ADR 0009); relays enforce the same rules and only accept a list from a device in it; clients re-check everything they fetch |
 | Relay withholds a newer device list (sender misses a new device) | Partial | Senders refresh before every send and on any unknown sender; key transparency planned (engineering plan 7a) |
+| Someone intercepts or hijacks device linking | Mitigated | Link code travels out of band (QR); ephemeral key agreement salted with a secret from the code; 8-digit safety code confirmed on both screens before anything is shared; bundle frames authenticated and unreadable to the relay (ADR 0010) |
+| A compromised device adds a rogue device | Partial | Every device holds the owner key (ADR 0010 option a). Contacts are notified of device-list changes; any device can remove others. An offline owner key is a possible later option |
 | Removed or stolen device keeps receiving | Mitigated for new messages | Removal publishes a newer signed list; senders stop encrypting to it and the device refuses to send (ADR 0009). It keeps what it already holds |
 | Key change of an existing contact | Mitigated | `add` refuses a different key for an existing name unless `--force`, which resets verification |
 | Compromise of a device's keys exposes history | Mitigated for earlier traffic | Forward secrecy tested. Anything still stored on the device, and sessions' future messages until recovery, are exposed |

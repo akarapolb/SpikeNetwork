@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use spike_cli::{
+    link,
     messages::Direction,
     ops,
     state::{Added, Home},
@@ -85,6 +86,31 @@ enum Cmd {
         /// How many of the most recent messages to show.
         #[arg(long, default_value_t = 50)]
         limit: usize,
+    },
+    /// On a NEW device: show a link code, then join your identity when an existing device approves.
+    LinkNew {
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+        /// Seconds to wait for each step.
+        #[arg(long, default_value_t = 300)]
+        timeout_secs: u64,
+        /// Skip the safety-code question (only for scripts that compare codes another way).
+        #[arg(long)]
+        yes: bool,
+    },
+    /// On an EXISTING device: add the new device that shows this link code.
+    LinkDevice {
+        code: String,
+        /// History to copy: all, recent, or none.
+        #[arg(long, default_value = "all")]
+        history: String,
+        /// Days kept by `--history recent`.
+        #[arg(long, default_value_t = 30)]
+        recent_days: u64,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+        #[arg(long)]
+        yes: bool,
     },
     /// Delete stored messages older than this many days, in all conversations.
     Prune {
@@ -282,6 +308,55 @@ async fn run() -> Result<()> {
                 if n == 1 { "" } else { "s" }
             );
         }
+        Cmd::LinkNew {
+            relay,
+            timeout_secs,
+            yes,
+        } => {
+            let t = Duration::from_secs(timeout_secs);
+            let w = link::offer(&home, target(relay))?;
+            eprintln!("On a device that already uses your identity, run:");
+            eprintln!("  spike link-device <code>");
+            eprintln!(
+                "with this code (in the app it is a QR code; never send it through the relay):"
+            );
+            println!("{}", w.code);
+            let session = link::await_hello(&home, &w, t).await?;
+            println!("safety code: {}", session.safety_code);
+            if !yes && !confirm("Does the other device show exactly the same code?")? {
+                bail!("linking cancelled: codes did not match, nothing was installed");
+            }
+            eprintln!("waiting for your identity and history...");
+            let r = link::receive(&home, &w, &session, t).await?;
+            println!(
+                "linked: device list v{}, {} contacts, {} messages copied",
+                r.version, r.contacts, r.messages
+            );
+        }
+        Cmd::LinkDevice {
+            code,
+            history,
+            recent_days,
+            relay,
+            yes,
+        } => {
+            let mode = match history.as_str() {
+                "all" => link::History::All,
+                "recent" => link::History::Recent { days: recent_days },
+                "none" => link::History::None,
+                other => bail!("unknown --history '{other}': use all, recent or none"),
+            };
+            let p = link::begin(&home, target(relay.clone()), &code).await?;
+            println!("safety code: {}", p.safety_code);
+            if !yes && !confirm("Does the new device show exactly the same code?")? {
+                bail!("linking cancelled: nothing was shared");
+            }
+            let r = link::finish(&home, target(relay), p, mode).await?;
+            println!(
+                "linked: published device list v{}; sent {} contacts and {} messages, encrypted to the new device",
+                r.version, r.contacts, r.messages
+            );
+        }
         Cmd::Recv {
             relay,
             idle_ms,
@@ -320,6 +395,16 @@ async fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Ask a yes/no question on the terminal. Anything but y/yes is no.
+fn confirm(question: &str) -> Result<bool> {
+    eprint!("{question} [y/N] ");
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("reading your answer (use --yes in scripts)")?;
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 /// "2026-10-14 09:41 UTC" from ms since the epoch (no time-zone database needed).

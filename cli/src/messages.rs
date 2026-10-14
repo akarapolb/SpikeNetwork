@@ -126,6 +126,27 @@ impl<'v> MessageStore<'v> {
         Ok(out.split_off(skip))
     }
 
+    /// Every stored message, oldest first (used to build history bundles).
+    pub fn all(&self) -> Result<Vec<StoredMessage>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id_tag, conv_tag, sealed FROM messages")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, Vec<u8>>(0)?,
+                r.get::<_, Vec<u8>>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id_tag, conv_tag, sealed) = row?;
+            out.push(self.unseal(&id_tag, &conv_tag, &sealed)?);
+        }
+        out.sort_by(|a, b| a.ts.cmp(&b.ts).then_with(|| a.id.cmp(&b.id)));
+        Ok(out)
+    }
+
     /// Delete messages older than `cutoff_ms` across all conversations.
     /// Times are sealed, so this decrypts each row; fine at personal scale.
     pub fn prune_older_than(&self, cutoff_ms: u64) -> Result<usize> {
