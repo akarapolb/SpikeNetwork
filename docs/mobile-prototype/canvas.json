@@ -1,0 +1,26 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-10-14T09:00:00Z"},
+  "title": "Spike Connect Mobile",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Onboarding.dc.html": {"x": 0, "y": 0, "w": 390, "h": 844, "title": "1 · Create identity", "is_interactive": true, "radius": 36},
+    "Main.dc.html": {"x": 470, "y": 0, "w": 390, "h": 844, "title": "2 · Chats", "is_interactive": true, "radius": 36},
+    "Conversation.dc.html": {"x": 940, "y": 0, "w": 390, "h": 844, "title": "3 · Conversation", "is_interactive": true, "radius": 36},
+    "Verify.dc.html": {"x": 1410, "y": 0, "w": 390, "h": 844, "title": "4 · Verify a contact", "is_interactive": true, "radius": 36},
+    "Devices.dc.html": {"x": 0, "y": 1264, "w": 390, "h": 844, "title": "5 · Your devices", "is_interactive": true, "radius": 36},
+    "LinkDevice.dc.html": {"x": 470, "y": 1264, "w": 390, "h": 844, "title": "6 · Link a new device", "is_interactive": true, "radius": 36},
+    "Network.dc.html": {"x": 940, "y": 1264, "w": 390, "h": 844, "title": "7 · Network and privacy", "is_interactive": true, "radius": 36},
+    "AgentRequest.dc.html": {"x": 0, "y": 2528, "w": 390, "h": 844, "title": "8 · Agent approval", "is_interactive": true, "radius": 36},
+    "AgentLog.dc.html": {"x": 470, "y": 2528, "w": 390, "h": 844, "title": "9 · Agent activity log", "is_interactive": true, "radius": 36}
+  },
+  "order": ["Onboarding.dc.html", "Main.dc.html", "Conversation.dc.html", "Verify.dc.html", "Devices.dc.html", "LinkDevice.dc.html", "Network.dc.html", "AgentRequest.dc.html", "AgentLog.dc.html"],
+  "notes": {
+    "row1": {"x": 0, "y": -300, "text": "Messaging: identity, chats, verification", "kind": "title1", "maxW": 1800},
+    "row2": {"x": 0, "y": 964, "text": "Your devices and your network", "kind": "title1", "maxW": 1330},
+    "row3": {"x": 0, "y": 2228, "text": "Agents with human approval (Phase 2)", "kind": "title1", "maxW": 860},
+    "sticky1": {"x": 1880, "y": 0, "w": 300, "text": "Prototype. Click through: tabs, chat rows, Back, Verify, Link a device and the agent request are linked. No real networking or encryption.", "fill": "orange"}
+  },
+  "designSystems": []
+}

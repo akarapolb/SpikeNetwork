@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Verify Bob</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=Schibsted+Grotesk:wght@600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#0B6B73}a:hover{color:#084F55}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; display: flex; flex-direction: column; background: #F5F7F9; color: #14202B; font-family: 'IBM Plex Sans', system-ui, sans-serif; overflow: hidden">
+
+  <header style="display: flex; align-items: center; gap: 8px; padding: 12px 10px 4px">
+    <a href="Conversation.dc.html" aria-label="Back to conversation" style="width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: #14202B; border-radius: 22px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>
+    </a>
+    <h1 style="margin: 0; font-family: 'Schibsted Grotesk', sans-serif; font-size: 22px">Verify Bob Chen</h1>
+  </header>
+
+  <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 14px; padding: 6px 20px 20px">
+    <p style="margin: 0; font-size: 14.5px; color: #3A4753">Compare this with Bob in person or on a call you trust. Scan his screen, or read the numbers aloud. If they match, nobody is in the middle.</p>
+
+    <div style="display: flex; gap: 14px; align-items: center; background: #FFFFFF; border: 1px solid #D9E0E6; border-radius: 16px; padding: 14px">
+      <div role="img" aria-label="Verification QR code" style="width: 147px; height: 147px; flex: none; display: grid; grid-template-columns: repeat(21, minmax(0, 1fr)); background: #FFFFFF; border: 6px solid #FFFFFF; box-sizing: content-box">
+        <sc-for list="{{cells}}" as="cell" hint-placeholder-count="441">
+          <div style="background: {{cell.c}}; aspect-ratio: 1"></div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px; min-width: 0">
+        <span style="font-size: 12px; color: #52606D">Safety number</span>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; line-height: 1.55; letter-spacing: .02em; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 10px">
+          <span>37102</span><span>88451</span><span>06219</span><span>54930</span><span>71188</span><span>20473</span><span>93615</span><span>48802</span><span>15567</span><span>62094</span><span>30751</span><span>89236</span>
+        </div>
+      </div>
+    </div>
+
+    <section aria-labelledby="dev-h" style="background: #FFFFFF; border: 1px solid #D9E0E6; border-radius: 16px; padding: 4px 14px">
+      <h2 id="dev-h" style="margin: 10px 0 2px; font-size: 14px; font-weight: 600">Bob's devices <span style="font-weight: 400; color: #52606D">· signed list v4</span></h2>
+      <div style="display: flex; align-items: center; gap: 10px; min-height: 48px; border-bottom: 1px solid #E6EBF0">
+        <span style="flex: 1; font-size: 14.5px">Phone</span><span style="font-size: 12.5px; color: #1F5E3A">covered by your check</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; min-height: 48px; border-bottom: 1px solid #E6EBF0">
+        <span style="flex: 1; font-size: 14.5px">Laptop</span><span style="font-size: 12.5px; color: #1F5E3A">covered by your check</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; min-height: 48px">
+        <span style="flex: 1; font-size: 14.5px">Tablet <span style="font-size: 12px; color: #7A4A00; background: #FBEED0; border-radius: 4px; padding: 1px 6px; margin-left: 4px">added today</span></span><span style="font-size: 12.5px; color: #52606D">signed by Bob's identity key</span>
+      </div>
+    </section>
+
+    <p style="margin: 0; font-size: 13px; color: #52606D">You verify Bob's identity key once. His devices are covered when his identity key signs them, so a new device only needs a second look if you did not expect it.</p>
+
+    <div style="margin-top: auto; display: flex; flex-direction: column; gap: 10px">
+      <a href="Conversation.dc.html" style="display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 52px; border-radius: 14px; background: {{accent}}; color: #FFFFFF; font-weight: 600; font-size: 16px; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"></path><path d="M9 12l2 2 4-4"></path></svg>
+        The numbers match
+      </a>
+      <a href="Conversation.dc.html" style="display: flex; align-items: center; justify-content: center; min-height: 48px; border-radius: 14px; border: 1px solid #B3443F; color: #8E2B27; background: #FFFFFF; font-weight: 600; font-size: 15px; text-decoration: none">They don't match</a>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#0B6B73","options":["#0B6B73","#3B4FB8","#7A2D63","#1F5E3A"]},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const N = 21;
+    let x = 2463534242;
+    const rnd = () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x / 4294967296; };
+    const finder = (i, j, oi, oj) => {
+      const a = i - oi, b = j - oj;
+      if (a < 0 || b < 0 || a > 6 || b > 6) return null;
+      const ring = Math.max(Math.abs(a - 3), Math.abs(b - 3));
+      return ring === 3 || ring <= 1;
+    };
+    const cells = [];
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        let on = finder(i, j, 0, 0);
+        if (on === null) on = finder(i, j, 14, 0);
+        if (on === null) on = finder(i, j, 0, 14);
+        const near = (i < 8 && j < 8) || (i > 12 && j < 8) || (i < 8 && j > 12);
+        if (on === null) on = near ? false : rnd() > 0.5;
+        cells.push({ c: on ? '#14202B' : '#FFFFFF' });
+      }
+    }
+    return { accent: this.props.accent ?? '#0B6B73', cells };
+  }
+}
+</script>
+</body>
+</html>

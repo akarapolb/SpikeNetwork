@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Network and privacy</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=Schibsted+Grotesk:wght@600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#0B6B73}a:hover{color:#084F55}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; display: flex; flex-direction: column; background: #F5F7F9; color: #14202B; font-family: 'IBM Plex Sans', system-ui, sans-serif; overflow: hidden">
+
+  <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 12px; padding: 20px 20px 12px">
+    <h1 style="margin: 0; font-family: 'Schibsted Grotesk', sans-serif; font-size: 30px; line-height: 1.1">Network and privacy</h1>
+
+    <section aria-labelledby="relay-h" style="background: #FFFFFF; border: 1px solid #D9E0E6; border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px">
+      <h2 id="relay-h" style="margin: 0; font-size: 13px; font-weight: 600; color: #52606D; letter-spacing: .04em; text-transform: uppercase">Home relay</h2>
+      <div style="display: flex; align-items: center; gap: 12px">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#14202B" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="1.5"></rect><rect x="3" y="13" width="18" height="7" rx="1.5"></rect><path d="M7 7.5h.01M7 16.5h.01"></path></svg>
+        <span style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+          <b style="font-weight: 600">Spike Box at home</b>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #52606D">wss://box.home.example</span>
+        </span>
+        <span style="display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #1F5E3A"><span style="width: 8px; height: 8px; border-radius: 4px; background: #1F7A45"></span>Connected</span>
+      </div>
+      <span style="font-size: 13px; color: #3A4753">Contacts deliver here while your devices are offline. Certificate verified. You run it, so nobody else sees your traffic pattern.</span>
+      <button type="button" style="align-self: flex-start; min-height: 40px; padding: 0 14px; border-radius: 10px; border: 1px solid #C5CFD8; background: #FFFFFF; font: inherit; font-size: 14px; color: #14202B; cursor: pointer">Change relay</button>
+    </section>
+
+    <section aria-labelledby="sees-h" style="background: #FFFFFF; border: 1px solid #D9E0E6; border-radius: 16px; padding: 12px 14px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px">
+      <h2 id="sees-h" style="grid-column: 1 / -1; margin: 0 0 2px; font-size: 13px; font-weight: 600; color: #52606D; letter-spacing: .04em; text-transform: uppercase">What any relay can see</h2>
+      <div style="display: flex; flex-direction: column; gap: 4px; font-size: 13px">
+        <b style="font-weight: 600; color: #7A4A00">Can see</b>
+        <span>Device IDs</span><span>Message sizes</span><span>When devices connect</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px; font-size: 13px">
+        <b style="font-weight: 600; color: #1F5E3A">Never sees</b>
+        <span>Message text or files</span><span>Your contacts</span><span>Your history</span>
+      </div>
+    </section>
+
+    <section aria-labelledby="conn-h" style="background: #FFFFFF; border: 1px solid #D9E0E6; border-radius: 16px; padding: 4px 14px">
+      <h2 id="conn-h" style="margin: 10px 0 0; font-size: 13px; font-weight: 600; color: #52606D; letter-spacing: .04em; text-transform: uppercase">This phone</h2>
+      <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; border-bottom: 1px solid #E6EBF0">
+        <span style="flex: 1; display: flex; flex-direction: column"><span style="font-size: 15px">Connect directly when possible</span><span style="font-size: 12.5px; color: #52606D">Falls back to the relay</span></span>
+        <button type="button" role="switch" aria-checked="true" aria-label="Connect directly when possible" style="width: 50px; height: 30px; border-radius: 15px; border: 0; background: {{accent}}; position: relative; padding: 0; cursor: pointer"><span style="position: absolute; top: 3px; left: 23px; width: 24px; height: 24px; border-radius: 12px; background: #FFFFFF"></span></button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; min-height: 56px; border-bottom: 1px solid #E6EBF0">
+        <span style="flex: 1; display: flex; flex-direction: column"><span style="font-size: 15px">Unlock with fingerprint or face</span><span style="font-size: 12.5px; color: #52606D">Passphrase still required after restart</span></span>
+        <button type="button" role="switch" aria-checked="true" aria-label="Unlock with fingerprint or face" style="width: 50px; height: 30px; border-radius: 15px; border: 0; background: {{accent}}; position: relative; padding: 0; cursor: pointer"><span style="position: absolute; top: 3px; left: 23px; width: 24px; height: 24px; border-radius: 12px; background: #FFFFFF"></span></button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 12px; min-height: 56px">
+        <span style="flex: 1; display: flex; flex-direction: column"><span style="font-size: 15px">Ready for new contacts</span><span style="font-size: 12.5px; color: #52606D">30 one-time keys and a fallback key on the relay, refreshed automatically</span></span>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1F7A45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Ready"><path d="M5 12l5 5 9-10"></path></svg>
+      </div>
+    </section>
+  </div>
+
+  <nav aria-label="Main" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid #D9E0E6; background: #FFFFFF; padding: 6px 8px 14px">
+    <a href="Main.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 52px; justify-content: center; text-decoration: none; color: #52606D; font-size: 11.5px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"></path></svg>Chats</a>
+    <a href="AgentLog.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 52px; justify-content: center; text-decoration: none; color: #52606D; font-size: 11.5px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4z"></path></svg>Agents</a>
+    <a href="Devices.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 52px; justify-content: center; text-decoration: none; color: #52606D; font-size: 11.5px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="12" height="9" rx="1.5"></rect><path d="M1.5 17h15"></path><rect x="17" y="8" width="5.5" height="12" rx="1.2"></rect></svg>Devices</a>
+    <a href="Network.dc.html" aria-current="page" style="display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 52px; justify-content: center; text-decoration: none; color: {{accent}}; font-size: 11.5px; font-weight: 600">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg>Settings</a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#0B6B73","options":["#0B6B73","#3B4FB8","#7A2D63","#1F5E3A"]},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#0B6B73' };
+  }
+}
+</script>
+</body>
+</html>

@@ -96,6 +96,8 @@ Details and trade-offs: ADR 0001 (stack; message pattern superseded), 0002 (Olm 
 
 `docs/multi-device-demo.html` is a self-contained interactive simulation of the same design (vanilla JS, no real cryptography, 4 devices + relay, a guided tour, a 4-step linking wizard with history choices, and four attacks). It exists to explain the design, not to test it. Its merge rules (idempotent insert by msg_id, edit last-writer-wins by (lamport, device), delete tombstone wins, list version only increases, unsigned lists rejected) are the ones the M1-M5 milestones should implement and test.
 
+`docs/mobile-prototype/` holds the mobile client design prototype (nine Design-canvas screens plus `canvas.json`; live canvas link in its README). Design only, no app code. It assumes contacts are notified (not asked) about new devices and no backup in the first multi-device release; both are still open questions for the user.
+
 ## 9. Not code, still outstanding (needs the user / the business)
 - Answer the open decisions: Rust vs TypeScript (currently Rust by default), desktop shell, libp2p timing, monorepo vs split repos, license.
 - 15 user interviews, trademark and domain clearance for "Spike Connect", patent/dependency/export review, a named product owner, and a 90-day budget figure (none appear in the paper).

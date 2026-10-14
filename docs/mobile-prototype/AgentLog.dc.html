@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent activity</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;family=Schibsted+Grotesk:wght@600;700&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#0B6B73}a:hover{color:#084F55}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; display: flex; flex-direction: column; background: #F5F7F9; color: #14202B; font-family: 'IBM Plex Sans', system-ui, sans-serif; overflow: hidden">
+
+  <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 12px; padding: 20px 20px 12px">
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <h1 style="margin: 0; font-family: 'Schibsted Grotesk', sans-serif; font-size: 30px; line-height: 1.1">Agent activity</h1>
+      <p style="margin: 0; font-size: 14px; color: #52606D">Everything agents asked for or did, on all your devices.</p>
+    </div>
+
+    <div role="group" aria-label="Filter" style="display: flex; gap: 6px; flex-wrap: wrap">
+      <sc-for list="{{filters}}" as="f" hint-placeholder-count="4">
+        <button type="button" onClick="{{f.pick}}" aria-pressed="{{f.pressed}}" style="min-height: 36px; padding: 0 12px; border-radius: 999px; font: inherit; font-size: 13px; cursor: pointer; border: {{f.border}}; background: {{f.bg}}; color: {{f.fg}}; font-weight: {{f.weight}}">{{f.label}}</button>
+      </sc-for>
+    </div>
+
+    <ol style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; flex: 1; overflow: hidden">
+      <sc-for list="{{rows}}" as="r" hint-placeholder-count="5">
+        <li style="display: flex; gap: 12px; background: #FFFFFF; border: 1px solid #D9E0E6; border-radius: 14px; padding: 10px 12px">
+          <span style="width: 34px; height: 34px; border-radius: 10px; background: {{r.iconBg}}; color: {{r.iconFg}}; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none">{{r.initials}}</span>
+          <span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <span style="display: flex; gap: 8px; align-items: baseline"><b style="flex: 1; font-weight: 600; font-size: 14px">{{r.agent}}</b><span style="font-size: 12px; color: #52606D">{{r.when}}</span></span>
+            <span style="font-size: 14px">{{r.what}}</span>
+            <span style="align-self: flex-start; font-size: 11.5px; font-weight: 600; border-radius: 4px; padding: 1px 6px; background: {{r.tagBg}}; color: {{r.tagFg}}">{{r.status}}</span>
+          </span>
+        </li>
+      </sc-for>
+      <sc-if value="{{empty}}" hint-placeholder-val="{{ false }}">
+        <li style="font-size: 14px; color: #52606D; padding: 12px">Nothing here.</li>
+      </sc-if>
+    </ol>
+
+    <a href="AgentRequest.dc.html" style="display: flex; align-items: center; gap: 10px; text-decoration: none; color: #4A3200; background: #FBEED0; border-radius: 14px; padding: 10px 14px; min-height: 48px; box-sizing: border-box; font-size: 14px">
+      <span style="flex: 1"><b style="font-weight: 600">1 request waiting:</b> hotel booking, €286</span>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"></path></svg>
+    </a>
+
+    <div style="display: flex; gap: 8px; align-items: center; font-size: 12px; color: #1F5E3A">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"></path></svg>
+      <span>Log is hash-chained and signed. Chain checked: 148 entries intact. No message content is logged.</span>
+    </div>
+  </div>
+
+  <nav aria-label="Main" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid #D9E0E6; background: #FFFFFF; padding: 6px 8px 14px">
+    <a href="Main.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 52px; justify-content: center; text-decoration: none; color: #52606D; font-size: 11.5px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"></path></svg>Chats</a>
+    <a href="AgentLog.dc.html" aria-current="page" style="display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 52px; justify-content: center; text-decoration: none; color: {{accent}}; font-size: 11.5px; font-weight: 600">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4z"></path></svg>Agents</a>
+    <a href="Devices.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 52px; justify-content: center; text-decoration: none; color: #52606D; font-size: 11.5px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="12" height="9" rx="1.5"></rect><path d="M1.5 17h15"></path><rect x="17" y="8" width="5.5" height="12" rx="1.2"></rect></svg>Devices</a>
+    <a href="Network.dc.html" style="display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 52px; justify-content: center; text-decoration: none; color: #52606D; font-size: 11.5px">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg>Settings</a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#0B6B73","options":["#0B6B73","#3B4FB8","#7A2D63","#1F5E3A"]},"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { filter: 'all' };
+  }
+  renderVals() {
+    const accent = this.props.accent ?? '#0B6B73';
+    const S = {
+      waiting: { label: 'Waiting for you', bg: '#FBEED0', fg: '#7A4A00' },
+      approved: { label: 'Approved by you', bg: '#DFF3E6', fg: '#1F3D2A' },
+      denied: { label: 'Denied by you', bg: '#F8E1E1', fg: '#6E1F1C' },
+      allowed: { label: 'Allowed by scope', bg: '#E6EBF0', fg: '#3A4753' },
+      local: { label: 'On this phone only', bg: '#DFF0F1', fg: '#0B5A61' }
+    };
+    const all = [
+      { agent: 'Harbor Travel', initials: 'HT', when: '09:42', what: 'Asked to book Hotel Lumen and charge €286', k: 'waiting' },
+      { agent: 'Spike Assistant', initials: 'SA', when: '09:40', what: 'Summarized 3 chats. Nothing left this phone.', k: 'local' },
+      { agent: 'Harbor Travel', initials: 'HT', when: 'Yesterday', what: 'Read your travel dates for November', k: 'allowed' },
+      { agent: 'Harbor Travel', initials: 'HT', when: 'Yesterday', what: 'Asked for your passport number', k: 'denied' },
+      { agent: 'Spike Assistant', initials: 'SA', when: 'Mon', what: 'Drafted a reply to Carol; you edited and sent it', k: 'approved' }
+    ];
+    const pick = { all: () => true, waiting: r => r.k === 'waiting', decided: r => r.k === 'approved' || r.k === 'denied', auto: r => r.k === 'allowed' || r.k === 'local' };
+    const rows = all.filter(pick[this.state.filter]).map(r => {
+      const s = S[r.k];
+      const agentColor = r.initials === 'HT' ? { iconBg: '#FBEED0', iconFg: '#7A4A00' } : { iconBg: accent, iconFg: '#FFFFFF' };
+      return { ...r, ...agentColor, status: s.label, tagBg: s.bg, tagFg: s.fg };
+    });
+    const defs = [['all', 'All'], ['waiting', 'Waiting'], ['decided', 'Your decisions'], ['auto', 'Automatic']];
+    const filters = defs.map(([id, label]) => {
+      const on = this.state.filter === id;
+      return { label, pressed: on ? 'true' : 'false', border: on ? '1px solid ' + accent : '1px solid #C5CFD8', bg: on ? accent : '#FFFFFF', fg: on ? '#FFFFFF' : '#14202B', weight: on ? '600' : '400',
+        pick: () => this.setState({ filter: id }) };
+    });
+    return { accent, rows, filters, empty: rows.length === 0 };
+  }
+}
+</script>
+</body>
+</html>
