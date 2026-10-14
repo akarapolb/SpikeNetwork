@@ -27,7 +27,7 @@ Use **Olm** (X3DH-style asynchronous key agreement + Double Ratchet) through the
 2. **Prekey exhaustion.** The relay serves each prekey once, and claims are capped per connection (a reconnecting attacker resets the cap). A malicious relay or abuser can drain a device's prekeys so that new contacts cannot start sessions until it reconnects and replenishes. The fallback prekey in ADR 0006 mitigates this.
 3. If no prekey at all is available the send fails with an explanatory error. A reusable fallback prekey now keeps drained devices reachable ([ADR 0006](0006-fallback-prekey.md)).
 4. **Sessions per peer capped at 4;** simultaneous first messages from both sides create two sessions and both remain usable.
-5. **At-most-once display.** State is persisted before the ack, so a crash after persisting but before printing loses that message from the UI (it is not redelivered).
+5. ~~At-most-once display.~~ Fixed by [ADR 0007](0007-local-message-store.md): messages are stored before ratchet state is saved, and duplicates are ignored.
 6. State at rest is encrypted by [ADR 0003](0003-encrypted-state-at-rest.md).
 7. Groups remain out of scope (MLS, Phase 3).
 

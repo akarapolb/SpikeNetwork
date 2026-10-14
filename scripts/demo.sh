@@ -51,6 +51,9 @@ echo "== bob replies over the same session; alice receives"
 $B send alice "on my way"
 $A recv
 
+echo "== stored history on bob's device (encrypted at rest)"
+$B history alice
+
 echo "== bob reconnects: acked messages must not come back"
 $B recv
 echo "== plain ws:// to a non-loopback host is refused by the client"

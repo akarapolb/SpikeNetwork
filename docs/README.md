@@ -21,6 +21,7 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [adr/0004-durable-relay-storage.md](adr/0004-durable-relay-storage.md) | SQLite-backed relay queues and prekeys; what the relay disk reveals |
 | [adr/0005-tls-for-relay-connections.md](adr/0005-tls-for-relay-connections.md) | wss://, safe defaults, certificate handling |
 | [adr/0006-fallback-prekey.md](adr/0006-fallback-prekey.md) | Last-resort prekey: reachability vs first-message forward secrecy |
+| [adr/0007-local-message-store.md](adr/0007-local-message-store.md) | Encrypted message history (multi-device M1): envelope ids, sealed rows, crash-safe receive |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [multi-device-design.html](multi-device-design.html) | **Proposed** design: message history across multiple devices, fan-out, device linking, and which servers are still needed |
 | [multi-device-demo.html](multi-device-demo.html) | **Interactive simulation** of that design (no real crypto): fan-out, offline catch-up, device linking, edits, relay outage, attacks. Open in a browser |

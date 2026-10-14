@@ -2,6 +2,7 @@
 //! `spike_core::vault`); nothing secret or identifying is stored in the clear.
 //! The vault header (salt, KDF parameters) is the only plaintext file.
 
+use crate::messages::MessageStore;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use spike_core::identity::{DeviceCard, Identity};
@@ -15,6 +16,7 @@ const HEADER_FILE: &str = "vault.json";
 const IDENTITY: &str = "identity.enc";
 const SESSIONS: &str = "sessions.enc";
 const CONTACTS: &str = "contacts.enc";
+const MESSAGES: &str = "messages.db";
 
 /// An unlocked state directory.
 pub struct Home {
@@ -96,6 +98,11 @@ impl Home {
 
     pub fn save_sessions(&self, s: &Sessions) -> Result<()> {
         self.write(SESSIONS, s.to_json()?.as_bytes())
+    }
+
+    /// Encrypted message history (see [`crate::messages`]).
+    pub fn messages(&self) -> Result<MessageStore<'_>> {
+        MessageStore::open(&self.dir.join(MESSAGES), &self.vault)
     }
 
     pub fn load_contacts(&self) -> Result<Vec<Contact>> {

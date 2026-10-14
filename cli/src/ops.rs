@@ -1,7 +1,9 @@
 //! High-level operations shared by the binary and the tests.
 
+use crate::messages::{Direction, StoredMessage};
 use crate::{client::Relay, process, state::Home, transport::Target, Outcome};
 use anyhow::{anyhow, Context, Result};
+use spike_core::envelope::Envelope;
 use spike_core::identity::Identity;
 use std::time::Duration;
 
@@ -47,6 +49,8 @@ pub async fn top_up_prekeys_with(
 
 #[derive(Debug)]
 pub struct SendReport {
+    /// Envelope id of the stored message.
+    pub id: String,
     pub relay_id: String,
     pub bytes: usize,
     pub new_session: bool,
@@ -78,11 +82,22 @@ pub async fn send(
         })?;
         sessions.start_outbound(&me, &peer, &prekey)?;
     }
-    let blob = sessions.encrypt(&peer, body)?;
+    let text = std::str::from_utf8(body).context("messages must be UTF-8 text")?;
+    let env = Envelope::text(text)?;
+    let blob = sessions.encrypt(&peer, &env.to_bytes())?;
     // The ratchet has advanced; persist before the message leaves the device.
     home.save_sessions(&sessions)?;
     let relay_id = relay.send(&peer.device_id(), &blob).await?;
+    // Stored once the relay has accepted it; a failed send is not in history.
+    home.messages()?.insert(&StoredMessage {
+        id: env.id.clone(),
+        peer: hex::encode(peer.x25519),
+        direction: Direction::Out,
+        ts: env.ts,
+        body: env.body,
+    })?;
     Ok(SendReport {
+        id: env.id,
         relay_id,
         bytes: blob.len(),
         new_session,

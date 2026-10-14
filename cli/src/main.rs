@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use spike_cli::{
+    messages::Direction,
     ops,
     state::{Contact, Home},
     transport::{Target, TransportOpts},
@@ -77,6 +78,18 @@ enum Cmd {
         /// Keep running and print messages as they arrive.
         #[arg(long)]
         follow: bool,
+    },
+    /// Show stored message history with a contact (read from this device only).
+    History {
+        name: String,
+        /// How many of the most recent messages to show.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Delete stored messages older than this many days, in all conversations.
+    Prune {
+        #[arg(long)]
+        older_than_days: u64,
     },
 }
 
@@ -222,6 +235,37 @@ async fn run() -> Result<()> {
                 r.relay_id, r.bytes
             );
         }
+        Cmd::History { name, limit } => {
+            let contacts = home.load_contacts()?;
+            let c = contacts
+                .iter()
+                .find(|c| c.name == name)
+                .with_context(|| format!("no contact '{name}'"))?;
+            let peer = hex::encode(c.decode()?.x25519);
+            let msgs = home.messages()?.conversation(&peer, limit)?;
+            if msgs.is_empty() {
+                eprintln!("no stored messages with {name}");
+            }
+            for m in msgs {
+                let who = match m.direction {
+                    Direction::Out => "you",
+                    Direction::In => name.as_str(),
+                };
+                println!("{}  {who}: {}", fmt_utc(m.ts), m.body);
+            }
+        }
+        Cmd::Prune { older_than_days } => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis() as u64;
+            let n = home
+                .messages()?
+                .prune_older_than(now.saturating_sub(older_than_days * 86_400_000))?;
+            println!(
+                "deleted {n} stored message{}",
+                if n == 1 { "" } else { "s" }
+            );
+        }
         Cmd::Recv {
             relay,
             idle_ms,
@@ -234,7 +278,12 @@ async fn run() -> Result<()> {
             };
             let mut n = 0;
             ops::recv(&home, target(relay), idle, |o| match o {
-                Outcome::Message { from, verified, body } => {
+                Outcome::Message {
+                    from,
+                    verified,
+                    body,
+                    ..
+                } => {
                     let tag = if verified { "" } else { " (UNVERIFIED sender)" };
                     println!("[{from}{tag}] {}", String::from_utf8_lossy(&body));
                     n += 1;
@@ -243,6 +292,7 @@ async fn run() -> Result<()> {
                     eprintln!("dropped message from unknown key {fingerprint_hint}…; add them with `spike add` to receive");
                 }
                 Outcome::Invalid => eprintln!("dropped undecryptable or replayed message"),
+                Outcome::Duplicate => {}
             })
             .await?;
             if !follow && n == 0 {
@@ -253,11 +303,42 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+/// "2026-10-14 09:41 UTC" from ms since the epoch (no time-zone database needed).
+fn fmt_utc(ms: u64) -> String {
+    let secs = ms / 1000;
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
+        rem / 3600,
+        rem % 3600 / 60
+    )
+}
+
 fn main() {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     if let Err(e) = rt.block_on(run()) {
         // One readable line; no backtrace regardless of RUST_BACKTRACE.
         eprintln!("error: {e:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn utc_formatting() {
+        assert_eq!(super::fmt_utc(0), "1970-01-01 00:00 UTC");
+        assert_eq!(super::fmt_utc(951_782_400_000), "2000-02-29 00:00 UTC");
+        assert_eq!(super::fmt_utc(1_791_986_460_000), "2026-10-14 14:01 UTC");
     }
 }

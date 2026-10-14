@@ -10,8 +10,10 @@ use crate::{Error, Result};
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use zeroize::ZeroizeOnDrop;
 
 const MAGIC: &[u8; 4] = b"SPK1";
@@ -127,6 +129,23 @@ impl Vault {
         Ok(out)
     }
 
+    /// A deterministic keyed tag (HMAC-SHA256) for indexing sealed data by a
+    /// value without storing the value: equal inputs give equal tags under the
+    /// same vault, and nothing about the input is learnable without the key.
+    /// `label` separates uses, so a tag for one purpose never matches another.
+    /// Uses a subkey derived from the vault key, never the AEAD key itself.
+    pub fn index_tag(&self, label: &str, data: &[u8]) -> [u8; 32] {
+        type H = Hmac<Sha256>;
+        let mut sub = <H as Mac>::new_from_slice(&self.key).expect("any key length");
+        sub.update(b"spike-vault-index-key-v1");
+        let subkey = sub.finalize().into_bytes();
+        let mut m = <H as Mac>::new_from_slice(&subkey).expect("any key length");
+        m.update(label.as_bytes());
+        m.update(&[0]);
+        m.update(data);
+        m.finalize().into_bytes().into()
+    }
+
     pub fn open(&self, name: &str, sealed: &[u8]) -> Result<Vec<u8>> {
         if sealed.len() < 4 + 24 + 16 || &sealed[..4] != MAGIC {
             return Err(Error::Corrupted);
@@ -212,6 +231,22 @@ mod tests {
         let (_, mut h) = make("p");
         h.kdf.memory_kib = u32::MAX;
         assert!(Vault::unlock("p", &h).is_err());
+    }
+
+    #[test]
+    fn index_tags_are_deterministic_label_separated_and_vault_bound() {
+        let (a, _) = make("p");
+        let (b, _) = make("p");
+        assert_eq!(a.index_tag("conv", b"bob"), a.index_tag("conv", b"bob"));
+        assert_ne!(a.index_tag("conv", b"bob"), a.index_tag("conv", b"carol"));
+        assert_ne!(a.index_tag("conv", b"bob"), a.index_tag("msg", b"bob"));
+        // Label/data boundary is unambiguous.
+        assert_ne!(a.index_tag("ab", b"c"), a.index_tag("a", b"bc"));
+        assert_ne!(
+            a.index_tag("conv", b"bob"),
+            b.index_tag("conv", b"bob"),
+            "tags must depend on the vault key"
+        );
     }
 
     #[test]

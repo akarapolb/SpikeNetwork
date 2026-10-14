@@ -275,37 +275,162 @@ async fn relay_enforces_size_ttl_queue_and_claim_limits() {
     );
 }
 
-#[test]
-fn nothing_secret_or_identifying_is_stored_in_the_clear() {
+#[tokio::test]
+async fn nothing_secret_or_identifying_is_stored_in_the_clear() {
+    let url = start_relay(Config::default()).await;
     let (alice, bob) = pair("alice", "bob");
-    let card = bob.card().encode();
-    let dir = alice.home.path().to_path_buf();
-    let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        let name = path.file_name().unwrap().to_str().unwrap().to_string();
-        let bytes = std::fs::read(&path).unwrap();
-        if name == "vault.json" {
-            continue; // salt + KDF parameters only
+    // Have a real conversation so message history exists on both sides.
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    ops::send(&alice.home, &url, "bob", b"the vault code is 4417")
+        .await
+        .unwrap();
+    bob.recv(&url).await;
+    ops::send(&bob.home, &url, "alice", b"got it, see you at noon")
+        .await
+        .unwrap();
+    alice.recv(&url).await;
+
+    let card = bob.card();
+    let card_hex = card.encode();
+    let bob_key = hex::encode(card.x25519);
+    for d in [&alice, &bob] {
+        let dir = d.home.path().to_path_buf();
+        let mut sealed = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            let bytes = std::fs::read(&path).unwrap();
+            if name == "vault.json" {
+                continue; // salt + KDF parameters only
+            }
+            if name.ends_with(".enc") {
+                assert_eq!(&bytes[..4], b"SPK1", "{name} is not sealed");
+                sealed += 1;
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            for needle in [
+                "bob",
+                "alice",
+                &card_hex[7..39],
+                &bob_key[..32],
+                "ed25519",
+                "verified",
+                "vault code",
+                "see you at noon",
+                "direction",
+            ] {
+                assert!(!text.contains(needle), "{name} leaks {needle}");
+            }
         }
-        assert_eq!(&bytes[..4], b"SPK1", "{name} is not sealed");
-        let text = String::from_utf8_lossy(&bytes);
-        for needle in ["bob", "alice", &card[7..39], "ed25519", "verified"] {
-            assert!(!text.contains(needle), "{name} leaks {needle}");
+        assert_eq!(
+            sealed, 3,
+            "identity, sessions and contacts must all be sealed"
+        );
+        assert!(dir.join("messages.db").exists(), "history must be stored");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir), 0o700);
+            assert_eq!(mode(&dir.join("identity.enc")), 0o600);
+            assert_eq!(mode(&dir.join("messages.db")), 0o600);
         }
-        checked += 1;
     }
+}
+
+#[tokio::test]
+async fn history_records_both_directions_on_each_side() {
+    let url = start_relay(Config::default()).await;
+    let (alice, bob) = pair("alice", "bob");
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    let s1 = ops::send(&alice.home, &url, "bob", b"one").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    ops::send(&alice.home, &url, "bob", b"two").await.unwrap();
+    bob.recv(&url).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    ops::send(&bob.home, &url, "alice", b"three").await.unwrap();
+    alice.recv(&url).await;
+
+    let view = |d: &Device, peer: &Device| {
+        let key = hex::encode(peer.card().x25519);
+        d.home
+            .messages()
+            .unwrap()
+            .conversation(&key, 100)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.direction, m.body))
+            .collect::<Vec<_>>()
+    };
+    use spike_cli::messages::Direction::{In, Out};
     assert_eq!(
-        checked, 3,
-        "identity, sessions and contacts must all be sealed"
+        view(&alice, &bob),
+        vec![
+            (Out, "one".into()),
+            (Out, "two".into()),
+            (In, "three".into())
+        ]
     );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&dir), 0o700);
-        assert_eq!(mode(&dir.join("identity.enc")), 0o600);
-    }
+    assert_eq!(
+        view(&bob, &alice),
+        vec![
+            (In, "one".into()),
+            (In, "two".into()),
+            (Out, "three".into())
+        ]
+    );
+    // The same message has the same id on both devices.
+    assert!(bob.home.messages().unwrap().contains(&s1.id).unwrap());
+}
+
+#[tokio::test]
+async fn crash_between_storing_and_saving_ratchet_neither_loses_nor_doubles() {
+    let url = start_relay(Config::default()).await;
+    let (alice, bob) = pair("alice", "bob");
+    ops::publish_keys(&bob.home, &url).await.unwrap();
+    ops::send(&alice.home, &url, "bob", b"exactly once")
+        .await
+        .unwrap();
+
+    // Bob fetches the blob without acking, and snapshots his state files first.
+    let me = bob.home.load_identity().unwrap();
+    let mut relay = Relay::connect(&url, &me).await.unwrap();
+    let d = relay
+        .next_delivery(Some(Duration::from_millis(300)))
+        .await
+        .unwrap()
+        .unwrap();
+    let dir = bob.home.path().to_path_buf();
+    let snap = |n: &str| std::fs::read(dir.join(n)).unwrap();
+    let (old_id, old_sess) = (snap("identity.enc"), snap("sessions.enc"));
+
+    let (mut me, mut sessions) = (
+        bob.home.load_identity().unwrap(),
+        bob.home.load_sessions().unwrap(),
+    );
+    assert!(matches!(
+        spike_cli::process(&bob.home, &mut me, &mut sessions, &d.blob).unwrap(),
+        Outcome::Message { .. }
+    ));
+
+    // "Crash": the message row was written but the ratchet/identity save is lost.
+    std::fs::write(dir.join("identity.enc"), old_id).unwrap();
+    std::fs::write(dir.join("sessions.enc"), old_sess).unwrap();
+
+    // Redelivery: decrypts again with the old state, and the store ignores the duplicate.
+    let (mut me, mut sessions) = (
+        bob.home.load_identity().unwrap(),
+        bob.home.load_sessions().unwrap(),
+    );
+    assert_eq!(
+        spike_cli::process(&bob.home, &mut me, &mut sessions, &d.blob).unwrap(),
+        Outcome::Duplicate
+    );
+    let key = hex::encode(alice.card().x25519);
+    let stored = bob.home.messages().unwrap().conversation(&key, 10).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].body, "exactly once");
 }
 
 #[test]
