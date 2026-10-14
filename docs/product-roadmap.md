@@ -37,6 +37,8 @@ Launch thesis: agent communication + private messaging, aimed at Spike OS / Box 
 | Business | ≥3 paying design partners before significant scale spend |
 | Security | No unresolved criticals before public launch; incident response and key-recovery tested |
 | Agent value | ≥70% of pilot agent tasks completed with correct authorization and no manual rework |
+| Release integrity [Proposed] | Before public launch: reproducible builds, binary transparency log, threshold release signing; key transparency before scale |
+| Legal readiness [Proposed] | Before launch in any country: lawful-access exposure review and a published legal-requests policy |
 
 ## 6. Proposed refinements
 - **[Proposed]** Instrument the gates from Phase 1: define "weekly active", "accepted message", "task completed" precisely before measuring them.

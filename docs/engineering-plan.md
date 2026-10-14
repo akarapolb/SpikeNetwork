@@ -67,6 +67,15 @@ Mobile, MLS groups, multi-device sync, backup/recovery, admin console, billing, 
 - Independent security review scheduled before private beta; external audit before public launch (gate: no unresolved criticals).
 - Incident response and key-recovery drills before Phase 4.
 
+## 7a. Release integrity and compelled-access resistance [Proposed]
+Required before any **public** launch (see the roadmap's release gates and the threat model section "Powerful adversaries and compelled access"):
+1. **Reproducible builds** for the relay, CLI and mobile clients, with a documented way for anyone to rebuild and compare.
+2. **Binary transparency**: every release hash appended to a public, append-only log; clients and the updater refuse builds that are not in the log.
+3. **Threshold release signing**: several signers, ideally in different jurisdictions, with keys in hardware security modules; a written key ceremony.
+4. **Key transparency**: a public log of identity keys and device lists (builds on ADR 0008) so equivocation by any server is detectable by clients and auditors.
+5. **Metadata minimisation on hosted relays**: no content-free logs beyond what operations need, short retention, then sealed sender and size padding.
+6. **Published independent audits** of the protocol and clients.
+
 ## 8. Operations
 - Relay observability: counts, latency, queue depth, errors. No content, minimal logs, with retention stated.
 - Abuse controls: rate limits, spam throttling, block lists, per-org policy.

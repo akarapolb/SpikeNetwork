@@ -53,6 +53,14 @@ Gross margin must account for bandwidth, push, storage, support, security, abuse
 ## 8. Open source and IP [Paper]
 Publish specs, SDKs, reference clients, self-hostable relay under a permissive license (Apache-2.0 candidate; **[Open]** legal decision). Maintain a trademark policy. Before release: trademark and domain clearance for "Spike Connect", patent and dependency review, export/compliance review.
 
+## 8a. Regulators and lawful requests [Proposed]
+- **Posture:** cooperative and transparent, not adversarial. Comply with lawful orders where Spike operates; be precise about what is technically possible (no message content, limited metadata). Engage regulators early, before launch in each market.
+- **Lawful-access exposure review per country** before launch: encryption licensing, data-localisation rules, interception or "technical assistance" obligations, and export controls. Some of these can conflict with the product; decide market entry with that knowledge, not after.
+- **Published legal-requests policy** stating what can and cannot be provided, plus **transparency reports** of requests received, where the law allows. Warrant canaries are legally untested; do not rely on them.
+- **Pre-decided response** to an order to weaken the product (for example, withdraw from that market rather than ship a weaker version), agreed by the board before it is ever needed.
+- **Structure:** choose the company's jurisdiction and hosted-relay locations deliberately; self-hosted relays (Spike Box, enterprise) keep traffic out of Spike's hands entirely.
+- Not legal advice: engage counsel in each target jurisdiction.
+
 ## 9. Budget and organization
 - **[Paper]** Appoint a single product owner; approve a 90-day capped discovery/pilot budget. Suggested core team: product lead, 2 protocol/security engineers, 2 desktop/mobile engineers, 1 backend/relay engineer, 1 QA/SRE, shared design and security review.
 - **[Open]** Budget figure for the 90-day cap, and whether the independent security review (Phase 3 scheduling, Phase 5 audit) is funded separately.

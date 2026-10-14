@@ -98,8 +98,12 @@ Details and trade-offs: ADR 0001 (stack; message pattern superseded), 0002 (Olm 
 
 `docs/mobile-prototype/` holds the mobile client design prototype (nine Design-canvas screens plus `canvas.json`; live canvas link in its README). Design only, no app code. It assumes contacts are notified (not asked) about new devices and no backup in the first multi-device release; both are still open questions for the user.
 
+## 8a. Before any public launch (added after the security discussion)
+Release integrity and compelled-access resistance are now explicit pre-launch gates: reproducible builds, binary transparency, threshold release signing, key transparency, relay metadata minimisation, published audits (engineering plan section 7a; threat model "Powerful adversaries and compelled access"; roadmap release gates). Stance agreed with the user: cooperative and transparent with governments, not adversarial; obey the law where Spike operates; design so little can be handed over (business plan section 8a).
+
 ## 9. Not code, still outstanding (needs the user / the business)
 - Answer the open decisions: Rust vs TypeScript (currently Rust by default), desktop shell, libp2p timing, monorepo vs split repos, license.
+- A lawful-access exposure review per target country, a legal-requests policy, and a pre-decided response to an order to weaken the product (business plan 8a).
 - 15 user interviews, trademark and domain clearance for "Spike Connect", patent/dependency/export review, a named product owner, and a 90-day budget figure (none appear in the paper).
 - Commission the independent security review before any private beta (Phase 3 gate in the roadmap).
 - Pricing, the year-two ARR scenario and all gates are hypotheses from the paper, not validated. The year-two total ($1,554,000) was re-checked; about 62% of it comes from Business and Personal Plus seats.

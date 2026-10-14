@@ -39,5 +39,21 @@ No anonymity and no metadata protection is claimed.
 | Metadata inference | **Open** | Needs padding/batching research; documented, not solved |
 | Abusive agents | **Open** | Agent permissions and approval flow are Phase 2 |
 
+## Powerful adversaries and compelled access
+
+**Stance.** Spike Connect is not built against any government. It obeys the law where it operates, says plainly what it can and cannot technically provide, and is designed so that what it *can* provide is very little. Strong security protects citizens, businesses and public institutions from criminals, foreign intelligence services and insiders; the same properties also limit what any single operator can be compelled to hand over or change. This section treats "powerful adversary" as a **capability class**: well-resourced criminal groups, foreign state actors, rogue insiders, and legal orders that compel the operator to act.
+
+| Threat | Status today | Planned mitigation | Residual risk |
+|---|---|---|---|
+| Operator ordered to disclose message content | Mitigated | Relays hold only ciphertext; no accounts, contact lists or history on servers; local state encrypted under the user's passphrase | None for content the operator never had |
+| Operator ordered to disclose metadata | Partial | No relay logging and short retention on hosted relays; sealed sender (relay does not learn who sent); size padding; encouraging self-hosted relays | A relay still sees which device receives traffic and when |
+| Operator compelled to ship a modified (backdoored) client, for everyone or one target | **Open** | Open source; reproducible builds; binary transparency (every release in a public append-only log, clients refuse unlogged updates); release signing split across several people in different jurisdictions using hardware security modules; published independent audits | Users who skip verification or install from untrusted sources |
+| Server-side key substitution to intercept a contact | Partial | Device lists and prekeys signed by the person's keys (ADR 0002, 0008); rollback and equivocation refused; safety numbers; **key transparency** log so a server cannot show different keys to different people undetected | First contact via an unverified invite link is trust-on-first-use until safety numbers are compared |
+| Service blocked in a country | **Open** | Many independent and self-hosted relays; direct device-to-device paths; proxy and circumvention transports; distribution outside app stores | Determined network blocking can still degrade service |
+| Seized or confiscated device | Partial | Encrypted at rest (ADR 0003); remote device removal and disappearing messages (multi-device design) | An unlocked device, or a coerced passphrase |
+| Targeted malware on a user's phone | Out of scope | Platform security, prompt updates, audits | Any end-to-end system is defeated by a fully compromised endpoint |
+
+**Legal and organisational measures** (business plan, section 8): jurisdiction choice for the company and hosted relays, a lawful-access exposure review per country before launch, a published policy for handling legal requests, and transparency reports where the law allows.
+
 ## Before any real use
-Independent security review, per-sender and per-account rate limiting, delivery receipts, relay-side rate limiting.
+Independent security review, reproducible builds with binary transparency (before public launch), per-sender and per-account rate limiting, delivery receipts, relay-side rate limiting.
