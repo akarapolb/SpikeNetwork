@@ -90,6 +90,29 @@ enum Cmd {
         #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
         relay: String,
     },
+    /// Mark a conversation read here and on your other devices.
+    Read {
+        name: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Show unread incoming messages per contact (as marked by `spike read` on any of your devices).
+    Unread,
+    /// Ask your other devices for messages, edits and deletes this device missed
+    /// (e.g. after being offline longer than the relay keeps messages). They answer when they next run `recv`.
+    Sync {
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+        /// Seconds to wait for answers from devices that are online right now.
+        #[arg(long, default_value_t = 3)]
+        wait_secs: u64,
+    },
+    /// Ask your other devices to re-supply an attachment the relay no longer has.
+    RequestFile {
+        id: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
     /// Edit a message you sent (by id or its first 6+ characters from `spike history`).
     Edit {
         id: String,
@@ -383,6 +406,43 @@ async fn run() -> Result<()> {
             let theirs = r.devices.iter().filter(|d| !d.own).count();
             println!("sent {file_name} ({} bytes, encrypted) to {} of {name}'s {theirs} device(s); message id {}", bytes.len(), r.delivered(), &r.id[..8]);
         }
+        Cmd::Read { name, relay } => {
+            let n = ops::mark_read(&home, target(relay), &name).await?;
+            println!("{name} marked read; told {n} of your other devices");
+        }
+        Cmd::Unread => {
+            let mut any = false;
+            for (name, n) in ops::unread_counts(&home)? {
+                if n > 0 {
+                    println!("{name}: {n} unread");
+                    any = true;
+                }
+            }
+            if !any {
+                println!("nothing unread");
+            }
+        }
+        Cmd::Sync { relay, wait_secs } => {
+            let n = ops::request_catch_up(&home, target(relay.clone())).await?;
+            println!("asked {n} of your other devices for what this one missed");
+            let mut changed = 0;
+            ops::recv(
+                &home,
+                target(relay),
+                Some(Duration::from_secs(wait_secs)),
+                |o| {
+                    if let Outcome::CaughtUp { changed: c, .. } = o {
+                        changed += c;
+                    }
+                },
+            )
+            .await?;
+            println!("caught up: {changed} message(s) added or updated (devices that are offline answer when they next run `spike recv`)");
+        }
+        Cmd::RequestFile { id, relay } => {
+            let n = ops::request_file(&home, target(relay), &id).await?;
+            println!("asked {n} of your other devices for the file; run `spike recv` shortly, then `spike fetch {id}`");
+        }
         Cmd::Edit { id, text, relay } => {
             let r = ops::edit(&home, target(relay), &id, &text).await?;
             for n in &r.notes {
@@ -506,6 +566,12 @@ async fn run() -> Result<()> {
                 Outcome::Edited { who, id } => println!("[{who} edited message {}]", &id[..8]),
                 Outcome::Deleted { who, id } => println!("[{who} deleted message {}]", &id[..8]),
                 Outcome::Rejected { reason } => eprintln!("ignored a change: {reason}"),
+                Outcome::ReadSynced { peer } => println!("[your other device marked {peer} read]"),
+                Outcome::CaughtUp { changed, last } => {
+                    println!("[caught up from your other device: {changed} change(s){}]", if last { ", complete" } else { "" });
+                }
+                Outcome::FileReady { id } => println!("[your other device re-supplied a file: `spike fetch {}`]", &id[..8]),
+                Outcome::SyncRequest { .. } => println!("[answered a request from your other device]"),
                 Outcome::SentCopy { to, body, .. } => {
                     println!("[you -> {to}, sent from your other device] {}", String::from_utf8_lossy(&body));
                 }

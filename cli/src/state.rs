@@ -20,6 +20,8 @@ const CONTACTS: &str = "contacts.enc";
 const MESSAGES: &str = "messages.db";
 const OWNER: &str = "owner.enc";
 const LAMPORT: &str = "lamport.enc";
+const READ: &str = "read.enc";
+const LAST_SYNC: &str = "lastsync.enc";
 const DEVICE_LIST: &str = "devicelist.enc";
 
 /// An unlocked state directory.
@@ -288,6 +290,51 @@ impl Home {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn read_opt(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        if self.dir.join(name).exists() {
+            Ok(Some(self.read(name)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Everything in this conversation up to this sender-time (ms) counts as read. 0 if never.
+    pub fn read_marker(&self, peer: &str) -> Result<u64> {
+        let map: std::collections::BTreeMap<String, u64> = match self.read_opt(READ)? {
+            Some(b) => serde_json::from_slice(&b)?,
+            None => Default::default(),
+        };
+        Ok(map.get(peer).copied().unwrap_or(0))
+    }
+
+    /// Move the read marker forward (never back). Returns whether it moved.
+    pub fn advance_read_marker(&self, peer: &str, upto: u64) -> Result<bool> {
+        let mut map: std::collections::BTreeMap<String, u64> = match self.read_opt(READ)? {
+            Some(b) => serde_json::from_slice(&b)?,
+            None => Default::default(),
+        };
+        if map.get(peer).copied().unwrap_or(0) >= upto {
+            return Ok(false);
+        }
+        map.insert(peer.to_string(), upto);
+        self.write(READ, &serde_json::to_vec(&map)?)?;
+        Ok(true)
+    }
+
+    /// When this device last finished collecting its relay queue (ms, local clock); 0 if never.
+    pub fn last_sync(&self) -> u64 {
+        self.read_opt(LAST_SYNC)
+            .ok()
+            .flatten()
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    pub fn set_last_sync(&self, ms: u64) -> Result<()> {
+        self.write(LAST_SYNC, ms.to_string().as_bytes())
     }
 
     /// Remove a locally kept attachment (best effort), e.g. when its message is deleted.

@@ -46,6 +46,18 @@ pub struct StoredMessage {
     /// message cannot reappear from a late or replayed copy.
     #[serde(default)]
     pub deleted: bool,
+    /// When this device last learned or changed this message (ms, local clock).
+    /// Set by the store on every write. Used to answer "what changed since T?"
+    /// from another of the person's devices (catch-up).
+    #[serde(default)]
+    pub changed_at: u64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl StoredMessage {
@@ -107,6 +119,9 @@ impl<'v> MessageStore<'v> {
     /// Store a message. Returns false if a message with this id is already
     /// stored (redelivery, replay of the same envelope, or a second copy).
     pub fn insert(&self, m: &StoredMessage) -> Result<bool> {
+        let mut m = m.clone();
+        m.changed_at = now_ms();
+        let m = &m;
         let (id_tag, conv_tag) = self.tags(&m.id, &m.peer);
         let sealed = self
             .vault
@@ -200,6 +215,9 @@ impl<'v> MessageStore<'v> {
 
     /// Replace the content of an already stored message (same id and conversation).
     pub fn update(&self, m: &StoredMessage) -> Result<()> {
+        let mut m = m.clone();
+        m.changed_at = now_ms();
+        let m = &m;
         let (id_tag, conv_tag) = self.tags(&m.id, &m.peer);
         let sealed = self
             .vault
@@ -214,6 +232,47 @@ impl<'v> MessageStore<'v> {
             ));
         }
         Ok(())
+    }
+
+    /// Messages this device learned or changed at or after `since_ms` (local clock).
+    pub fn changed_since(&self, since_ms: u64) -> Result<Vec<StoredMessage>> {
+        Ok(self
+            .all()?
+            .into_iter()
+            .filter(|m| m.changed_at >= since_ms)
+            .collect())
+    }
+
+    /// Fold one record from another of the person's own devices into the local
+    /// history, using the same rules as live edits and deletes: unknown messages
+    /// are inserted (tombstones included); a delete always wins; a newer edit
+    /// wins. Returns whether anything changed. Never resurrects a deleted message.
+    pub fn merge_record(&self, r: &StoredMessage) -> Result<bool> {
+        let Some(mut cur) = self.get(&r.id)? else {
+            return self.insert(r);
+        };
+        if cur.peer != r.peer || cur.direction != r.direction {
+            return Ok(false); // inconsistent record: not ours to apply
+        }
+        if r.deleted && !cur.deleted {
+            cur.deleted = true;
+            cur.body.clear();
+            cur.attachment = None;
+            self.update(&cur)?;
+            return Ok(true);
+        }
+        if !cur.deleted
+            && !r.deleted
+            && (r.lamport, r.stamp_device.as_str()) > (cur.lamport, cur.stamp_device.as_str())
+        {
+            cur.body = r.body.clone();
+            cur.edited = r.edited;
+            cur.lamport = r.lamport;
+            cur.stamp_device = r.stamp_device.clone();
+            self.update(&cur)?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Every stored message, oldest first (used to build history bundles).
@@ -311,6 +370,7 @@ mod tests {
             stamp_device: String::new(),
             edited: false,
             deleted: false,
+            changed_at: 0,
             id: id.into(),
             peer: peer.into(),
             direction: d,

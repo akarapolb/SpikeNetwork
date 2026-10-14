@@ -343,9 +343,9 @@ async fn nothing_secret_or_identifying_is_stored_in_the_clear() {
                 assert!(!text.contains(needle), "{name} leaks {needle}");
             }
         }
-        assert_eq!(
-            sealed, 6,
-            "identity, sessions, contacts, owner key, device list and logical clock must all be sealed"
+        assert!(
+            sealed >= 6,
+            "identity, sessions, contacts, owner key, device list and logical clock (and any sync state) must all be sealed; found {sealed}"
         );
         assert!(dir.join("messages.db").exists(), "history must be stored");
         #[cfg(unix)]

@@ -21,6 +21,10 @@ pub enum Kind {
     Edit,
     /// Delete an earlier message by the same author (`target`).
     Delete,
+    /// Housekeeping between a person's OWN devices (read state, catch-up,
+    /// file requests). The body is JSON owned by the client. Receivers must
+    /// refuse it from anyone who is not one of their own devices.
+    Sync,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -82,6 +86,13 @@ impl Envelope {
         Ok(e)
     }
 
+    /// A sync message for the sender's own devices; `json` is the client's payload.
+    pub fn sync(json: &str) -> Result<Self> {
+        let mut e = Self::text(json)?;
+        e.kind = Kind::Sync;
+        Ok(e)
+    }
+
     /// A delete of message `target`.
     pub fn delete(target: &str) -> Result<Self> {
         let mut e = Self::text("")?;
@@ -109,7 +120,7 @@ impl Envelope {
         });
         let att_ok = e.attachment.as_ref().is_none_or(|a| a.validate().is_ok());
         let target_ok = match e.kind {
-            Kind::Text => e.target.is_none(),
+            Kind::Text | Kind::Sync => e.target.is_none(),
             Kind::Edit | Kind::Delete => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
@@ -121,6 +132,7 @@ impl Envelope {
             Kind::Text => true,
             Kind::Edit => e.attachment.is_none(),
             Kind::Delete => e.attachment.is_none() && e.body.is_empty(),
+            Kind::Sync => e.attachment.is_none() && !e.body.is_empty(),
         };
         if e.v != VERSION
             || !id_ok
@@ -216,6 +228,19 @@ mod tests {
         delete_with_body.body = "x".into();
         for bad in [no_target, bad_target, text_with_target, delete_with_body] {
             assert!(Envelope::from_bytes(&bad.to_bytes()).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn sync_envelopes_validate() {
+        let s = Envelope::sync("{\"type\":\"read\"}").unwrap();
+        assert_eq!(Envelope::from_bytes(&s.to_bytes()).unwrap(), s);
+        let mut empty = s.clone();
+        empty.body.clear();
+        let mut with_target = s.clone();
+        with_target.target = Some("ab".repeat(16));
+        for bad in [empty, with_target] {
+            assert!(Envelope::from_bytes(&bad.to_bytes()).is_err());
         }
     }
 

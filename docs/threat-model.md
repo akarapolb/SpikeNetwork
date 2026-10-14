@@ -1,4 +1,4 @@
-# Threat model (Phase 0 draft, updated through ADR 0012)
+# Threat model (Phase 0 draft, updated through ADR 0013)
 
 Scope: the code in this repository today (`core`, `relay`, `cli`). It will grow with the product. Each item is marked **mitigated**, **partial**, or **open**.
 
@@ -26,6 +26,9 @@ No anonymity and no metadata protection is claimed.
 | Key substitution during pairing | Partial | Cards are self-signed (keys can't be mixed). A substituted *whole* card is only caught if users compare the fingerprint out of band; contacts start **UNVERIFIED** and the CLI warns |
 | Device-list rollback, equivocation, or a device added without the owner key | Mitigated | Lists are signed by the person's owner key; lower versions and two different lists with one version are refused even with `--force` (ADR 0008). Lists are published on relays (ADR 0009); relays enforce the same rules and only accept a list from a device in it; clients re-check everything they fetch |
 | Relay withholds a newer device list (sender misses a new device) | Partial | Senders refresh before every send and on any unknown sender; key transparency planned (engineering plan 7a) |
+| A contact (or anyone else) sends the "own devices only" sync messages | Mitigated | Sync messages are accepted only from devices in your own signed list; from anyone else they are refused and trigger nothing (ADR 0013) |
+| A malicious own-device file offer replaces a message's file | Mitigated | The offer must match the message's hash, size and name, and the file is re-verified on download (ADR 0013) |
+| A compromised own device feeds its siblings false history | Accepted | It already holds the owner key (ADR 0010); it still cannot forge a contact's messages into the wrong conversation or direction |
 | Someone forges an edit or delete of another person's message | Mitigated | Only the author (same person, same conversation) may change a message; other changes are refused and reported (ADR 0012) |
 | A deleted message is kept by a recipient's device or screenshot | Open, inherent | Deletion is honoured by honest devices only; the product must not promise erasure |
 | Relay or attacker reads or alters attachments | Mitigated | Per-file random key, authenticated chunks bound to blob id/index/count, whole-file hash; tampered chunks refused, nothing kept (ADR 0011). File sizes are visible to the relay |

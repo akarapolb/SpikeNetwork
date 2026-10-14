@@ -3,6 +3,7 @@ pub mod link;
 pub mod messages;
 pub mod ops;
 pub mod state;
+pub mod sync;
 pub mod transport;
 
 use messages::{Direction, StoredMessage};
@@ -44,6 +45,18 @@ pub enum Outcome {
     Rejected { reason: String },
     /// A first message from a key that is not a contact. Dropped; no session is created.
     UnknownSender { fingerprint_hint: String },
+    /// Another of your devices marked a conversation read (merged by max).
+    ReadSynced { peer: String },
+    /// A catch-up answer from another of your devices was merged; `changed`
+    /// counts messages added or updated. `last` marks the final slice.
+    CaughtUp { changed: usize, last: bool },
+    /// Another of your devices re-supplied an attachment; `spike fetch` can now get it.
+    FileReady { id: String },
+    /// Another of your devices asks for help (catch-up or a file). The caller answers.
+    SyncRequest {
+        from_device: String,
+        msg: sync::SyncMsg,
+    },
     /// Not decryptable: corrupted, tampered, replayed, or not for us.
     Invalid,
 }
@@ -89,6 +102,8 @@ pub fn apply_change(
             m.body.clear();
             m.attachment = None;
             m.deleted = true;
+            m.lamport = stamp.0;
+            m.stamp_device = stamp.1;
             store.update(&m)?;
             home.delete_attachment(&m.id)?;
         }
@@ -109,6 +124,7 @@ pub fn apply_change(
                 stamp_device: stamp.1,
                 edited: false,
                 deleted: true,
+                changed_at: 0,
             })?;
         }
         _ => {}
@@ -168,6 +184,14 @@ pub fn process(
             match owner_of[device] {
                 // From one of our own other devices.
                 None => {
+                    if env.kind == Kind::Sync {
+                        let outcome = match sync::SyncMsg::from_envelope(&env) {
+                            Ok(msg) => apply_sync(home, &contacts, msg, &sender_device)?,
+                            Err(_) => Outcome::Invalid,
+                        };
+                        persist(sessions, me)?;
+                        return Ok(outcome);
+                    }
                     let Some(to) = env.to.clone() else {
                         persist(sessions, me)?;
                         return Ok(Outcome::Invalid);
@@ -197,6 +221,7 @@ pub fn process(
                         stamp_device: sender_device,
                         edited: false,
                         deleted: false,
+                        changed_at: 0,
                     })?;
                     persist(sessions, me)?;
                     if !fresh {
@@ -211,6 +236,16 @@ pub fn process(
                 // From a contact.
                 Some(contact) => {
                     let peer = contacts[contact].conversation_key()?;
+                    if env.kind == Kind::Sync {
+                        // Sync messages are for a person's own devices only. A contact has no business sending one.
+                        persist(sessions, me)?;
+                        return Ok(Outcome::Rejected {
+                            reason: format!(
+                                "{} sent a message reserved for your own devices",
+                                contacts[contact].name
+                            ),
+                        });
+                    }
                     if env.kind != Kind::Text {
                         let action = apply_change(home, &env, false, &peer, &sender_device)?;
                         persist(sessions, me)?;
@@ -232,6 +267,7 @@ pub fn process(
                         stamp_device: sender_device,
                         edited: false,
                         deleted: false,
+                        changed_at: 0,
                     })?;
                     persist(sessions, me)?;
                     if !fresh {
@@ -253,6 +289,66 @@ pub fn process(
         }),
         Err(_) => Ok(Outcome::Invalid),
     }
+}
+
+/// Apply a sync message that came from one of our own devices.
+fn apply_sync(
+    home: &Home,
+    contacts: &[state::Contact],
+    msg: sync::SyncMsg,
+    sender_device: &str,
+) -> anyhow::Result<Outcome> {
+    use sync::SyncMsg;
+    Ok(match msg {
+        SyncMsg::Read { peer, upto } => {
+            home.advance_read_marker(&peer, upto)?;
+            let name = contacts
+                .iter()
+                .find(|c| c.conversation_key().ok().as_deref() == Some(peer.as_str()))
+                .map_or(peer, |c| c.name.clone());
+            Outcome::ReadSynced { peer: name }
+        }
+        SyncMsg::CatchUpBatch { messages, last } => {
+            let store = home.messages()?;
+            let mut changed = 0;
+            for r in &messages {
+                if store.merge_record(r)? {
+                    changed += 1;
+                }
+                if r.deleted {
+                    home.delete_attachment(&r.id)?;
+                }
+                home.observe_lamport(r.lamport)?;
+            }
+            Outcome::CaughtUp { changed, last }
+        }
+        SyncMsg::FileOffer { msg_id, attachment } => {
+            let store = home.messages()?;
+            match store.get(&msg_id)? {
+                Some(mut m)
+                    if m.attachment.as_ref().is_some_and(|a| {
+                        a.sha256 == attachment.sha256
+                            && a.size == attachment.size
+                            && a.name == attachment.name
+                    }) =>
+                {
+                    // Same file (same hash, size, name), new key and blob on a fresh relay copy.
+                    m.attachment = Some(attachment);
+                    store.update(&m)?;
+                    Outcome::FileReady { id: msg_id }
+                }
+                _ => Outcome::Rejected {
+                    reason: "a file offer did not match the message it names".into(),
+                },
+            }
+        }
+        req @ (SyncMsg::CatchUpRequest { .. } | SyncMsg::FileRequest { .. }) => {
+            Outcome::SyncRequest {
+                from_device: sender_device.to_string(),
+                msg: req,
+            }
+        }
+    })
 }
 
 fn change_outcome(

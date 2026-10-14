@@ -8,6 +8,7 @@
 
 use crate::messages::{Direction, StoredMessage};
 use crate::state::{Added, OwnUpdate};
+use crate::sync::{self, SyncMsg};
 use crate::{client::Relay, process, state::Home, transport::Target, Outcome};
 use anyhow::{anyhow, bail, Context, Result};
 use spike_core::attachment::{seal_file, Attachment};
@@ -326,6 +327,17 @@ fn own_message(home: &Home, msg_id: &str) -> Result<(StoredMessage, String)> {
     Ok((m.clone(), c.name.clone()))
 }
 
+/// Send any envelope to a contact's devices (and your own other devices) like a
+/// message. Public so tests can send hand-made envelopes.
+pub async fn deliver_envelope(
+    home: &Home,
+    relay: impl Into<Target>,
+    name: &str,
+    env: Envelope,
+) -> Result<SendReport> {
+    deliver(home, relay.into(), name, env).await
+}
+
 async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Result<SendReport> {
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
@@ -394,21 +406,27 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
         );
     }
     // Applied locally once at least one of the recipient's devices has it.
-    if env.kind == Kind::Text {
-        home.messages()?.insert(&StoredMessage {
-            id: env.id.clone(),
-            peer: peer.owner_hex(),
-            direction: Direction::Out,
-            ts: env.ts,
-            body: env.body,
-            attachment: env.attachment,
-            lamport: env.lamport,
-            stamp_device: my_id.clone(),
-            edited: false,
-            deleted: false,
-        })?;
-    } else {
-        crate::apply_change(home, &env, true, &peer.owner_hex(), &my_id)?;
+    match env.kind {
+        Kind::Text => {
+            home.messages()?.insert(&StoredMessage {
+                id: env.id.clone(),
+                peer: peer.owner_hex(),
+                direction: Direction::Out,
+                ts: env.ts,
+                body: env.body,
+                attachment: env.attachment,
+                lamport: env.lamport,
+                stamp_device: my_id.clone(),
+                edited: false,
+                deleted: false,
+                changed_at: 0,
+            })?;
+        }
+        Kind::Edit | Kind::Delete => {
+            crate::apply_change(home, &env, true, &peer.owner_hex(), &my_id)?;
+        }
+        // Sync messages change nothing in the sender's own history.
+        Kind::Sync => {}
     }
     Ok(SendReport {
         id: env.id,
@@ -422,15 +440,18 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
 /// calling `on` for each outcome and acking after it has been persisted.
 /// A message from a device we don't know yet triggers one refresh of contacts'
 /// device lists, then a retry, so contacts' new devices are picked up.
+/// Requests from our own other devices (catch-up, files) are answered here.
 pub async fn recv(
     home: &Home,
     relay: impl Into<Target>,
     idle: Option<Duration>,
     mut on: impl FnMut(Outcome),
 ) -> Result<()> {
+    let base: Target = relay.into();
+    let started = now_ms();
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
-    let mut relay = Relay::connect(relay, &me).await?;
+    let mut relay = Relay::connect(base.clone(), &me).await?;
     top_up_prekeys(&mut relay, home, &mut me).await?;
     sync_own_list(&mut relay, home).await?;
     while let Some(d) = relay.next_delivery(idle).await? {
@@ -440,8 +461,190 @@ pub async fn recv(
             sync_own_list(&mut relay, home).await?;
             outcome = process(home, &mut me, &mut sessions, &d.blob)?;
         }
-        on(outcome);
+        // Acknowledge first: the request is now durably handled on our side, and
+        // an answer that fails can be asked for again.
         relay.ack(&d.id).await?;
+        if let Outcome::SyncRequest { from_device, msg } = &outcome {
+            if let Err(e) = answer_request(home, &base, &me, &mut sessions, from_device, msg).await
+            {
+                eprintln!("note: could not answer a request from your other device: {e:#}");
+            }
+        }
+        on(outcome);
+    }
+    // We have collected everything the relay held for us as of `started`.
+    if idle.is_some() {
+        home.set_last_sync(started)?;
+    }
+    Ok(())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// How far before our last successful sync a catch-up request reaches back, to
+/// absorb clock differences between our devices. Duplicates are harmless.
+const CATCH_UP_MARGIN_MS: u64 = 24 * 3600 * 1000;
+
+/// Our own other devices, with the relay each reads from.
+fn own_other_devices(home: &Home, me: &Identity) -> Result<Vec<(DeviceCard, Option<String>)>> {
+    let mine = IdentityCard::decode(&home.identity_card()?)?;
+    let my_id = me.device_id();
+    Ok(mine
+        .device_relays()
+        .into_iter()
+        .filter(|(d, _)| d.device_id() != my_id)
+        .collect())
+}
+
+/// Send one sync message to one of our own devices over its session.
+async fn push_sync(
+    home: &Home,
+    base: &Target,
+    me: &Identity,
+    sessions: &mut Sessions,
+    device: &(DeviceCard, Option<String>),
+    msg: &SyncMsg,
+) -> Result<()> {
+    let mut env = msg.to_envelope()?;
+    env.lamport = home.next_lamport()?;
+    let url = device.1.clone().unwrap_or_else(|| base.url.clone());
+    let mut pool = Pool {
+        base: base.clone(),
+        me,
+        conns: HashMap::new(),
+    };
+    send_to_device(&mut pool, home, sessions, &device.0, &url, &env.to_bytes()).await?;
+    Ok(())
+}
+
+/// Send `msg` to every other device of ours. Returns how many accepted it.
+async fn broadcast_own(home: &Home, base: Target, msg: &SyncMsg) -> Result<usize> {
+    let me = home.load_identity()?;
+    let mut sessions = home.load_sessions()?;
+    {
+        let mut r = Relay::connect(base.clone(), &me).await?;
+        sync_own_list(&mut r, home).await?;
+    }
+    let mut ok = 0;
+    for d in own_other_devices(home, &me)? {
+        match push_sync(home, &base, &me, &mut sessions, &d, msg).await {
+            Ok(()) => ok += 1,
+            Err(e) => eprintln!(
+                "note: could not reach your device {}: {e:#}",
+                &d.0.device_id()[..8]
+            ),
+        }
+    }
+    Ok(ok)
+}
+
+/// Mark a conversation read up to its newest incoming message, here and on
+/// your other devices. Returns how many other devices were told.
+pub async fn mark_read(home: &Home, relay: impl Into<Target>, name: &str) -> Result<usize> {
+    let contacts = home.load_contacts()?;
+    let c = contacts
+        .iter()
+        .find(|c| c.name == name)
+        .with_context(|| format!("no contact '{name}'"))?;
+    let peer = c.conversation_key()?;
+    let upto = home
+        .messages()?
+        .conversation(&peer, usize::MAX)?
+        .iter()
+        .filter(|m| m.direction == Direction::In)
+        .map(|m| m.ts)
+        .max()
+        .unwrap_or(0);
+    home.advance_read_marker(&peer, upto)?;
+    broadcast_own(home, relay.into(), &SyncMsg::Read { peer, upto }).await
+}
+
+/// Incoming messages in each conversation newer than its read marker.
+pub fn unread_counts(home: &Home) -> Result<Vec<(String, usize)>> {
+    let store = home.messages()?;
+    let mut out = Vec::new();
+    for c in home.load_contacts()? {
+        let peer = c.conversation_key()?;
+        let marker = home.read_marker(&peer)?;
+        let n = store
+            .conversation(&peer, usize::MAX)?
+            .iter()
+            .filter(|m| m.direction == Direction::In && !m.deleted && m.ts > marker)
+            .count();
+        out.push((c.name, n));
+    }
+    Ok(out)
+}
+
+/// Ask your other devices for everything they learned or changed since this
+/// device last synced. They answer the next time they receive (`spike recv`).
+pub async fn request_catch_up(home: &Home, relay: impl Into<Target>) -> Result<usize> {
+    let since = home.last_sync().saturating_sub(CATCH_UP_MARGIN_MS);
+    broadcast_own(home, relay.into(), &SyncMsg::CatchUpRequest { since }).await
+}
+
+/// Ask your other devices to make a message's attachment available again
+/// (for example after the relay expired it).
+pub async fn request_file(home: &Home, relay: impl Into<Target>, msg_id: &str) -> Result<usize> {
+    let m = home.messages()?.find(msg_id)?;
+    if m.attachment.is_none() {
+        bail!("that message has no attachment");
+    }
+    broadcast_own(home, relay.into(), &SyncMsg::FileRequest { msg_id: m.id }).await
+}
+
+/// Answer a request from one of our own devices (called from `recv`).
+async fn answer_request(
+    home: &Home,
+    base: &Target,
+    me: &Identity,
+    sessions: &mut Sessions,
+    from_device: &str,
+    req: &SyncMsg,
+) -> Result<()> {
+    let device = own_other_devices(home, me)?
+        .into_iter()
+        .find(|(d, _)| d.device_id() == from_device)
+        .ok_or_else(|| anyhow!("request came from a device that is not in your device list"))?;
+    match req {
+        SyncMsg::CatchUpRequest { since } => {
+            let changed = home.messages()?.changed_since(*since)?;
+            for b in sync::batches(changed) {
+                push_sync(home, base, me, sessions, &device, &b).await?;
+            }
+        }
+        SyncMsg::FileRequest { msg_id } => {
+            let store = home.messages()?;
+            let Some(m) = store.get(msg_id)? else {
+                return Ok(());
+            };
+            let (Some(att), false) = (m.attachment.as_ref(), m.deleted) else {
+                return Ok(());
+            };
+            let Some(bytes) = home.load_attachment(&m.id)? else {
+                return Ok(());
+            };
+            // Re-encrypt under a fresh key and upload to our relay; the requester
+            // verifies the same hash, size and name before using the new descriptor.
+            let (mut fresh, chunks) = seal_file(&att.name, &bytes)?;
+            fresh.relay = Some(base.url.clone());
+            let mut r = Relay::connect(base.clone(), me).await?;
+            for (i, c) in chunks.iter().enumerate() {
+                r.put_blob_chunk(&fresh.blob, i as u32, fresh.chunks, c)
+                    .await?;
+            }
+            let offer = SyncMsg::FileOffer {
+                msg_id: m.id.clone(),
+                attachment: fresh,
+            };
+            push_sync(home, base, me, sessions, &device, &offer).await?;
+        }
+        _ => {}
     }
     Ok(())
 }

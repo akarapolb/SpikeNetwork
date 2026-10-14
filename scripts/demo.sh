@@ -93,6 +93,29 @@ $A delete "$MID"
 echo -n "bob:    "; $B recv 2>/dev/null; $B history alice | tail -1
 echo -n "laptop: "; $L recv 2>/dev/null; $L history bob | tail -1
 
+echo "== read state follows you across devices"
+$B send alice "unread one" >/dev/null; $B send alice "unread two" >/dev/null
+$A recv >/dev/null 2>&1; $L recv >/dev/null 2>&1
+echo -n "phone unread:  "; $A unread | tr '\n' ' '; echo -n "| laptop unread: "; $L unread
+$A read bob
+$L recv >/dev/null 2>&1
+echo -n "after reading on the phone, laptop unread: "; $L unread
+
+echo "== a tablet linked with NO history fills itself in from the phone (catch-up between own devices)"
+echo "alice tablet passphrase" > "$D/alice-tablet.pass"
+T="$BIN/spike --home $D/alice-tablet/state --passphrase-file $D/alice-tablet.pass"
+$T init >/dev/null
+$T link-new --yes --timeout-secs 30 >"$D/link2.out" 2>/dev/null & LINKPID=$!
+CODE=""
+for _ in $(seq 100); do CODE=$(grep -m1 '^spikelink1:' "$D/link2.out" || true); [ -n "$CODE" ] && break; sleep 0.1; done
+$A link-device "$CODE" --yes --history none >/dev/null
+wait $LINKPID
+echo -n "tablet messages with bob right after linking: "; $T history bob 2>&1 | grep -c "bob:\|you:" || true
+$T sync --wait-secs 1
+$A recv 2>/dev/null
+$T recv 2>/dev/null
+echo -n "tablet messages with bob after catch-up: "; $T history bob | grep -c "bob:\|you:"
+
 echo "== plain ws:// to a non-loopback host is refused by the client"
 SPIKE_RELAY=ws://relay.example.com:8787 $B recv 2>&1 || true
 echo "== relay log (no content):"; cat "$D/relay.log"

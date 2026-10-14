@@ -184,6 +184,7 @@ async fn history_choice_is_honoured() {
             stamp_device: String::new(),
             edited: false,
             deleted: false,
+            changed_at: 0,
             id: "aa".repeat(16),
             peer: owner(&bob),
             direction: Direction::In,

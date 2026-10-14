@@ -27,6 +27,7 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [adr/0010-device-linking.md](adr/0010-device-linking.md) | Linking a new device: link code, safety code, encrypted history bundle (multi-device M4) |
 | [adr/0011-attachments.md](adr/0011-attachments.md) | Encrypted attachments and the relay blob store (Phase 1 attachment prototype) |
 | [adr/0012-edits-deletes-and-merge-rules.md](adr/0012-edits-deletes-and-merge-rules.md) | Edits, deletes, logical clocks and merge rules (multi-device M5, first slice) |
+| [adr/0013-own-device-sync.md](adr/0013-own-device-sync.md) | Own-device sync channel: read state, catch-up, file re-supply (multi-device M5, completed) |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [multi-device-design.html](multi-device-design.html) | **Proposed** design: message history across multiple devices, fan-out, device linking, and which servers are still needed |
 | [multi-device-demo.html](multi-device-demo.html) | **Interactive simulation** of that design (no real crypto): fan-out, offline catch-up, device linking, edits, relay outage, attacks. Open in a browser |
