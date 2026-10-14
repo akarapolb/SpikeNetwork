@@ -93,6 +93,7 @@ pub fn process(
                     direction: Direction::Out,
                     ts: env.ts,
                     body: env.body.clone(),
+                    attachment: env.attachment.clone(),
                 })?;
                 home.save_sessions(sessions)?;
                 home.save_identity(me)?;
@@ -115,6 +116,7 @@ pub fn process(
                 direction: Direction::In,
                 ts: env.ts,
                 body: env.body.clone(),
+                attachment: env.attachment.clone(),
             })?;
             home.save_sessions(sessions)?;
             home.save_identity(me)?;

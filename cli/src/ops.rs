@@ -10,6 +10,7 @@ use crate::messages::{Direction, StoredMessage};
 use crate::state::{Added, OwnUpdate};
 use crate::{client::Relay, process, state::Home, transport::Target, Outcome};
 use anyhow::{anyhow, bail, Context, Result};
+use spike_core::attachment::{seal_file, Attachment};
 use spike_core::envelope::Envelope;
 use spike_core::identity::{DeviceCard, Identity};
 use spike_core::owner::IdentityCard;
@@ -207,10 +208,86 @@ pub async fn send(
     name: &str,
     body: &[u8],
 ) -> Result<SendReport> {
+    let text = std::str::from_utf8(body).context("messages must be UTF-8 text")?;
+    deliver(home, relay.into(), name, Envelope::text(text)?).await
+}
+
+/// Encrypt a file, upload its chunks to our home relay, then send the message
+/// carrying its descriptor (and `caption`) to every device, like any message.
+pub async fn send_file(
+    home: &Home,
+    relay: impl Into<Target>,
+    name: &str,
+    file_name: &str,
+    bytes: &[u8],
+    caption: &str,
+) -> Result<SendReport> {
     let base: Target = relay.into();
+    let (mut att, chunks) = seal_file(file_name, bytes)?;
+    att.relay = Some(base.url.clone());
+    {
+        let me = home.load_identity()?;
+        let mut r = Relay::connect(base.clone(), &me).await?;
+        for (i, c) in chunks.iter().enumerate() {
+            r.put_blob_chunk(&att.blob, i as u32, att.chunks, c)
+                .await
+                .context("uploading attachment")?;
+        }
+    }
+    let mut env = Envelope::text(caption)?;
+    env.attachment = Some(att);
+    let report = deliver(home, base, name, env).await?;
+    // The sender keeps its own copy, so its history never needs the relay.
+    home.save_attachment(&report.id, bytes)?;
+    Ok(report)
+}
+
+/// The decrypted bytes of a message's attachment: from this device if kept,
+/// otherwise downloaded from the relay holding it, checked, and kept.
+pub async fn fetch_attachment(
+    home: &Home,
+    relay: impl Into<Target>,
+    msg_id: &str,
+) -> Result<(Attachment, Vec<u8>)> {
+    let base: Target = relay.into();
+    let m = home.messages()?.find(msg_id)?;
+    let att = m
+        .attachment
+        .clone()
+        .ok_or_else(|| anyhow!("message {} has no attachment", &m.id[..8]))?;
+    if let Some(bytes) = home.load_attachment(&m.id)? {
+        return Ok((att, bytes));
+    }
+    let url = att.relay.clone().unwrap_or_else(|| base.url.clone());
+    let me = home.load_identity()?;
+    let mut r = Relay::connect(
+        Target {
+            url: url.clone(),
+            opts: base.opts.clone(),
+        },
+        &me,
+    )
+    .await?;
+    let mut bytes = Vec::with_capacity(att.size as usize);
+    for i in 0..att.chunks {
+        let sealed = r
+            .get_blob_chunk(&att.blob, i)
+            .await?
+            .ok_or_else(|| anyhow!("the attachment is no longer on {url} (relays keep files for a limited time); open it on a device that already has it"))?;
+        bytes.extend(
+            att.open_chunk(i, &sealed)
+                .map_err(|_| anyhow!("attachment chunk {i} failed its integrity check"))?,
+        );
+    }
+    att.verify(&bytes)
+        .map_err(|_| anyhow!("attachment failed its integrity check (size or hash mismatch)"))?;
+    home.save_attachment(&m.id, &bytes)?;
+    Ok((att, bytes))
+}
+
+async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Result<SendReport> {
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
-    let text = std::str::from_utf8(body).context("messages must be UTF-8 text")?;
 
     // Our home relay: keep prekeys topped up and both device lists current.
     let mut notes;
@@ -230,7 +307,6 @@ pub async fn send(
         .find(|c| c.name == name)
         .with_context(|| format!("no contact '{name}'"))?;
     let peer = c.identity()?;
-    let mut env = Envelope::text(text)?;
     env.to = Some(peer.owner_hex());
     let plaintext = env.to_bytes();
 
@@ -282,6 +358,7 @@ pub async fn send(
         direction: Direction::Out,
         ts: env.ts,
         body: env.body,
+        attachment: env.attachment,
     })?;
     Ok(SendReport {
         id: env.id,

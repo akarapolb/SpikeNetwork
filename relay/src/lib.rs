@@ -9,6 +9,7 @@ pub mod tls;
 
 use futures_util::{SinkExt, StreamExt};
 use rand::{rngs::OsRng, RngCore};
+use spike_core::attachment::{CHUNK, MAX_FILE, OVERHEAD};
 use spike_core::identity::{
     device_id_from_ed, is_valid_device_id, verify_auth, verify_prekey, SignedPrekey, MAX_PREKEYS,
 };
@@ -18,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use store::{Enqueued, Store};
+use store::{Enqueued, PutChunk, Store};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
@@ -35,6 +36,10 @@ pub struct Config {
     pub auth_timeout: Duration,
     /// Prekeys one connection may claim from others before being refused.
     pub max_claims_per_conn: usize,
+    /// How long attachment chunks are kept.
+    pub blob_ttl: Duration,
+    /// Attachment bytes one device may have stored at once (all its unexpired chunks).
+    pub blob_quota: usize,
     /// SQLite file for queues and prekeys; `None` keeps them in memory only.
     pub db_path: Option<PathBuf>,
     /// Terminate TLS in the relay. Without it the relay speaks plain WebSocket
@@ -50,6 +55,8 @@ impl Default for Config {
             ttl: Duration::from_secs(7 * 24 * 3600),
             auth_timeout: Duration::from_secs(10),
             max_claims_per_conn: 20,
+            blob_ttl: Duration::from_secs(30 * 24 * 3600),
+            blob_quota: 1024 * 1024 * 1024,
             db_path: None,
             tls: None,
         }
@@ -129,8 +136,9 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let ws_cfg = WebSocketConfig {
-        max_message_size: Some(cfg.max_blob * 2 + 1024),
-        max_frame_size: Some(cfg.max_blob * 2 + 1024),
+        // Room for the largest message blob or attachment chunk, hex-encoded in JSON.
+        max_message_size: Some(frame_limit(&cfg)),
+        max_frame_size: Some(frame_limit(&cfg)),
         ..Default::default()
     };
     let ws = tokio_tungstenite::accept_async_with_config(stream, Some(ws_cfg))
@@ -227,6 +235,8 @@ where
                         Ok(ClientMsg::PublishFallback { key }) => Some(on_fallback(&state, &me, &my_ed, &key)),
                         Ok(ClientMsg::PublishDeviceList { list }) => Some(on_publish_list(&state, &cfg, &me, &list)),
                         Ok(ClientMsg::FetchDeviceList { owner }) => Some(on_fetch_list(&state, &owner)),
+                        Ok(ClientMsg::PutBlobChunk { blob, index, total, data }) => Some(on_put_chunk(&state, &cfg, &me, &blob, index, total, &data)),
+                        Ok(ClientMsg::GetBlobChunk { blob, index }) => Some(on_get_chunk(&state, &blob, index)),
                         Ok(ClientMsg::ClaimPrekey { device }) => {
                             claims += 1;
                             if claims > cfg.max_claims_per_conn {
@@ -362,6 +372,79 @@ fn on_publish_list(state: &Shared, cfg: &Config, me: &str, json: &str) -> Server
     match state.store.put_device_list(&list.owner, list.version, json) {
         Ok(()) => ServerMsg::DeviceListStored {
             version: list.version,
+        },
+        Err(_) => internal(),
+    }
+}
+
+fn frame_limit(cfg: &Config) -> usize {
+    cfg.max_blob.max(CHUNK + OVERHEAD) * 2 + 4096
+}
+
+fn is_blob_id(s: &str) -> bool {
+    s.len() == 32
+        && s.bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
+/// Store an attachment chunk. Opaque to the relay; checked only for shape,
+/// ownership (the first uploader of a blob owns it), and quota.
+fn on_put_chunk(
+    state: &Shared,
+    cfg: &Config,
+    me: &str,
+    blob: &str,
+    index: u32,
+    total: u32,
+    hex_data: &str,
+) -> ServerMsg {
+    let max_chunks = (MAX_FILE.div_ceil(CHUNK as u64)) as u32;
+    if !is_blob_id(blob) || total == 0 || total > max_chunks || index >= total {
+        return err("bad_request", "invalid blob id, index or chunk count");
+    }
+    if hex_data.len() > (CHUNK + OVERHEAD) * 2 {
+        return err("too_large", "chunk exceeds relay limit");
+    }
+    let Ok(data) = hex::decode(hex_data) else {
+        return err("bad_request", "chunk is not hex");
+    };
+    if data.len() < OVERHEAD {
+        return err("bad_request", "chunk too short");
+    }
+    match state.store.put_chunk(
+        blob,
+        index,
+        total,
+        me,
+        &data,
+        cfg.blob_ttl.as_millis() as i64,
+        cfg.blob_quota,
+    ) {
+        Ok(PutChunk::Stored) => ServerMsg::BlobChunkStored {
+            blob: blob.into(),
+            index,
+        },
+        Ok(PutChunk::NotOwner) => err("not_owner", "another device created this blob"),
+        Ok(PutChunk::TotalMismatch) => err(
+            "bad_request",
+            "chunk count differs from the blob's first chunk",
+        ),
+        Ok(PutChunk::OverQuota) => {
+            err("quota_exceeded", "this device's attachment storage is full")
+        }
+        Err(_) => internal(),
+    }
+}
+
+fn on_get_chunk(state: &Shared, blob: &str, index: u32) -> ServerMsg {
+    if !is_blob_id(blob) {
+        return err("bad_request", "invalid blob id");
+    }
+    match state.store.get_chunk(blob, index) {
+        Ok(data) => ServerMsg::BlobChunk {
+            blob: blob.into(),
+            index,
+            data: data.map(hex::encode),
         },
         Err(_) => internal(),
     }

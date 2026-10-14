@@ -179,6 +179,7 @@ async fn history_choice_is_honoured() {
     a1.0.messages()
         .unwrap()
         .insert(&StoredMessage {
+            attachment: None,
             id: "aa".repeat(16),
             peer: owner(&bob),
             direction: Direction::In,

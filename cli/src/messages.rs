@@ -31,6 +31,9 @@ pub struct StoredMessage {
     /// Sender's clock in ms since the epoch.
     pub ts: u64,
     pub body: String,
+    /// The file sent with this message, if any (the key lives only in the sealed row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<spike_core::attachment::Attachment>,
 }
 
 /// (seq, id_tag, conv_tag, sealed) as read from the table.
@@ -126,6 +129,38 @@ impl<'v> MessageStore<'v> {
         Ok(out.split_off(skip))
     }
 
+    /// The message with exactly this id, or the only one whose id starts with
+    /// `prefix` (at least 6 hex characters), as shown by `spike history`.
+    pub fn find(&self, prefix: &str) -> Result<StoredMessage> {
+        let p = prefix.trim().to_lowercase();
+        if p.len() == 32 {
+            let id_tag = self.vault.index_tag("msg-id", p.as_bytes());
+            let row: Option<(Vec<u8>, Vec<u8>)> = self
+                .conn
+                .query_row(
+                    "SELECT conv_tag, sealed FROM messages WHERE id_tag = ?1",
+                    [&id_tag[..]],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let (conv_tag, sealed) = row.ok_or_else(|| anyhow!("no message with id {p}"))?;
+            return self.unseal(&id_tag, &conv_tag, &sealed);
+        }
+        if p.len() < 6 {
+            return Err(anyhow!("give at least 6 characters of the message id"));
+        }
+        let mut hits: Vec<StoredMessage> = self
+            .all()?
+            .into_iter()
+            .filter(|m| m.id.starts_with(&p))
+            .collect();
+        match hits.len() {
+            1 => Ok(hits.remove(0)),
+            0 => Err(anyhow!("no message id starts with {p}")),
+            n => Err(anyhow!("{n} messages start with {p}; give more of the id")),
+        }
+    }
+
     /// Every stored message, oldest first (used to build history bundles).
     pub fn all(&self) -> Result<Vec<StoredMessage>> {
         let mut stmt = self
@@ -216,6 +251,7 @@ mod tests {
     }
     fn msg(id: &str, peer: &str, ts: u64, body: &str, d: Direction) -> StoredMessage {
         StoredMessage {
+            attachment: None,
             id: id.into(),
             peer: peer.into(),
             direction: d,

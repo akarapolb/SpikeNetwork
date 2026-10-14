@@ -229,6 +229,56 @@ impl Relay {
         }
     }
 
+    /// Upload one encrypted attachment chunk.
+    pub async fn put_blob_chunk(
+        &mut self,
+        blob: &str,
+        index: u32,
+        total: u32,
+        data: &[u8],
+    ) -> Result<()> {
+        self.write(&ClientMsg::PutBlobChunk {
+            blob: blob.into(),
+            index,
+            total,
+            data: hex::encode(data),
+        })
+        .await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::BlobChunkStored { .. } => return Ok(()),
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                _ => {}
+            }
+        }
+    }
+
+    /// Download one encrypted attachment chunk; `None` if the relay no longer has it.
+    pub async fn get_blob_chunk(&mut self, blob: &str, index: u32) -> Result<Option<Vec<u8>>> {
+        self.write(&ClientMsg::GetBlobChunk {
+            blob: blob.into(),
+            index,
+        })
+        .await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::BlobChunk { data, .. } => {
+                    return Ok(data.map(hex::decode).transpose()?)
+                }
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                _ => {}
+            }
+        }
+    }
+
     pub async fn ack(&mut self, id: &str) -> Result<()> {
         self.write(&ClientMsg::Ack { id: id.into() }).await
     }

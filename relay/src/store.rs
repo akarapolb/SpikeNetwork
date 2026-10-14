@@ -21,6 +21,13 @@ pub enum Enqueued {
     Full,
 }
 
+pub enum PutChunk {
+    Stored,
+    NotOwner,
+    TotalMismatch,
+    OverQuota,
+}
+
 pub struct Stored {
     pub id: i64,
     pub blob: Vec<u8>,
@@ -66,6 +73,16 @@ impl Store {
                  sig    TEXT NOT NULL,
                  UNIQUE(device, key)
              );
+             CREATE TABLE IF NOT EXISTS blob_chunks (
+                 blob     TEXT    NOT NULL,
+                 idx      INTEGER NOT NULL,
+                 total    INTEGER NOT NULL,
+                 uploader TEXT    NOT NULL,
+                 data     BLOB    NOT NULL,
+                 expires  INTEGER NOT NULL,
+                 PRIMARY KEY (blob, idx)
+             );
+             CREATE INDEX IF NOT EXISTS blob_chunks_uploader ON blob_chunks(uploader);
              CREATE TABLE IF NOT EXISTS device_lists (
                  owner   TEXT PRIMARY KEY,
                  version INTEGER NOT NULL,
@@ -83,12 +100,14 @@ impl Store {
         })
     }
 
-    /// Drop expired messages. Returns how many were removed.
+    /// Drop expired messages and attachment chunks. Returns how many rows were removed.
     pub fn purge_expired(&self) -> rusqlite::Result<usize> {
-        self.conn
-            .lock()
-            .unwrap()
-            .execute("DELETE FROM messages WHERE expires <= ?1", [now_ms()])
+        let c = self.conn.lock().unwrap();
+        let now = now_ms();
+        Ok(
+            c.execute("DELETE FROM messages WHERE expires <= ?1", [now])?
+                + c.execute("DELETE FROM blob_chunks WHERE expires <= ?1", [now])?,
+        )
     }
 
     pub fn enqueue(
@@ -259,5 +278,64 @@ impl Store {
             params![owner, version as i64, list],
         )?;
         Ok(())
+    }
+
+    /// Store one attachment chunk (idempotent per index, so uploads can be retried).
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_chunk(
+        &self,
+        blob: &str,
+        idx: u32,
+        total: u32,
+        uploader: &str,
+        data: &[u8],
+        ttl_ms: i64,
+        quota: usize,
+    ) -> rusqlite::Result<PutChunk> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let now = now_ms();
+        tx.execute("DELETE FROM blob_chunks WHERE expires <= ?1", [now])?;
+        let first: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT uploader, total FROM blob_chunks WHERE blob = ?1 LIMIT 1",
+                [blob],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((owner, t)) = first {
+            if owner != uploader {
+                return Ok(PutChunk::NotOwner);
+            }
+            if t != total as i64 {
+                return Ok(PutChunk::TotalMismatch);
+            }
+        }
+        let used: i64 = tx.query_row(
+            "SELECT COALESCE(SUM(length(data)), 0) FROM blob_chunks WHERE uploader = ?1 AND NOT (blob = ?2 AND idx = ?3)",
+            params![uploader, blob, idx],
+            |r| r.get(0),
+        )?;
+        if used as usize + data.len() > quota {
+            return Ok(PutChunk::OverQuota);
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO blob_chunks (blob, idx, total, uploader, data, expires) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![blob, idx, total, uploader, data, now + ttl_ms],
+        )?;
+        tx.commit()?;
+        Ok(PutChunk::Stored)
+    }
+
+    pub fn get_chunk(&self, blob: &str, idx: u32) -> rusqlite::Result<Option<Vec<u8>>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT data FROM blob_chunks WHERE blob = ?1 AND idx = ?2 AND expires > ?3",
+                params![blob, idx, now_ms()],
+                |r| r.get(0),
+            )
+            .optional()
     }
 }

@@ -74,6 +74,15 @@ $B send alice "welcome to your laptop"
 echo -n "phone:  "; $A recv
 echo -n "laptop: "; $L recv
 
+echo "== bob sends a file; it is encrypted before upload and checked after download"
+printf 'Floor 3 layout, rev C\n%.0s' $(seq 2000) > "$D/plan.txt"
+$B send-file alice "$D/plan.txt" --caption "updated plan"
+$L recv
+FILEID=$($L history bob | sed -n 's/.*id \([0-9a-f]\{8\}\).*/\1/p' | tail -1)
+$L fetch "$FILEID" --out "$D/plan-received.txt"
+cmp "$D/plan.txt" "$D/plan-received.txt" && echo "received file is identical"
+echo -n "file content visible in relay storage? "; if grep -qa "Floor 3 layout" "$D"/relay.db*; then echo YES; else echo no; fi
+
 echo "== plain ws:// to a non-loopback host is refused by the client"
 SPIKE_RELAY=ws://relay.example.com:8787 $B recv 2>&1 || true
 echo "== relay log (no content):"; cat "$D/relay.log"

@@ -80,6 +80,28 @@ enum Cmd {
         #[arg(long)]
         follow: bool,
     },
+    /// Send a file (encrypted on this device; the relay stores only ciphertext).
+    SendFile {
+        name: String,
+        path: PathBuf,
+        /// Optional text sent with the file.
+        #[arg(long, default_value = "")]
+        caption: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Save a received attachment, by message id (or its first 6+ characters from `spike history`).
+    Fetch {
+        id: String,
+        /// Where to write it (default: its sanitised name in the current directory).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Overwrite an existing file.
+        #[arg(long)]
+        force: bool,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
     /// Show stored message history with a contact (read from this device only).
     History {
         name: String,
@@ -294,6 +316,20 @@ async fn run() -> Result<()> {
                     Direction::In => name.as_str(),
                 };
                 println!("{}  {who}: {}", fmt_utc(m.ts), m.body);
+                if let Some(a) = &m.attachment {
+                    let here = if home.load_attachment(&m.id)?.is_some() {
+                        "on this device"
+                    } else {
+                        "on the relay; `spike fetch` to get it"
+                    };
+                    println!(
+                        "{:>22}[file {} · {} bytes · id {} · {here}]",
+                        "",
+                        a.name,
+                        a.size,
+                        &m.id[..8]
+                    );
+                }
             }
         }
         Cmd::Prune { older_than_days } => {
@@ -306,6 +342,46 @@ async fn run() -> Result<()> {
             println!(
                 "deleted {n} stored message{}",
                 if n == 1 { "" } else { "s" }
+            );
+        }
+        Cmd::SendFile {
+            name,
+            path,
+            caption,
+            relay,
+        } => {
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            let file_name = path
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "attachment".into());
+            let r =
+                ops::send_file(&home, target(relay), &name, &file_name, &bytes, &caption).await?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            let theirs = r.devices.iter().filter(|d| !d.own).count();
+            println!("sent {file_name} ({} bytes, encrypted) to {} of {name}'s {theirs} device(s); message id {}", bytes.len(), r.delivered(), &r.id[..8]);
+        }
+        Cmd::Fetch {
+            id,
+            out,
+            force,
+            relay,
+        } => {
+            let (att, bytes) = ops::fetch_attachment(&home, target(relay), &id).await?;
+            let path = out.unwrap_or_else(|| {
+                PathBuf::from(spike_core::attachment::safe_file_name(&att.name))
+            });
+            if path.exists() && !force {
+                bail!("{} already exists (use --out or --force)", path.display());
+            }
+            std::fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+            println!(
+                "saved {} ({} bytes, integrity checked)",
+                path.display(),
+                bytes.len()
             );
         }
         Cmd::LinkNew {
@@ -353,8 +429,8 @@ async fn run() -> Result<()> {
             }
             let r = link::finish(&home, target(relay), p, mode).await?;
             println!(
-                "linked: published device list v{}; sent {} contacts and {} messages, encrypted to the new device",
-                r.version, r.contacts, r.messages
+                "linked: published device list v{}; sent {} contacts, {} messages and {} recent files, encrypted to the new device",
+                r.version, r.contacts, r.messages, r.files
             );
         }
         Cmd::Recv {
@@ -373,9 +449,13 @@ async fn run() -> Result<()> {
                     from,
                     verified,
                     body,
+                    id,
                     ..
                 } => {
                     let tag = if verified { "" } else { " (UNVERIFIED sender)" };
+                    if let Ok(Some(a)) = home.messages().and_then(|s| Ok(s.find(&id)?.attachment)) {
+                        println!("[{from}{tag}] sent a file: {} ({} bytes) · `spike fetch {}`", a.name, a.size, &id[..8]);
+                    }
                     println!("[{from}{tag}] {}", String::from_utf8_lossy(&body));
                     n += 1;
                 }

@@ -34,7 +34,21 @@ struct Bundle {
     device_list: DeviceList,
     contacts: Vec<Contact>,
     messages: Vec<StoredMessage>,
+    /// Bytes of recent attachments this device holds (older ones are fetched on demand).
+    #[serde(default)]
+    files: Vec<BundledFile>,
 }
+
+#[derive(Serialize, Deserialize)]
+struct BundledFile {
+    /// Message id the attachment belongs to.
+    id: String,
+    /// The plaintext bytes, hex (the whole bundle is encrypted).
+    data: String,
+}
+
+/// Attachments younger than this travel inside the link bundle (multi-device design default).
+const BUNDLE_ATTACHMENT_DAYS: u64 = 30;
 
 // ---------- new device ----------
 
@@ -123,6 +137,23 @@ pub async fn receive(
     for m in &b.messages {
         n += usize::from(store.insert(m)?);
     }
+    // Keep bundled attachment bytes, but only if they match the descriptor's hash.
+    for f in &b.files {
+        let Some(att) = b
+            .messages
+            .iter()
+            .find(|m| m.id == f.id)
+            .and_then(|m| m.attachment.as_ref())
+        else {
+            continue;
+        };
+        let Ok(bytes) = hex::decode(&f.data) else {
+            continue;
+        };
+        if att.verify(&bytes).is_ok() {
+            home.save_attachment(&f.id, &bytes)?;
+        }
+    }
     drop(store);
     // Join the network: prekeys and the (already newer) device list on our relay.
     ops::publish_keys(home, w.target.clone()).await?;
@@ -182,6 +213,8 @@ pub struct Linked {
     pub version: u64,
     pub messages: usize,
     pub contacts: usize,
+    /// Attachments whose bytes travelled in the bundle.
+    pub files: usize,
 }
 
 /// After the person confirmed matching codes: sign and publish the new device
@@ -222,12 +255,26 @@ pub async fn finish(
         }
     };
     let contacts = home.load_contacts()?;
+    let att_cut = now.saturating_sub(BUNDLE_ATTACHMENT_DAYS * 86_400_000);
+    let mut files = Vec::new();
+    for m in messages
+        .iter()
+        .filter(|m| m.attachment.is_some() && m.ts >= att_cut)
+    {
+        if let Some(bytes) = home.load_attachment(&m.id)? {
+            files.push(BundledFile {
+                id: m.id.clone(),
+                data: hex::encode(bytes),
+            });
+        }
+    }
     let bundle = Bundle {
         v: 1,
         owner_key: owner.to_hex(),
         device_list: list.clone(),
         contacts,
         messages,
+        files,
     };
     let frames = p.session.seal(&serde_json::to_vec(&bundle)?)?;
     let url = p.offer.relay.clone().unwrap_or_else(|| base.url.clone());
@@ -246,5 +293,6 @@ pub async fn finish(
         version: list.version,
         messages: bundle.messages.len(),
         contacts: bundle.contacts.len(),
+        files: bundle.files.len(),
     })
 }

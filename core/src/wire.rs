@@ -32,6 +32,16 @@ pub enum ClientMsg {
     PublishDeviceList { list: String },
     /// Fetch the latest signed device list for an owner key (hex).
     FetchDeviceList { owner: String },
+    /// Store one encrypted attachment chunk. The first chunk of a blob fixes
+    /// its uploader and chunk count; later chunks must match.
+    PutBlobChunk {
+        blob: String,
+        index: u32,
+        total: u32,
+        data: String,
+    },
+    /// Fetch one chunk of a blob (anyone who knows the random blob id may).
+    GetBlobChunk { blob: String, index: u32 },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -64,6 +74,17 @@ pub enum ServerMsg {
     /// Reply to `PublishDeviceList`.
     DeviceListStored {
         version: u64,
+    },
+    /// Reply to `PutBlobChunk`.
+    BlobChunkStored {
+        blob: String,
+        index: u32,
+    },
+    /// Reply to `GetBlobChunk`; `data` is `None` if the chunk is unknown or expired.
+    BlobChunk {
+        blob: String,
+        index: u32,
+        data: Option<String>,
     },
     /// Reply to `FetchDeviceList`; `list` is the signed list JSON, if the relay has one.
     DeviceList {

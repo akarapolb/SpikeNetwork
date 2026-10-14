@@ -263,6 +263,32 @@ impl Home {
         Ok(added)
     }
 
+    /// Keep a received or sent attachment on this device, sealed with the vault
+    /// key. File names are keyed tags, so the directory reveals sizes only.
+    pub fn save_attachment(&self, msg_id: &str, bytes: &[u8]) -> Result<()> {
+        let dir = self.dir.join("attachments");
+        make_private_dir(&dir)?;
+        let tag = hex::encode(self.vault.index_tag("attachment", msg_id.as_bytes()));
+        let sealed = self.vault.seal(&format!("att:{tag}"), bytes)?;
+        write_private(&dir.join(format!("{tag}.enc")), &sealed)
+    }
+
+    /// The locally kept bytes of a message's attachment, if this device has them.
+    pub fn load_attachment(&self, msg_id: &str) -> Result<Option<Vec<u8>>> {
+        let tag = hex::encode(self.vault.index_tag("attachment", msg_id.as_bytes()));
+        match fs::read(self.dir.join("attachments").join(format!("{tag}.enc"))) {
+            Ok(sealed) => Ok(Some(
+                self.vault
+                    .open(&format!("att:{tag}"), &sealed)
+                    .map_err(|_| {
+                        anyhow::anyhow!("stored attachment is corrupted or was tampered with")
+                    })?,
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Encrypted message history (see [`crate::messages`]).
     pub fn messages(&self) -> Result<MessageStore<'_>> {
         MessageStore::open(&self.dir.join(MESSAGES), &self.vault)

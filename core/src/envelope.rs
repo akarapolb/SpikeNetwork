@@ -33,6 +33,9 @@ pub struct Envelope {
     /// know which conversation they belong to. Ignored on messages from others.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
+    /// A file sent with this message (the body is its caption, possibly empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<crate::attachment::Attachment>,
 }
 
 impl Envelope {
@@ -53,6 +56,7 @@ impl Envelope {
             kind: Kind::Text,
             body: body.to_string(),
             to: None,
+            attachment: None,
         })
     }
 
@@ -73,7 +77,8 @@ impl Envelope {
                 && t.bytes()
                     .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
         });
-        if e.v != VERSION || !id_ok || !to_ok || e.body.len() > MAX_TEXT {
+        let att_ok = e.attachment.as_ref().is_none_or(|a| a.validate().is_ok());
+        if e.v != VERSION || !id_ok || !to_ok || !att_ok || e.body.len() > MAX_TEXT {
             return Err(Error::Malformed);
         }
         Ok(e)
@@ -127,6 +132,19 @@ mod tests {
             None,
             "envelopes without the field still parse"
         );
+    }
+
+    #[test]
+    fn attachment_descriptors_are_validated_on_receipt() {
+        let (att, _) = crate::attachment::seal_file("a.txt", b"hello").unwrap();
+        let mut e = Envelope::text("caption").unwrap();
+        e.attachment = Some(att.clone());
+        assert_eq!(
+            Envelope::from_bytes(&e.to_bytes()).unwrap().attachment,
+            Some(att.clone())
+        );
+        e.attachment = Some(crate::attachment::Attachment { chunks: 99, ..att });
+        assert!(Envelope::from_bytes(&e.to_bytes()).is_err());
     }
 
     #[test]
