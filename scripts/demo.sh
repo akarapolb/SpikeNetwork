@@ -116,6 +116,18 @@ $A recv 2>/dev/null
 $T recv 2>/dev/null
 echo -n "tablet messages with bob after catch-up: "; $T history bob | grep -c "bob:\|you:"
 
+echo "== agent requests with human approval (alice = person, bob = her agent)"
+$A agent-grant bob --scope files.read --scope payments.send --max-cents 5000 --auto-below-cents 500 --per-hour 5
+$B agent-request alice --scope payments.send --action "Buy 3 GPU hours" --amount-cents 1500 >/dev/null
+$B agent-request alice --scope files.read --action "Read notes.txt" >/dev/null
+$B agent-request alice --scope admin.delete --action "Delete everything" >/dev/null
+$A recv 2>/dev/null
+echo "-- alice sees what is waiting:"; $A agent-pending | grep -v '^grant'
+PID=$($A agent-pending | grep WAITING | cut -d' ' -f1)
+$A agent-approve "$PID" --note "ok, once"
+echo "-- the agent's view:"; $B recv 2>/dev/null; $B agent-status
+echo "-- tamper-evident audit log:"; $A agent-audit
+
 echo "== plain ws:// to a non-loopback host is refused by the client"
 SPIKE_RELAY=ws://relay.example.com:8787 $B recv 2>&1 || true
 echo "== relay log (no content):"; cat "$D/relay.log"

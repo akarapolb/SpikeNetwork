@@ -60,7 +60,7 @@ pub fn decide(
         Kind::Delete => Action::ApplyDelete,
         Kind::Edit if cur.deleted || *stamp <= cur.stamp => Action::Ignore,
         Kind::Edit => Action::ApplyEdit,
-        Kind::Text | Kind::Sync => Action::Ignore,
+        Kind::Text | Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => Action::Ignore,
     }
 }
 

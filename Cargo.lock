@@ -1315,6 +1315,7 @@ dependencies = [
  "clap",
  "futures-util",
  "hex",
+ "rand 0.8.8",
  "rcgen",
  "rpassword",
  "rusqlite",

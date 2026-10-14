@@ -426,7 +426,7 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
             crate::apply_change(home, &env, true, &peer.owner_hex(), &my_id)?;
         }
         // Sync messages change nothing in the sender's own history.
-        Kind::Sync => {}
+        Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => {}
     }
     Ok(SendReport {
         id: env.id,
@@ -470,7 +470,17 @@ pub async fn recv(
                 eprintln!("note: could not answer a request from your other device: {e:#}");
             }
         }
+        let decided =
+            matches!(&outcome, Outcome::AgentRequest { verdict, .. } if verdict != "pending");
         on(outcome);
+        if decided {
+            // `deliver` keeps its own copy of the ratchet state on disk; reload ours after it.
+            if let Err(e) = flush_receipts(home, base.clone()).await {
+                eprintln!("note: could not send an agent receipt yet: {e:#}");
+            }
+            me = home.load_identity()?;
+            sessions = home.load_sessions()?;
+        }
     }
     // We have collected everything the relay held for us as of `started`.
     if idle.is_some() {
@@ -657,4 +667,60 @@ pub async fn publish_keys(home: &Home, relay: impl Into<Target>) -> Result<usize
     top_up_prekeys(&mut relay, home, &mut me).await?;
     sync_own_list(&mut relay, home).await?;
     Ok(relay.prekeys)
+}
+
+// ---------- agents (Phase 2) ----------
+
+/// As an agent: sign a request and send it to a principal (a contact).
+pub async fn agent_request(
+    home: &Home,
+    relay: impl Into<Target>,
+    principal: &str,
+    scope: &str,
+    action: &str,
+    amount_cents: Option<u64>,
+    minutes: u64,
+) -> Result<String> {
+    let contacts = home.load_contacts()?;
+    let c = contacts
+        .iter()
+        .find(|c| c.name == principal)
+        .with_context(|| format!("no contact '{principal}'"))?;
+    let key = c.conversation_key()?;
+    let signed =
+        crate::agent::new_request(home, principal, &key, scope, action, amount_cents, minutes)?;
+    let env = Envelope::agent(Kind::AgentRequest, &signed.to_json())?;
+    deliver(home, relay.into(), principal, env).await?;
+    Ok(signed.req.id)
+}
+
+/// As a principal: send every decided receipt the agent has not received yet.
+/// Returns how many were delivered; the rest stay queued for the next try.
+pub async fn flush_receipts(home: &Home, relay: impl Into<Target>) -> Result<usize> {
+    let base: Target = relay.into();
+    let mut sent = 0;
+    for r in crate::agent::undelivered(home)? {
+        let crate::agent::Status::Decided { receipt, .. } = &r.status else {
+            continue;
+        };
+        let env = Envelope::agent(Kind::AgentReceipt, &receipt.to_json())?;
+        deliver(home, base.clone(), &r.from, env).await?;
+        crate::agent::mark_delivered(home, &r.signed.req.id)?;
+        sent += 1;
+    }
+    Ok(sent)
+}
+
+/// As a principal: record the human's decision, then try to send the receipt.
+/// The decision stands even if sending fails; `flush_receipts` retries.
+pub async fn agent_decide(
+    home: &Home,
+    relay: impl Into<Target>,
+    id: &str,
+    approve: bool,
+    note: &str,
+) -> Result<bool> {
+    let base: Target = relay.into();
+    crate::agent::decide(home, id, approve, note)?;
+    Ok(flush_receipts(home, base).await.is_ok())
 }

@@ -1,4 +1,4 @@
-# Threat model (Phase 0 draft, updated through ADR 0013)
+# Threat model (Phase 0 draft, updated through ADR 0014)
 
 Scope: the code in this repository today (`core`, `relay`, `cli`). It will grow with the product. Each item is marked **mitigated**, **partial**, or **open**.
 
@@ -28,6 +28,13 @@ No anonymity and no metadata protection is claimed.
 | Relay withholds a newer device list (sender misses a new device) | Partial | Senders refresh before every send and on any unknown sender; key transparency planned (engineering plan 7a) |
 | A contact (or anyone else) sends the "own devices only" sync messages | Mitigated | Sync messages are accepted only from devices in your own signed list; from anyone else they are refused and trigger nothing (ADR 0013) |
 | A malicious own-device file offer replaces a message's file | Mitigated | The offer must match the message's hash, size and name, and the file is re-verified on download (ADR 0013) |
+| An agent acts beyond what its owner allowed | Partial | Requests outside a signed grant (scope, cap, expiry, rate) are denied; money above the auto-approve limit needs a human. **Nothing forces the service doing the action to check the receipt** (ADR 0014) |
+| Someone alters an agent's request in transit (amount, scope) or replays it to another person | Mitigated | The agent's signature covers every field including the principal; tampering fails verification, replays are handled once |
+| An agent forges its own approval, or a contact forwards another agent's request | Mitigated | Receipts verify only against the principal's key and the exact request hash; a request must be signed by the key of the contact who sent it (tested) |
+| The audit log is silently edited, reordered or shortened | Partial | Hash chain plus signatures detect edits, removals and reordering. Deleting the newest entries is caught only by an agent that kept a later receipt (audit head). A compromised principal device holds the signing key and is not covered |
+| A revoked agent's waiting request is approved anyway | Mitigated | Approval re-checks the grant at decision time (tested) |
+| An agent floods the principal with requests | Mitigated | Per-hour limit per grant (excess denied), at most 100 waiting; counts denied requests too |
+| An agent's action text misleads the human who approves | Open | The prompt shows the agent's own words next to scope and amount; typed actions are future work |
 | A compromised own device feeds its siblings false history | Accepted | It already holds the owner key (ADR 0010); it still cannot forge a contact's messages into the wrong conversation or direction |
 | Someone forges an edit or delete of another person's message | Mitigated | Only the author (same person, same conversation) may change a message; other changes are refused and reported (ADR 0012) |
 | A deleted message is kept by a recipient's device or screenshot | Open, inherent | Deletion is honoured by honest devices only; the product must not promise erasure |

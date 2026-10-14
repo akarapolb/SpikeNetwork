@@ -5,6 +5,7 @@
 //! to relays. Cryptography is delegated to `vodozemac` (Olm: X3DH-style
 //! asynchronous key agreement + Double Ratchet, externally audited).
 
+pub mod agent;
 pub mod attachment;
 pub mod envelope;
 pub mod identity;

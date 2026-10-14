@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod client;
 pub mod link;
 pub mod messages;
@@ -56,6 +57,24 @@ pub enum Outcome {
     SyncRequest {
         from_device: String,
         msg: sync::SyncMsg,
+    },
+    /// A signed request from an agent (you are its principal). `verdict` is
+    /// "pending" (waiting for you), or what the grant decided.
+    AgentRequest {
+        from: String,
+        id: String,
+        scope: String,
+        action: String,
+        amount_cents: Option<u64>,
+        verdict: String,
+    },
+    /// A principal's signed answer to a request you made as an agent.
+    AgentReceipt {
+        from: String,
+        id: String,
+        approved: bool,
+        by_policy: bool,
+        note: String,
     },
     /// Not decryptable: corrupted, tampered, replayed, or not for us.
     Invalid,
@@ -192,6 +211,11 @@ pub fn process(
                         persist(sessions, me)?;
                         return Ok(outcome);
                     }
+                    if matches!(env.kind, Kind::AgentRequest | Kind::AgentReceipt) {
+                        // Copies of our own agent traffic: nothing to store.
+                        persist(sessions, me)?;
+                        return Ok(Outcome::Ignored);
+                    }
                     let Some(to) = env.to.clone() else {
                         persist(sessions, me)?;
                         return Ok(Outcome::Invalid);
@@ -245,6 +269,16 @@ pub fn process(
                                 contacts[contact].name
                             ),
                         });
+                    }
+                    if matches!(env.kind, Kind::AgentRequest | Kind::AgentReceipt) {
+                        let c = &contacts[contact];
+                        let outcome = if env.kind == Kind::AgentRequest {
+                            agent::on_request(home, &my_id, &c.name, &peer, &env.body)?
+                        } else {
+                            agent::on_receipt(home, &c.name, &peer, &env.body)?
+                        };
+                        persist(sessions, me)?;
+                        return Ok(outcome);
                     }
                     if env.kind != Kind::Text {
                         let action = apply_change(home, &env, false, &peer, &sender_device)?;

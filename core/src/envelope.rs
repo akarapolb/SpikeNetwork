@@ -25,6 +25,10 @@ pub enum Kind {
     /// file requests). The body is JSON owned by the client. Receivers must
     /// refuse it from anyone who is not one of their own devices.
     Sync,
+    /// An agent's signed request to its principal (body: `agent::SignedRequest` JSON).
+    AgentRequest,
+    /// The principal's signed answer (body: `agent::Receipt` JSON).
+    AgentReceipt,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -93,6 +97,14 @@ impl Envelope {
         Ok(e)
     }
 
+    /// A signed agent request or receipt (`json`), addressed like a message.
+    pub fn agent(kind: Kind, json: &str) -> Result<Self> {
+        debug_assert!(matches!(kind, Kind::AgentRequest | Kind::AgentReceipt));
+        let mut e = Self::text(json)?;
+        e.kind = kind;
+        Ok(e)
+    }
+
     /// A delete of message `target`.
     pub fn delete(target: &str) -> Result<Self> {
         let mut e = Self::text("")?;
@@ -120,7 +132,7 @@ impl Envelope {
         });
         let att_ok = e.attachment.as_ref().is_none_or(|a| a.validate().is_ok());
         let target_ok = match e.kind {
-            Kind::Text | Kind::Sync => e.target.is_none(),
+            Kind::Text | Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => e.target.is_none(),
             Kind::Edit | Kind::Delete => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
@@ -132,7 +144,9 @@ impl Envelope {
             Kind::Text => true,
             Kind::Edit => e.attachment.is_none(),
             Kind::Delete => e.attachment.is_none() && e.body.is_empty(),
-            Kind::Sync => e.attachment.is_none() && !e.body.is_empty(),
+            Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => {
+                e.attachment.is_none() && !e.body.is_empty()
+            }
         };
         if e.v != VERSION
             || !id_ok

@@ -39,6 +39,10 @@ impl OwnerKey {
     pub fn public(&self) -> [u8; 32] {
         *self.0.public_key().as_bytes()
     }
+    /// Raw Ed25519 signature over `msg`. Callers add their own domain-separation prefix.
+    pub fn sign_raw(&self, msg: &[u8]) -> [u8; 64] {
+        self.0.sign(msg).to_bytes()
+    }
 }
 
 /// One device in a list: its device card (`spike1:`) and, optionally, the relay it reads from.

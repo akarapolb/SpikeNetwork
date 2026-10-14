@@ -383,6 +383,18 @@ impl Home {
         self.write(CONTACTS, serde_json::to_string_pretty(c)?.as_bytes())
     }
 
+    /// A sealed JSON file under `name` (default value if it does not exist yet).
+    pub fn load_json<T: serde::de::DeserializeOwned + Default>(&self, name: &str) -> Result<T> {
+        match self.read_opt(name)? {
+            Some(b) => Ok(serde_json::from_slice(&b)?),
+            None => Ok(T::default()),
+        }
+    }
+
+    pub fn save_json<T: serde::Serialize>(&self, name: &str, value: &T) -> Result<()> {
+        self.write(name, &serde_json::to_vec(value)?)
+    }
+
     fn read(&self, name: &str) -> Result<Vec<u8>> {
         let sealed = fs::read(self.dir.join(name)).with_context(|| format!("reading {name}"))?;
         self.vault.open(name, &sealed).map_err(|e| {

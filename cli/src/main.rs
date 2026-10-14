@@ -113,6 +113,68 @@ enum Cmd {
         #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
         relay: String,
     },
+    /// Principal: let an agent (a contact) ask you for things within limits.
+    AgentGrant {
+        name: String,
+        /// Allowed scope, repeatable (e.g. files.read, payments.send).
+        #[arg(long = "scope", required = true)]
+        scopes: Vec<String>,
+        #[arg(long, default_value_t = 30)]
+        days: u64,
+        /// Hard cap per request, in cents. Without it, requests with money are denied.
+        #[arg(long)]
+        max_cents: Option<u64>,
+        /// Approve without asking at or below this many cents (0 = requests with no money).
+        #[arg(long)]
+        auto_below_cents: Option<u64>,
+        #[arg(long, default_value_t = 10)]
+        per_hour: u32,
+    },
+    /// Principal: remove an agent's grant.
+    AgentRevoke { name: String },
+    /// Principal: list grants and requests (waiting first).
+    AgentPending,
+    /// Principal: approve a waiting request (id or first 4+ characters).
+    AgentApprove {
+        id: String,
+        #[arg(long, default_value = "")]
+        note: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Principal: deny a waiting request.
+    AgentDeny {
+        id: String,
+        #[arg(long, default_value = "")]
+        note: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Principal: send any receipts that have not reached their agent yet.
+    AgentFlush {
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Principal: verify and print the tamper-evident audit log.
+    AgentAudit,
+    /// Agent: ask a contact (your principal) to allow an action.
+    AgentRequest {
+        name: String,
+        #[arg(long)]
+        scope: String,
+        /// What you want to do, in words the human will read.
+        #[arg(long)]
+        action: String,
+        #[arg(long)]
+        amount_cents: Option<u64>,
+        /// How long the request stays valid.
+        #[arg(long, default_value_t = 60)]
+        minutes: u64,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Agent: show your requests and the receipts you got.
+    AgentStatus,
     /// Edit a message you sent (by id or its first 6+ characters from `spike history`).
     Edit {
         id: String,
@@ -443,6 +505,176 @@ async fn run() -> Result<()> {
             let n = ops::request_file(&home, target(relay), &id).await?;
             println!("asked {n} of your other devices for the file; run `spike recv` shortly, then `spike fetch {id}`");
         }
+        Cmd::AgentGrant {
+            name,
+            scopes,
+            days,
+            max_cents,
+            auto_below_cents,
+            per_hour,
+        } => {
+            let key = contact_key(&home, &name)?;
+            let g = spike_cli::agent::grant(
+                &home,
+                &key,
+                scopes,
+                days,
+                max_cents,
+                auto_below_cents,
+                per_hour,
+            )?;
+            println!(
+                "{name} may ask for: {}; until {}; max {} ; auto-approve up to {}; at most {}/hour",
+                g.body.scopes.join(", "),
+                fmt_utc(g.body.expires),
+                g.body
+                    .max_cents
+                    .map_or("no money".into(), |c| format!("{c} cents")),
+                g.body
+                    .auto_below_cents
+                    .map_or("nothing (always ask)".into(), |c| format!("{c} cents")),
+                g.body.per_hour
+            );
+        }
+        Cmd::AgentRevoke { name } => {
+            let key = contact_key(&home, &name)?;
+            if spike_cli::agent::revoke(&home, &key)? {
+                println!(
+                    "{name}'s grant removed; requests still waiting can no longer be approved"
+                );
+            } else {
+                println!("{name} has no grant");
+            }
+        }
+        Cmd::AgentPending => {
+            for g in spike_cli::agent::list_grants(&home)? {
+                println!(
+                    "grant {}.. agent {}.. scopes {} until {}",
+                    &g.body.id[..8],
+                    &g.body.agent[..8],
+                    g.body.scopes.join(","),
+                    fmt_utc(g.body.expires)
+                );
+            }
+            let mut any = false;
+            for r in spike_cli::agent::list_inbox(&home)? {
+                let q = &r.signed.req;
+                let state = match &r.status {
+                    spike_cli::agent::Status::Pending => "WAITING".to_string(),
+                    spike_cli::agent::Status::Decided { receipt, delivered } => format!(
+                        "{:?} by {:?}{}",
+                        receipt.body.decision,
+                        receipt.body.by,
+                        if *delivered {
+                            ""
+                        } else {
+                            " (receipt not delivered yet)"
+                        }
+                    ),
+                };
+                any = true;
+                println!(
+                    "{} {} from {}: {} [{}] {} - {state}",
+                    &q.id[..8],
+                    fmt_utc(r.received),
+                    r.from,
+                    q.action,
+                    q.scope,
+                    q.amount_cents
+                        .map_or(String::new(), |c| format!("{c} cents"))
+                );
+            }
+            if !any {
+                println!("no requests");
+            }
+        }
+        Cmd::AgentApprove { id, note, relay } => {
+            let sent = ops::agent_decide(&home, target(relay), &id, true, &note).await?;
+            println!(
+                "approved{}",
+                if sent {
+                    ", receipt sent"
+                } else {
+                    "; receipt queued (run `spike agent-flush` when the agent is reachable)"
+                }
+            );
+        }
+        Cmd::AgentDeny { id, note, relay } => {
+            let sent = ops::agent_decide(&home, target(relay), &id, false, &note).await?;
+            println!(
+                "denied{}",
+                if sent {
+                    ", receipt sent"
+                } else {
+                    "; receipt queued (run `spike agent-flush` when the agent is reachable)"
+                }
+            );
+        }
+        Cmd::AgentFlush { relay } => {
+            let n = ops::flush_receipts(&home, target(relay)).await?;
+            println!("{n} receipt(s) sent");
+        }
+        Cmd::AgentAudit => {
+            let log = spike_cli::agent::verified_audit(&home)?;
+            for e in &log {
+                println!(
+                    "{:>4} {} {:<8} agent {}.. {}",
+                    e.seq,
+                    fmt_utc(e.ts),
+                    e.event,
+                    &e.agent[..8],
+                    e.detail
+                );
+            }
+            match log.last() {
+                Some(h) => println!("log intact: {} entries, head {}", log.len(), &h.hash[..16]),
+                None => println!("log is empty"),
+            }
+        }
+        Cmd::AgentRequest {
+            name,
+            scope,
+            action,
+            amount_cents,
+            minutes,
+            relay,
+        } => {
+            let id = ops::agent_request(
+                &home,
+                target(relay),
+                &name,
+                &scope,
+                &action,
+                amount_cents,
+                minutes,
+            )
+            .await?;
+            println!(
+                "request {} sent to {name}; run `spike recv` for the answer",
+                &id[..8]
+            );
+        }
+        Cmd::AgentStatus => {
+            let mut any = false;
+            for r in spike_cli::agent::list_outbox(&home)? {
+                any = true;
+                let q = &r.signed.req;
+                let state = match &r.receipt {
+                    None => "no answer yet".to_string(),
+                    Some(x) => format!("{:?} by {:?} {}", x.body.decision, x.body.by, x.body.note),
+                };
+                println!(
+                    "{} to {}: {} [{}] - {state}",
+                    &q.id[..8],
+                    r.to,
+                    q.action,
+                    q.scope
+                );
+            }
+            if !any {
+                println!("no requests");
+            }
+        }
         Cmd::Edit { id, text, relay } => {
             let r = ops::edit(&home, target(relay), &id, &text).await?;
             for n in &r.notes {
@@ -563,6 +795,19 @@ async fn run() -> Result<()> {
                 }
                 Outcome::Invalid => eprintln!("dropped undecryptable or replayed message"),
                 Outcome::Duplicate | Outcome::Ignored => {}
+                Outcome::AgentRequest { from, id, scope, action, amount_cents, verdict } => println!(
+                    "[agent request {} from {from}: {action} ({scope}{}) - {verdict}{}]",
+                    &id[..8],
+                    amount_cents.map_or(String::new(), |c| format!(", {c} cents")),
+                    if verdict == "pending" { format!("; `spike agent-approve {}` or `agent-deny`", &id[..8]) } else { String::new() }
+                ),
+                Outcome::AgentReceipt { from, id, approved, by_policy, note } => println!(
+                    "[{from} {} request {}{}{}]",
+                    if approved { "APPROVED" } else { "DENIED" },
+                    &id[..8],
+                    if by_policy { " (by policy)" } else { "" },
+                    if note.is_empty() { String::new() } else { format!(": {note}") }
+                ),
                 Outcome::Edited { who, id } => println!("[{who} edited message {}]", &id[..8]),
                 Outcome::Deleted { who, id } => println!("[{who} deleted message {}]", &id[..8]),
                 Outcome::Rejected { reason } => eprintln!("ignored a change: {reason}"),
@@ -583,6 +828,14 @@ async fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn contact_key(home: &Home, name: &str) -> Result<String> {
+    home.load_contacts()?
+        .iter()
+        .find(|c| c.name == name)
+        .with_context(|| format!("no contact '{name}'"))?
+        .conversation_key()
 }
 
 /// Ask a yes/no question on the terminal. Anything but y/yes is no.
