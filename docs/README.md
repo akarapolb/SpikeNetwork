@@ -24,5 +24,5 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [multi-device-design.html](multi-device-design.html) | **Proposed** design: message history across multiple devices, fan-out, device linking, and which servers are still needed |
 | [multi-device-demo.html](multi-device-demo.html) | **Interactive simulation** of that design (no real crypto): fan-out, offline catch-up, device linking, edits, relay outage, attacks. Open in a browser |
-| [mobile-prototype/](mobile-prototype/README.md) | **Design prototype** of the mobile app: 9 clickable screens (identity, chats, verification, devices, linking, network, agent approval and log) |
+| [mobile-prototype/](mobile-prototype/README.md) | **Design prototype** of the mobile app: 11 clickable screens (identity, chats, verification, devices, linking, network, agent approval and log, adding contacts, message requests) |
 | [spike-connect-plans.html](spike-connect-plans.html) | All three plans in one page |

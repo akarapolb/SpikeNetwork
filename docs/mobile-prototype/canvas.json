@@ -13,14 +13,17 @@
     "LinkDevice.dc.html": {"x": 470, "y": 1264, "w": 390, "h": 844, "title": "6 · Link a new device", "is_interactive": true, "radius": 36},
     "Network.dc.html": {"x": 940, "y": 1264, "w": 390, "h": 844, "title": "7 · Network and privacy", "is_interactive": true, "radius": 36},
     "AgentRequest.dc.html": {"x": 0, "y": 2528, "w": 390, "h": 844, "title": "8 · Agent approval", "is_interactive": true, "radius": 36},
-    "AgentLog.dc.html": {"x": 470, "y": 2528, "w": 390, "h": 844, "title": "9 · Agent activity log", "is_interactive": true, "radius": 36}
+    "AgentLog.dc.html": {"x": 470, "y": 2528, "w": 390, "h": 844, "title": "9 · Agent activity log", "is_interactive": true, "radius": 36},
+    "AddContact.dc.html": {"x": 0, "y": 3792, "w": 390, "h": 844, "title": "10 · Add a contact", "is_interactive": true, "radius": 36},
+    "Requests.dc.html": {"x": 470, "y": 3792, "w": 390, "h": 844, "title": "11 · Message requests", "is_interactive": true, "radius": 36}
   },
-  "order": ["Onboarding.dc.html", "Main.dc.html", "Conversation.dc.html", "Verify.dc.html", "Devices.dc.html", "LinkDevice.dc.html", "Network.dc.html", "AgentRequest.dc.html", "AgentLog.dc.html"],
+  "order": ["Onboarding.dc.html", "Main.dc.html", "Conversation.dc.html", "Verify.dc.html", "Devices.dc.html", "LinkDevice.dc.html", "Network.dc.html", "AgentRequest.dc.html", "AgentLog.dc.html", "AddContact.dc.html", "Requests.dc.html"],
   "notes": {
     "row1": {"x": 0, "y": -300, "text": "Messaging: identity, chats, verification", "kind": "title1", "maxW": 1800},
     "row2": {"x": 0, "y": 964, "text": "Your devices and your network", "kind": "title1", "maxW": 1330},
     "row3": {"x": 0, "y": 2228, "text": "Agents with human approval (Phase 2)", "kind": "title1", "maxW": 860},
-    "sticky1": {"x": 1880, "y": 0, "w": 300, "text": "Prototype. Click through: tabs, chat rows, Back, Verify, Link a device and the agent request are linked. No real networking or encryption.", "fill": "orange"}
+    "row4": {"x": 0, "y": 3492, "text": "Adding people: codes, invite links, requests", "kind": "title1", "maxW": 860},
+    "sticky1": {"x": 1880, "y": 0, "w": 300, "text": "Prototype. Click through: tabs, chat rows, Back, Verify, Link a device, Add a contact, Requests and the agent request are linked. No real networking or encryption.", "fill": "orange"}
   },
   "designSystems": []
 }
