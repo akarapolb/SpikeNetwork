@@ -229,20 +229,27 @@ async fn run() -> Result<()> {
             relay,
         } => {
             let r = ops::send(&home, target(relay), &name, message.as_bytes()).await?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
             if !r.verified {
                 eprintln!(
                     "warning: {name} is UNVERIFIED; the key has not been checked out of band"
                 );
             }
-            let kind = if r.new_session {
-                "new session"
-            } else {
-                "ratchet"
-            };
-            println!(
-                "queued at relay (id {}); {} bytes of ciphertext ({kind})",
-                r.relay_id, r.bytes
-            );
+            let theirs = r.devices.iter().filter(|d| !d.own).count();
+            println!("sent to {} of {name}'s {theirs} device(s)", r.delivered());
+            for d in &r.devices {
+                let who = if d.own { "your device" } else { "their device" };
+                match &d.error {
+                    None => println!(
+                        "  {who} {}: queued{}",
+                        &d.device_id[..8],
+                        if d.new_session { " (new session)" } else { "" }
+                    ),
+                    Some(e) => println!("  {who} {}: NOT sent: {e}", &d.device_id[..8]),
+                }
+            }
         }
         Cmd::History { name, limit } => {
             let contacts = home.load_contacts()?;
@@ -302,6 +309,9 @@ async fn run() -> Result<()> {
                 }
                 Outcome::Invalid => eprintln!("dropped undecryptable or replayed message"),
                 Outcome::Duplicate => {}
+                Outcome::SentCopy { to, body, .. } => {
+                    println!("[you -> {to}, sent from your other device] {}", String::from_utf8_lossy(&body));
+                }
             })
             .await?;
             if !follow && n == 0 {

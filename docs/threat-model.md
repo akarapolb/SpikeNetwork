@@ -1,4 +1,4 @@
-# Threat model (Phase 0 draft, updated through ADR 0008)
+# Threat model (Phase 0 draft, updated through ADR 0009)
 
 Scope: the code in this repository today (`core`, `relay`, `cli`). It will grow with the product. Each item is marked **mitigated**, **partial**, or **open**.
 
@@ -24,7 +24,9 @@ No anonymity and no metadata protection is claimed.
 | Impersonation of a device to the relay | Mitigated | Ed25519 challenge-response; wrong-key test |
 | Relay forges or swaps a recipient's prekey | Mitigated | Prekeys are signed by the recipient's key and verified by sender and relay; forged-prekey tests |
 | Key substitution during pairing | Partial | Cards are self-signed (keys can't be mixed). A substituted *whole* card is only caught if users compare the fingerprint out of band; contacts start **UNVERIFIED** and the CLI warns |
-| Device-list rollback, equivocation, or a device added without the owner key | Mitigated | Lists are signed by the person's owner key; lower versions and two different lists with one version are refused even with `--force` (ADR 0008). Lists are only exchanged via cards until M3 publishes them on relays |
+| Device-list rollback, equivocation, or a device added without the owner key | Mitigated | Lists are signed by the person's owner key; lower versions and two different lists with one version are refused even with `--force` (ADR 0008). Lists are published on relays (ADR 0009); relays enforce the same rules and only accept a list from a device in it; clients re-check everything they fetch |
+| Relay withholds a newer device list (sender misses a new device) | Partial | Senders refresh before every send and on any unknown sender; key transparency planned (engineering plan 7a) |
+| Removed or stolen device keeps receiving | Mitigated for new messages | Removal publishes a newer signed list; senders stop encrypting to it and the device refuses to send (ADR 0009). It keeps what it already holds |
 | Key change of an existing contact | Mitigated | `add` refuses a different key for an existing name unless `--force`, which resets verification |
 | Compromise of a device's keys exposes history | Mitigated for earlier traffic | Forward secrecy tested. Anything still stored on the device, and sessions' future messages until recovery, are exposed |
 | Prekey exhaustion / contact-start denial of service | Mitigated | A reusable, signed, weekly-rotated fallback prekey keeps a drained device reachable (ADR 0006). Cost: first messages of sessions started via the fallback have weaker forward secrecy while that key is held. Claim cap is per connection only (resettable); no per-IP/recipient limit yet |

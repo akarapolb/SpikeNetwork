@@ -1,10 +1,20 @@
 //! High-level operations shared by the binary and the tests.
+//!
+//! Multi-device (milestone M3): a message is encrypted separately for every
+//! device of the recipient and for the sender's own other devices ("sent
+//! copies"), and each copy is delivered to the relay that device reads from.
+//! Device lists are published on and fetched from relays, and only accepted
+//! under the update rules of ADR 0008.
 
 use crate::messages::{Direction, StoredMessage};
+use crate::state::{Added, OwnUpdate};
 use crate::{client::Relay, process, state::Home, transport::Target, Outcome};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use spike_core::envelope::Envelope;
-use spike_core::identity::Identity;
+use spike_core::identity::{DeviceCard, Identity};
+use spike_core::owner::IdentityCard;
+use spike_core::session::Sessions;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// Replenish prekeys when the relay holds fewer than this many of ours.
@@ -47,14 +57,148 @@ pub async fn top_up_prekeys_with(
     Ok(uploaded)
 }
 
+/// Bring our own device list up to date with the relay, then publish ours.
+/// Returns human-readable notes about anything that changed.
+pub async fn sync_own_list(relay: &mut Relay, home: &Home) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
+    let mine = home.load_device_list()?;
+    if let Some(offered) = relay.fetch_device_list(&mine.owner).await? {
+        match home.accept_own_list(&offered) {
+            Ok(OwnUpdate::Unchanged) => {}
+            Ok(OwnUpdate::Updated { version }) => {
+                notes.push(format!("your device list updated to v{version}"))
+            }
+            Ok(OwnUpdate::RemovedThisDevice { version }) => notes.push(format!(
+                "THIS DEVICE WAS REMOVED from your identity (device list v{version})"
+            )),
+            Err(e) => notes.push(format!("ignored your device list from the relay: {e}")),
+        }
+    }
+    if home.this_device_is_listed()? {
+        // A rollback reply here only means the relay already has something newer.
+        if let Err(e) = relay.publish_device_list(&home.load_device_list()?).await {
+            notes.push(format!("could not publish your device list: {e}"));
+        }
+    }
+    Ok(notes)
+}
+
+/// Fetch the latest device list of one contact (or all, if `name` is None)
+/// and apply it under the update rules. Legacy single-device contacts are skipped.
+pub async fn refresh_contacts(
+    relay: &mut Relay,
+    home: &Home,
+    name: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut notes = Vec::new();
+    for c in home.load_contacts()? {
+        if name.is_some_and(|n| n != c.name) {
+            continue;
+        }
+        let id = c.identity()?;
+        if id.is_legacy() {
+            continue;
+        }
+        let Some(list) = relay.fetch_device_list(&id.owner_hex()).await? else {
+            continue;
+        };
+        match home.add_contact(&c.name, &IdentityCard::encode(&list), false) {
+            Ok(Added::Updated { version }) => notes.push(format!(
+                "{}'s devices changed (list v{version}, {} devices)",
+                c.name,
+                list.devices.len()
+            )),
+            Ok(_) => {}
+            Err(e) => notes.push(format!(
+                "ignored {}'s device list from the relay: {e}",
+                c.name
+            )),
+        }
+    }
+    Ok(notes)
+}
+
+/// Connections to every relay a send needs, opened on demand.
+struct Pool<'a> {
+    base: Target,
+    me: &'a Identity,
+    conns: HashMap<String, Relay>,
+}
+
+impl<'a> Pool<'a> {
+    async fn get(&mut self, url: &str) -> Result<&mut Relay> {
+        if !self.conns.contains_key(url) {
+            let t = Target {
+                url: url.into(),
+                opts: self.base.opts.clone(),
+            };
+            let r = Relay::connect(t, self.me)
+                .await
+                .with_context(|| format!("connecting to {url}"))?;
+            self.conns.insert(url.into(), r);
+        }
+        Ok(self.conns.get_mut(url).expect("just inserted"))
+    }
+}
+
+/// The outcome for one recipient device.
+#[derive(Debug)]
+pub struct DeviceSend {
+    pub device_id: String,
+    /// One of the sender's own other devices (a sent copy).
+    pub own: bool,
+    pub new_session: bool,
+    /// `None` if the relay accepted it.
+    pub error: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct SendReport {
     /// Envelope id of the stored message.
     pub id: String,
-    pub relay_id: String,
-    pub bytes: usize,
-    pub new_session: bool,
     pub verified: bool,
+    pub devices: Vec<DeviceSend>,
+    /// Device-list changes noticed while sending.
+    pub notes: Vec<String>,
+}
+
+impl SendReport {
+    /// Whether a new session was started with any of the recipient's devices.
+    pub fn new_session(&self) -> bool {
+        self.devices.iter().any(|d| !d.own && d.new_session)
+    }
+    /// How many of the recipient's devices got it.
+    pub fn delivered(&self) -> usize {
+        self.devices
+            .iter()
+            .filter(|d| !d.own && d.error.is_none())
+            .count()
+    }
+}
+
+async fn send_to_device(
+    pool: &mut Pool<'_>,
+    home: &Home,
+    sessions: &mut Sessions,
+    card: &DeviceCard,
+    url: &str,
+    plaintext: &[u8],
+) -> Result<bool> {
+    let me = pool.me;
+    let relay = pool.get(url).await?;
+    let new = !sessions.has_session(card);
+    if new {
+        let prekey = relay
+            .claim_prekey(&card.device_id())
+            .await?
+            .ok_or_else(|| anyhow!("device has no prekeys on {url}; it must connect once first"))?;
+        sessions.start_outbound(me, card, &prekey)?;
+    }
+    let blob = sessions.encrypt(card, plaintext)?;
+    // The ratchet has advanced; persist before the message leaves the device.
+    home.save_sessions(sessions)?;
+    relay.send(&card.device_id(), &blob).await?;
+    Ok(new)
 }
 
 pub async fn send(
@@ -63,50 +207,94 @@ pub async fn send(
     name: &str,
     body: &[u8],
 ) -> Result<SendReport> {
+    let base: Target = relay.into();
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
+    let text = std::str::from_utf8(body).context("messages must be UTF-8 text")?;
+
+    // Our home relay: keep prekeys topped up and both device lists current.
+    let mut notes;
+    {
+        let mut home_relay = Relay::connect(base.clone(), &me).await?;
+        top_up_prekeys(&mut home_relay, home, &mut me).await?;
+        notes = sync_own_list(&mut home_relay, home).await?;
+        notes.extend(refresh_contacts(&mut home_relay, home, Some(name)).await?);
+    }
+    if !home.this_device_is_listed()? {
+        bail!("this device has been removed from your identity and can no longer send");
+    }
+
     let contacts = home.load_contacts()?;
     let c = contacts
         .iter()
         .find(|c| c.name == name)
         .with_context(|| format!("no contact '{name}'"))?;
-    let peer = c.decode()?;
+    let peer = c.identity()?;
+    let mut env = Envelope::text(text)?;
+    env.to = Some(peer.owner_hex());
+    let plaintext = env.to_bytes();
 
-    let mut relay = Relay::connect(relay, &me).await?;
-    top_up_prekeys(&mut relay, home, &mut me).await?;
+    let my_id = me.device_id();
+    let mine = IdentityCard::decode(&home.identity_card()?)?;
+    let mut targets: Vec<(DeviceCard, Option<String>, bool)> = peer
+        .device_relays()
+        .into_iter()
+        .map(|(d, r)| (d, r, false))
+        .collect();
+    targets.extend(
+        mine.device_relays()
+            .into_iter()
+            .filter(|(d, _)| d.device_id() != my_id)
+            .map(|(d, r)| (d, r, true)),
+    );
 
-    let new_session = !sessions.has_session(&peer);
-    if new_session {
-        let prekey = relay.claim_prekey(&peer.device_id()).await?.ok_or_else(|| {
-            anyhow!("{name} has no prekeys on this relay; they must connect once first (`spike keys`)")
-        })?;
-        sessions.start_outbound(&me, &peer, &prekey)?;
+    let mut pool = Pool {
+        base: base.clone(),
+        me: &me,
+        conns: HashMap::new(),
+    };
+    let mut devices = Vec::new();
+    for (card, relay, own) in targets {
+        let url = relay.unwrap_or_else(|| base.url.clone());
+        let r = send_to_device(&mut pool, home, &mut sessions, &card, &url, &plaintext).await;
+        devices.push(DeviceSend {
+            device_id: card.device_id(),
+            own,
+            new_session: *r.as_ref().unwrap_or(&false),
+            error: r.err().map(|e| format!("{e:#}")),
+        });
     }
-    let text = std::str::from_utf8(body).context("messages must be UTF-8 text")?;
-    let env = Envelope::text(text)?;
-    let blob = sessions.encrypt(&peer, &env.to_bytes())?;
-    // The ratchet has advanced; persist before the message leaves the device.
-    home.save_sessions(&sessions)?;
-    let relay_id = relay.send(&peer.device_id(), &blob).await?;
-    // Stored once the relay has accepted it; a failed send is not in history.
+    if !devices.iter().any(|d| !d.own && d.error.is_none()) {
+        let why: Vec<String> = devices
+            .iter()
+            .filter(|d| !d.own)
+            .filter_map(|d| d.error.clone())
+            .collect();
+        bail!(
+            "could not deliver to any of {name}'s devices: {}",
+            why.join("; ")
+        );
+    }
+    // Stored once at least one of the recipient's devices has it.
     home.messages()?.insert(&StoredMessage {
         id: env.id.clone(),
-        peer: c.conversation_key()?,
+        peer: peer.owner_hex(),
         direction: Direction::Out,
         ts: env.ts,
         body: env.body,
     })?;
     Ok(SendReport {
         id: env.id,
-        relay_id,
-        bytes: blob.len(),
-        new_session,
         verified: c.verified,
+        devices,
+        notes,
     })
 }
 
 /// Connect, receive until `idle` passes with nothing new (forever if `None`),
 /// calling `on` for each outcome and acking after it has been persisted.
+/// A message from a device we don't know yet triggers one refresh of contacts'
+/// device lists, then a retry, so contacts' new devices are picked up.
 pub async fn recv(
     home: &Home,
     relay: impl Into<Target>,
@@ -117,17 +305,26 @@ pub async fn recv(
     let mut sessions = home.load_sessions()?;
     let mut relay = Relay::connect(relay, &me).await?;
     top_up_prekeys(&mut relay, home, &mut me).await?;
+    sync_own_list(&mut relay, home).await?;
     while let Some(d) = relay.next_delivery(idle).await? {
-        on(process(home, &mut me, &mut sessions, &d.blob)?);
+        let mut outcome = process(home, &mut me, &mut sessions, &d.blob)?;
+        if matches!(outcome, Outcome::UnknownSender { .. }) {
+            refresh_contacts(&mut relay, home, None).await?;
+            sync_own_list(&mut relay, home).await?;
+            outcome = process(home, &mut me, &mut sessions, &d.blob)?;
+        }
+        on(outcome);
         relay.ack(&d.id).await?;
     }
     Ok(())
 }
 
-/// Connect once so the relay holds our prekeys. Returns how many it now has.
+/// Connect once so the relay holds our prekeys and our current device list.
+/// Returns how many one-time prekeys it now has.
 pub async fn publish_keys(home: &Home, relay: impl Into<Target>) -> Result<usize> {
     let mut me = home.load_identity()?;
     let mut relay = Relay::connect(relay, &me).await?;
     top_up_prekeys(&mut relay, home, &mut me).await?;
+    sync_own_list(&mut relay, home).await?;
     Ok(relay.prekeys)
 }

@@ -12,6 +12,7 @@ use rand::{rngs::OsRng, RngCore};
 use spike_core::identity::{
     device_id_from_ed, is_valid_device_id, verify_auth, verify_prekey, SignedPrekey, MAX_PREKEYS,
 };
+use spike_core::owner::DeviceList;
 use spike_core::wire::{ClientMsg, ServerMsg, WirePrekey};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -224,6 +225,8 @@ where
                         Ok(ClientMsg::Ack { id }) => { on_ack(&state, &me, &id); None }
                         Ok(ClientMsg::PublishPrekeys { keys }) => Some(on_publish(&state, &me, &my_ed, &keys)),
                         Ok(ClientMsg::PublishFallback { key }) => Some(on_fallback(&state, &me, &my_ed, &key)),
+                        Ok(ClientMsg::PublishDeviceList { list }) => Some(on_publish_list(&state, &cfg, &me, &list)),
+                        Ok(ClientMsg::FetchDeviceList { owner }) => Some(on_fetch_list(&state, &owner)),
                         Ok(ClientMsg::ClaimPrekey { device }) => {
                             claims += 1;
                             if claims > cfg.max_claims_per_conn {
@@ -316,6 +319,61 @@ fn on_fallback(state: &Shared, me: &str, my_ed: &[u8; 32], key: &WirePrekey) -> 
             "bad_prekey",
             "prekey is malformed or not signed by this device",
         ),
+    }
+}
+
+/// Accept a signed device list only if: it verifies; the publishing device is
+/// in it (so a stranger cannot overwrite someone's list); and its version is
+/// higher than the stored one, or identical content at the same version. The
+/// relay applies the same rollback and equivocation rules as clients (ADR 0008).
+fn on_publish_list(state: &Shared, cfg: &Config, me: &str, json: &str) -> ServerMsg {
+    if json.len() > cfg.max_blob {
+        return err("too_large", "device list exceeds relay limit");
+    }
+    let Ok(list) = serde_json::from_str::<DeviceList>(json) else {
+        return err("bad_list", "not a device list");
+    };
+    let Ok(cards) = list.verify() else {
+        return err("bad_list", "device list signature or contents invalid");
+    };
+    if !cards.iter().any(|c| c.device_id() == me) {
+        return err("not_member", "only a device in the list may publish it");
+    }
+    match state.store.device_list(&list.owner) {
+        Err(_) => return internal(),
+        Ok(Some((v, _))) if v > list.version => {
+            return err("rollback", &format!("relay already holds version {v}"))
+        }
+        Ok(Some((v, stored))) if v == list.version => {
+            let same = serde_json::from_str::<DeviceList>(&stored)
+                .map(|s| s == list)
+                .unwrap_or(false);
+            return if same {
+                ServerMsg::DeviceListStored { version: v }
+            } else {
+                err(
+                    "equivocation",
+                    "a different list already holds this version",
+                )
+            };
+        }
+        _ => {}
+    }
+    match state.store.put_device_list(&list.owner, list.version, json) {
+        Ok(()) => ServerMsg::DeviceListStored {
+            version: list.version,
+        },
+        Err(_) => internal(),
+    }
+}
+
+fn on_fetch_list(state: &Shared, owner: &str) -> ServerMsg {
+    match state.store.device_list(owner) {
+        Ok(found) => ServerMsg::DeviceList {
+            owner: owner.to_string(),
+            list: found.map(|(_, l)| l),
+        },
+        Err(_) => internal(),
     }
 }
 

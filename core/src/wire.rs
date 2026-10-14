@@ -26,6 +26,12 @@ pub enum ClientMsg {
     PublishFallback { key: WirePrekey },
     /// Take one of `device`'s prekeys (each is handed out at most once).
     ClaimPrekey { device: String },
+    /// Publish our person's signed device list (JSON). The relay checks the
+    /// signature, that the publishing device is in it, and that the version
+    /// only goes up.
+    PublishDeviceList { list: String },
+    /// Fetch the latest signed device list for an owner key (hex).
+    FetchDeviceList { owner: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -55,6 +61,15 @@ pub enum ServerMsg {
     },
     /// Reply to `PublishFallback`.
     FallbackPublished,
+    /// Reply to `PublishDeviceList`.
+    DeviceListStored {
+        version: u64,
+    },
+    /// Reply to `FetchDeviceList`; `list` is the signed list JSON, if the relay has one.
+    DeviceList {
+        owner: String,
+        list: Option<String>,
+    },
     /// Reply to `ClaimPrekey`; `prekey` is `None` when the device has none at
     /// all. `fallback` is true when it is the reusable fallback, not a one-time key.
     Prekey {

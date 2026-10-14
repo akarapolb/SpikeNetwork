@@ -66,6 +66,11 @@ impl Store {
                  sig    TEXT NOT NULL,
                  UNIQUE(device, key)
              );
+             CREATE TABLE IF NOT EXISTS device_lists (
+                 owner   TEXT PRIMARY KEY,
+                 version INTEGER NOT NULL,
+                 list    TEXT    NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS fallbacks (
                  device   TEXT PRIMARY KEY,
                  key      TEXT    NOT NULL,
@@ -231,5 +236,28 @@ impl Store {
             },
         )
         .optional()
+    }
+
+    /// The stored signed device list for `owner`: (version, JSON).
+    pub fn device_list(&self, owner: &str) -> rusqlite::Result<Option<(u64, String)>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT version, list FROM device_lists WHERE owner = ?1",
+                [owner],
+                |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?)),
+            )
+            .optional()
+    }
+
+    /// Store a list the caller has already verified and checked against the stored one.
+    pub fn put_device_list(&self, owner: &str, version: u64, list: &str) -> rusqlite::Result<()> {
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO device_lists (owner, version, list) VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner) DO UPDATE SET version = ?2, list = ?3",
+            params![owner, version as i64, list],
+        )?;
+        Ok(())
     }
 }

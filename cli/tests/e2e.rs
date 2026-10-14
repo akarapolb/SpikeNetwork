@@ -117,11 +117,11 @@ async fn conversation_survives_offline_recipient_and_ratchets_both_ways() {
     let r = ops::send(&alice.home, &url, "bob", b"first while you were out")
         .await
         .unwrap();
-    assert!(r.new_session);
+    assert!(r.new_session());
     let r = ops::send(&alice.home, &url, "bob", b"second")
         .await
         .unwrap();
-    assert!(!r.new_session, "later messages reuse the ratchet");
+    assert!(!r.new_session(), "later messages reuse the ratchet");
 
     // Bob returns and gets both, in order.
     let got = bob.recv(&url).await;
@@ -133,7 +133,7 @@ async fn conversation_survives_offline_recipient_and_ratchets_both_ways() {
     let r = ops::send(&bob.home, &url, "alice", b"got both")
         .await
         .unwrap();
-    assert!(!r.new_session, "inbound session is reused for replies");
+    assert!(!r.new_session(), "inbound session is reused for replies");
     let got = alice.recv(&url).await;
     assert_eq!((got.len(), msg(&got[0])), (1, ("bob", &b"got both"[..])));
 
@@ -648,7 +648,7 @@ async fn drained_device_stays_reachable_through_the_fallback_prekey() {
     let r = ops::send(&alice.home, &url, "bob", b"from alice")
         .await
         .unwrap();
-    assert!(r.new_session);
+    assert!(r.new_session());
     ops::send(&carol.home, &url, "bob", b"from carol")
         .await
         .unwrap();

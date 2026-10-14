@@ -5,6 +5,7 @@ use crate::transport::{dial, Target, Ws};
 use anyhow::{anyhow, bail, Result};
 use futures_util::{SinkExt, StreamExt};
 use spike_core::identity::{Identity, SignedPrekey};
+use spike_core::owner::DeviceList;
 use spike_core::wire::{ClientMsg, ServerMsg};
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -173,6 +174,50 @@ impl Relay {
                         .map(|p| SignedPrekey::from_wire(&p))
                         .transpose()?
                         .map(|k| (k, fallback)))
+                }
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                _ => {}
+            }
+        }
+    }
+
+    /// Publish our person's signed device list. Returns the version the relay now holds.
+    pub async fn publish_device_list(&mut self, list: &DeviceList) -> Result<u64> {
+        self.write(&ClientMsg::PublishDeviceList {
+            list: serde_json::to_string(list)?,
+        })
+        .await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::DeviceListStored { version } => return Ok(version),
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                _ => {}
+            }
+        }
+    }
+
+    /// Fetch the signed device list the relay holds for `owner` (hex), unverified:
+    /// callers must verify and apply the update rules before trusting it.
+    pub async fn fetch_device_list(&mut self, owner: &str) -> Result<Option<DeviceList>> {
+        self.write(&ClientMsg::FetchDeviceList {
+            owner: owner.into(),
+        })
+        .await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::DeviceList { list, .. } => {
+                    return Ok(match list {
+                        Some(j) => Some(serde_json::from_str(&j)?),
+                        None => None,
+                    })
                 }
                 ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
                 ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {

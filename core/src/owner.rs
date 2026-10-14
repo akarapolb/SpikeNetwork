@@ -234,6 +234,23 @@ impl IdentityCard {
         &self.devices
     }
 
+    /// Each device with the relay it reads from, if its list names one.
+    pub fn device_relays(&self) -> Vec<(DeviceCard, Option<String>)> {
+        match &self.list {
+            None => self.devices.iter().map(|d| (d.clone(), None)).collect(),
+            Some(l) => self
+                .devices
+                .iter()
+                .cloned()
+                .zip(l.devices.iter().map(|e| e.relay.clone()))
+                .collect(),
+        }
+    }
+
+    pub fn list(&self) -> Option<&DeviceList> {
+        self.list.as_ref()
+    }
+
     /// What people compare to verify each other. For a signed card it covers
     /// the owner key only, so it stays the same when devices are added. A
     /// legacy card keeps its old device fingerprint.

@@ -51,6 +51,19 @@ impl Contact {
     }
 }
 
+/// What happened when a newer copy of our own device list was offered.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OwnUpdate {
+    Unchanged,
+    Updated {
+        version: u64,
+    },
+    /// The newer list no longer contains this device: it has been removed.
+    RemovedThisDevice {
+        version: u64,
+    },
+}
+
 /// What `add_contact` did.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Added {
@@ -154,6 +167,60 @@ impl Home {
     pub fn save_device_list(&self, l: &DeviceList) -> Result<()> {
         l.verify()?;
         self.write(DEVICE_LIST, &serde_json::to_vec(l)?)
+    }
+
+    /// Install a person's owner key and signed device list on this device. Used
+    /// when this device joins an existing identity (device linking, M4); tests
+    /// use it directly. The list must contain this device.
+    pub fn install_identity(&self, owner: &OwnerKey, list: &DeviceList) -> Result<()> {
+        let me = self.load_identity()?.device_id();
+        let cards = list.verify()?;
+        if list.owner != hex::encode(owner.public()) {
+            bail!("device list is not signed by this owner key");
+        }
+        if !cards.iter().any(|c| c.device_id() == me) {
+            bail!("device list does not include this device");
+        }
+        self.write(OWNER, owner.to_hex().as_bytes())?;
+        self.save_device_list(list)
+    }
+
+    /// Apply a copy of our own device list seen elsewhere (e.g. on the relay).
+    /// Accepts only a valid, newer list signed by our own owner key. An older
+    /// one is ignored (stale relay); a different list at the same version is refused.
+    pub fn accept_own_list(&self, offered: &DeviceList) -> Result<OwnUpdate> {
+        let cards = offered.verify()?;
+        let current = self.load_device_list()?;
+        if offered.owner != current.owner {
+            bail!("relay offered a device list for a different owner");
+        }
+        if offered.version < current.version || *offered == current {
+            return Ok(OwnUpdate::Unchanged);
+        }
+        if offered.version == current.version {
+            bail!("{}", CoreError::Equivocation(offered.version));
+        }
+        self.save_device_list(offered)?;
+        let me = self.load_identity()?.device_id();
+        if cards.iter().any(|c| c.device_id() == me) {
+            Ok(OwnUpdate::Updated {
+                version: offered.version,
+            })
+        } else {
+            Ok(OwnUpdate::RemovedThisDevice {
+                version: offered.version,
+            })
+        }
+    }
+
+    /// Whether this device is still in our own signed device list.
+    pub fn this_device_is_listed(&self) -> Result<bool> {
+        let me = self.load_identity()?.device_id();
+        Ok(self
+            .load_device_list()?
+            .verify()?
+            .iter()
+            .any(|c| c.device_id() == me))
     }
 
     /// The card to share with people: `spike2:` + this person's signed device list.

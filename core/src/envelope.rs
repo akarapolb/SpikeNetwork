@@ -28,6 +28,11 @@ pub struct Envelope {
     pub ts: u64,
     pub kind: Kind,
     pub body: String,
+    /// The conversation's other person (their owner key, hex). Set on every
+    /// message so that copies delivered to the sender's *own* other devices
+    /// know which conversation they belong to. Ignored on messages from others.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
 }
 
 impl Envelope {
@@ -47,6 +52,7 @@ impl Envelope {
             ts,
             kind: Kind::Text,
             body: body.to_string(),
+            to: None,
         })
     }
 
@@ -62,7 +68,12 @@ impl Envelope {
             && e.id
                 .bytes()
                 .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c));
-        if e.v != VERSION || !id_ok || e.body.len() > MAX_TEXT {
+        let to_ok = e.to.as_ref().is_none_or(|t| {
+            t.len() == 64
+                && t.bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        });
+        if e.v != VERSION || !id_ok || !to_ok || e.body.len() > MAX_TEXT {
             return Err(Error::Malformed);
         }
         Ok(e)
@@ -89,7 +100,9 @@ mod tests {
         bad_v.v = 2;
         let mut bad_id = good.clone();
         bad_id.id = "not-hex".into();
-        for e in [bad_v, bad_id] {
+        let mut bad_to = good.clone();
+        bad_to.to = Some("bob".into());
+        for e in [bad_v, bad_id, bad_to] {
             assert!(Envelope::from_bytes(&e.to_bytes()).is_err());
         }
         let unknown_kind =
@@ -100,6 +113,20 @@ mod tests {
             Envelope::text(&"a".repeat(MAX_TEXT + 1)),
             Err(Error::TooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn recipient_field_roundtrips_and_is_optional() {
+        let mut e = Envelope::text("x").unwrap();
+        e.to = Some("ab".repeat(32));
+        assert_eq!(Envelope::from_bytes(&e.to_bytes()).unwrap(), e);
+        let old =
+            br#"{"v":1,"id":"00112233445566778899aabbccddeeff","ts":1,"kind":"text","body":"hi"}"#;
+        assert_eq!(
+            Envelope::from_bytes(old).unwrap().to,
+            None,
+            "envelopes without the field still parse"
+        );
     }
 
     #[test]
