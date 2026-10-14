@@ -23,4 +23,5 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [adr/0006-fallback-prekey.md](adr/0006-fallback-prekey.md) | Last-resort prekey: reachability vs first-message forward secrecy |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [multi-device-design.html](multi-device-design.html) | **Proposed** design: message history across multiple devices, fan-out, device linking, and which servers are still needed |
+| [multi-device-demo.html](multi-device-demo.html) | **Interactive simulation** of that design (no real crypto): fan-out, offline catch-up, device linking, edits, relay outage, attacks. Open in a browser |
 | [spike-connect-plans.html](spike-connect-plans.html) | All three plans in one page |
