@@ -175,6 +175,44 @@ enum Cmd {
     },
     /// Agent: show your requests and the receipts you got.
     AgentStatus,
+    /// Agent: package an approved request for the service that will act on it
+    /// (prints a presentation; give it to that service, which runs `verify-receipt`).
+    AgentPresent {
+        /// Request id or its first 4+ characters (from `agent-status`).
+        id: String,
+        /// The service's name, exactly as it is configured there (e.g. pay.example.com).
+        #[arg(long)]
+        audience: String,
+        /// Write to this file instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Service: check an agent's presentation before acting, and use it up.
+    /// Needs no identity or passphrase. Exit 0 and JSON on stdout = authorized;
+    /// exit 2 = refused (reason on stderr); exit 1 = usage or store error.
+    VerifyReceipt {
+        /// This service's name; presentations for other services are refused.
+        #[arg(long)]
+        audience: String,
+        /// Whose approvals to accept: owner key (64 hex) or identity card. Repeatable.
+        #[arg(long = "principal", required = true)]
+        principals: Vec<String>,
+        /// The scope of what you are about to do.
+        #[arg(long)]
+        scope: String,
+        /// The money you are about to move, in cents (must not exceed the approved amount).
+        #[arg(long)]
+        amount_cents: Option<u64>,
+        /// SQLite file remembering used approvals. Keep it; share it between instances.
+        #[arg(long)]
+        spent_db: PathBuf,
+        /// Presentation file (default: stdin).
+        #[arg(long)]
+        input: Option<PathBuf>,
+        /// Check only; do not use the approval up.
+        #[arg(long)]
+        check_only: bool,
+    },
     /// Edit a message you sent (by id or its first 6+ characters from `spike history`).
     Edit {
         id: String,
@@ -265,6 +303,27 @@ fn passphrase(file: &Option<PathBuf>, confirm: bool) -> Result<Zeroizing<String>
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    // Services verify without an identity of their own: no vault to unlock.
+    if let Cmd::VerifyReceipt {
+        audience,
+        principals,
+        scope,
+        amount_cents,
+        spent_db,
+        input,
+        check_only,
+    } = &cli.cmd
+    {
+        return verify_receipt(
+            audience,
+            principals,
+            scope,
+            *amount_cents,
+            spent_db,
+            input.as_deref(),
+            *check_only,
+        );
+    }
     let dir = match cli.home {
         Some(p) => p,
         None => {
@@ -303,7 +362,7 @@ async fn run() -> Result<()> {
     };
 
     match cli.cmd {
-        Cmd::Init { .. } => unreachable!("handled above"),
+        Cmd::Init { .. } | Cmd::VerifyReceipt { .. } => unreachable!("handled above"),
         Cmd::Card => {
             let card = home.identity_card()?;
             let me = IdentityCard::decode(&card)?;
@@ -675,6 +734,20 @@ async fn run() -> Result<()> {
                 println!("no requests");
             }
         }
+        Cmd::AgentPresent { id, audience, out } => {
+            let p = spike_cli::verifier::present(&home, &id, &audience)?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, p.to_json())
+                        .with_context(|| format!("writing {}", path.display()))?;
+                    eprintln!(
+                        "presentation for {audience} written to {}; it expires with the request",
+                        path.display()
+                    );
+                }
+                None => println!("{}", p.to_json()),
+            }
+        }
         Cmd::Edit { id, text, relay } => {
             let r = ops::edit(&home, target(relay), &id, &text).await?;
             for n in &r.notes {
@@ -830,6 +903,74 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+/// `spike verify-receipt`: see the command's help. Refusals exit with code 2.
+fn verify_receipt(
+    audience: &str,
+    principals: &[String],
+    scope: &str,
+    amount_cents: Option<u64>,
+    spent_db: &std::path::Path,
+    input: Option<&std::path::Path>,
+    check_only: bool,
+) -> Result<()> {
+    use spike_core::verifier::{self, Action, Config, Presentation};
+    if !verifier::valid_audience(audience) {
+        bail!(
+            "--audience must be 1 to {} printable characters without spaces",
+            verifier::MAX_AUDIENCE
+        );
+    }
+    let principals = principals
+        .iter()
+        .map(|p| {
+            let p = p.trim();
+            if p.len() == 64 && p.bytes().all(|c| c.is_ascii_hexdigit()) {
+                Ok(p.to_ascii_lowercase())
+            } else {
+                Ok(IdentityCard::decode(p)
+                    .context("--principal is neither an owner key nor an identity card")?
+                    .owner_hex())
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let text = match input {
+        Some(f) => {
+            std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?
+        }
+        None => std::io::read_to_string(std::io::stdin()).context("reading stdin")?,
+    };
+    let cfg = Config {
+        audience: audience.into(),
+        principals,
+    };
+    let action = Action {
+        scope,
+        amount_cents,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64;
+    let result = match Presentation::from_json(text.trim()) {
+        Err(_) => Err(verifier::Refusal::Malformed),
+        Ok(p) if check_only => verifier::check(&cfg, &p, &action, now),
+        Ok(p) => {
+            let mut store = spike_cli::verifier::SqliteSpent::open(spent_db)?;
+            verifier::redeem(&cfg, &mut store, &p, &action, now)
+        }
+    };
+    match result {
+        Ok(a) => {
+            println!("{}", serde_json::to_string(&a)?);
+            Ok(())
+        }
+        Err(verifier::Refusal::Store(e)) => bail!("spent-request store: {e}"),
+        Err(r) => {
+            eprintln!("refused: {r}");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn contact_key(home: &Home, name: &str) -> Result<String> {
     home.load_contacts()?
         .iter()
@@ -869,17 +1010,73 @@ fn fmt_utc(ms: u64) -> String {
     )
 }
 
+/// Whether a panic is `println!` failing because the reader went away
+/// (e.g. `spike history bob | head`). Unix EPIPE, or Windows 109 / 232.
+fn is_closed_pipe(msg: &str) -> bool {
+    msg.starts_with("failed printing to std")
+        && [
+            "Broken pipe",
+            "os error 32)",
+            "os error 109)",
+            "os error 232)",
+        ]
+        .iter()
+        .any(|m| msg.contains(m))
+}
+
 fn main() {
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-    if let Err(e) = rt.block_on(run()) {
-        // One readable line; no backtrace regardless of RUST_BACKTRACE.
-        eprintln!("error: {e:#}");
-        std::process::exit(1);
+    // A closed pipe is the reader's choice, not a crash: stop quietly.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if is_closed_pipe(msg) {
+            std::process::exit(0);
+        }
+        default_hook(info)
+    }));
+    // Windows gives the main thread 1 MiB of stack, which clap's generated
+    // parser for this many commands overflows in debug builds. Use 8 MiB.
+    let worker = std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(|| {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            rt.block_on(run())
+        })
+        .expect("start main thread");
+    match worker.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            // One readable line; no backtrace regardless of RUST_BACKTRACE.
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
+        // The panic hook has already reported it.
+        Err(_) => std::process::exit(101),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn closed_pipes_are_recognised_and_nothing_else() {
+        use super::is_closed_pipe;
+        assert!(is_closed_pipe(
+            "failed printing to stdout: Broken pipe (os error 32)"
+        ));
+        assert!(is_closed_pipe(
+            "failed printing to stdout: The pipe is being closed. (os error 232)"
+        ));
+        assert!(!is_closed_pipe(
+            "failed printing to stdout: No space left on device (os error 28)"
+        ));
+        assert!(!is_closed_pipe("index out of bounds"));
+    }
+
     #[test]
     fn utc_formatting() {
         assert_eq!(super::fmt_utc(0), "1970-01-01 00:00 UTC");

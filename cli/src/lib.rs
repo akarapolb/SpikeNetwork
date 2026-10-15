@@ -6,6 +6,7 @@ pub mod ops;
 pub mod state;
 pub mod sync;
 pub mod transport;
+pub mod verifier;
 
 use messages::{Direction, StoredMessage};
 use spike_core::envelope::Envelope;

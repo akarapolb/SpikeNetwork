@@ -424,6 +424,89 @@ async fn an_agent_that_sees_the_audit_log_go_backwards_is_warned() {
     );
 }
 
+#[tokio::test]
+async fn an_approval_is_honoured_by_a_service_exactly_once() {
+    use spike_core::verifier::{redeem, Action, Config, Refusal};
+    let url = relay().await;
+    let (alice, bot) = pair(&url).await;
+    grant(&alice, &bot);
+    let id = ops::agent_request(
+        &bot.0,
+        &url,
+        "alice",
+        "payments.send",
+        "Buy GPU",
+        Some(1_500),
+        60,
+    )
+    .await
+    .unwrap();
+    recv(&alice, &url).await;
+    // Not answered yet: nothing to present.
+    assert!(spike_cli::verifier::present(&bot.0, &id[..8], "pay.example").is_err());
+    ops::agent_decide(&alice.0, &url, &id[..8], true, "")
+        .await
+        .unwrap();
+    recv(&bot, &url).await;
+
+    let p = spike_cli::verifier::present(&bot.0, &id[..8], "pay.example").unwrap();
+    let db = std::env::temp_dir().join(format!("spike-spent-e2e-{}.db", &id[..8]));
+    let cfg = Config {
+        audience: "pay.example".into(),
+        principals: vec![key(&alice)],
+    };
+    let pay = |cents| Action {
+        scope: "payments.send",
+        amount_cents: Some(cents),
+    };
+    let mut store = spike_cli::verifier::SqliteSpent::open(&db).unwrap();
+    let t = now();
+    // Too much, then a different service, are refused without using it up.
+    assert!(matches!(
+        redeem(&cfg, &mut store, &p, &pay(1_501), t),
+        Err(Refusal::AmountTooHigh { .. })
+    ));
+    let other = Config {
+        audience: "evil.example".into(),
+        ..cfg.clone()
+    };
+    assert_eq!(
+        redeem(&other, &mut store, &p, &pay(1_500), t),
+        Err(Refusal::WrongAudience)
+    );
+    // Someone who is not alice cannot approve for this service.
+    let not_alice = Config {
+        principals: vec![key(&bot)],
+        ..cfg.clone()
+    };
+    assert_eq!(
+        redeem(&not_alice, &mut store, &p, &pay(1_500), t),
+        Err(Refusal::UntrustedPrincipal)
+    );
+    let ok = redeem(&cfg, &mut store, &p, &pay(1_500), t).unwrap();
+    assert_eq!(ok.principal, key(&alice));
+    assert_eq!(ok.approved_cents, Some(1_500));
+    // Used up, even after the service restarts.
+    drop(store);
+    let mut store = spike_cli::verifier::SqliteSpent::open(&db).unwrap();
+    assert_eq!(
+        redeem(&cfg, &mut store, &p, &pay(1_500), t),
+        Err(Refusal::AlreadyUsed)
+    );
+    std::fs::remove_file(&db).ok();
+    for ext in ["-wal", "-shm"] {
+        std::fs::remove_file(format!("{}{ext}", db.display())).ok();
+    }
+
+    // A denied request cannot be presented at all.
+    let id2 = ops::agent_request(&bot.0, &url, "alice", "admin.delete", "Wipe", None, 60)
+        .await
+        .unwrap();
+    recv(&alice, &url).await;
+    recv(&bot, &url).await;
+    assert!(spike_cli::verifier::present(&bot.0, &id2[..8], "pay.example").is_err());
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

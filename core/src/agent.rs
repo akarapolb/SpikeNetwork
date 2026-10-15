@@ -29,7 +29,7 @@ pub const MAX_REQUEST_LIFETIME_MS: u64 = 24 * 3600 * 1000;
 pub const MAX_SKEW_MS: u64 = 5 * 60 * 1000;
 const MAX_TEXT: usize = 500;
 
-fn verify(pub_hex: &str, msg: &[u8], sig_hex: &str) -> Result<()> {
+pub(crate) fn verify(pub_hex: &str, msg: &[u8], sig_hex: &str) -> Result<()> {
     let pk: [u8; 32] = hex::decode(pub_hex)?
         .try_into()
         .map_err(|_| Error::Malformed)?;
@@ -39,7 +39,7 @@ fn verify(pub_hex: &str, msg: &[u8], sig_hex: &str) -> Result<()> {
     pk.verify(msg, &sig).map_err(|_| Error::BadSignature)
 }
 
-fn is_hex(s: &str, len: usize) -> bool {
+pub(crate) fn is_hex(s: &str, len: usize) -> bool {
     s.len() == len
         && s.bytes()
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
@@ -52,7 +52,7 @@ fn sha(ctx: &[u8], body: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
-fn sign(owner: &OwnerKey, ctx: &[u8], body: &[u8]) -> String {
+pub(crate) fn sign(owner: &OwnerKey, ctx: &[u8], body: &[u8]) -> String {
     hex::encode(owner.sign_raw(&[ctx, body].concat()))
 }
 
