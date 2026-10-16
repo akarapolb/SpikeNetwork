@@ -28,6 +28,24 @@ const AUDIT: &str = "agent-audit.enc";
 /// Requests waiting for a human are capped, so an agent cannot fill the screen or the disk.
 pub const MAX_PENDING: usize = 100;
 const HOUR_MS: u64 = 3_600_000;
+const DAY_MS: u64 = 24 * HOUR_MS;
+
+/// Money approved or still awaiting a decision for `agent` in the last 24 hours,
+/// leaving out the request `skip` (the one being decided). Denied requests count nothing.
+fn committed_24h(all: &[Inbound], agent: &str, now: u64, skip: Option<&str>) -> u64 {
+    all.iter()
+        .filter(|r| {
+            r.signed.req.agent == agent
+                && r.received + DAY_MS > now
+                && skip != Some(r.signed.req.id.as_str())
+                && match &r.status {
+                    Status::Pending => true,
+                    Status::Decided { receipt, .. } => receipt.body.decision == Decision::Approved,
+                }
+        })
+        .map(|r| r.signed.req.amount_cents.unwrap_or(0))
+        .fold(0, u64::saturating_add)
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -98,6 +116,7 @@ pub fn verified_audit(home: &Home) -> Result<Vec<AuditEntry>> {
 }
 
 /// Give `agent` (a contact's owner key) a standing policy, replacing any earlier grant.
+#[allow(clippy::too_many_arguments)] // one argument per policy field; a struct would only move them
 pub fn grant(
     home: &Home,
     agent: &str,
@@ -106,11 +125,17 @@ pub fn grant(
     max_cents: Option<u64>,
     auto_below_cents: Option<u64>,
     per_hour: u32,
+    daily_cents: Option<u64>,
 ) -> Result<Grant> {
     let owner = home.load_owner()?;
     let now = now_ms();
     let mut id = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut id);
+    if let (Some(daily), Some(max)) = (daily_cents, max_cents) {
+        if daily < max {
+            bail!("--daily-cents cannot be below --max-cents");
+        }
+    }
     if let (Some(auto), Some(max)) = (auto_below_cents, max_cents) {
         if auto > max {
             bail!("--auto-below-cents cannot exceed --max-cents");
@@ -128,6 +153,7 @@ pub fn grant(
             max_cents,
             auto_below_cents,
             per_hour,
+            daily_cents,
         },
     )?;
     let mut all = grants(home)?;
@@ -247,7 +273,8 @@ pub fn on_request(
     let grant = grants(home)?
         .into_iter()
         .find(|g| g.body.agent == req.agent);
-    let verdict = match evaluate(grant.as_ref(), req, now, recent) {
+    let committed = committed_24h(&all, &req.agent, now, None);
+    let verdict = match evaluate(grant.as_ref(), req, now, recent, committed) {
         Verdict::AskHuman if pending >= MAX_PENDING => {
             Verdict::Deny("too many requests are waiting for approval".into())
         }
@@ -341,7 +368,9 @@ pub fn decide(home: &Home, prefix: &str, approve: bool, note: &str) -> Result<In
         let grant = grants(home)?
             .into_iter()
             .find(|g| g.body.agent == req.agent);
-        if let Verdict::Deny(why) = evaluate(grant.as_ref(), &req, now_ms(), 0) {
+        let now = now_ms();
+        let others = committed_24h(&all, &req.agent, now, Some(&req.id));
+        if let Verdict::Deny(why) = evaluate(grant.as_ref(), &req, now, 0, others) {
             bail!("cannot approve: {why} (deny it instead)");
         }
     }

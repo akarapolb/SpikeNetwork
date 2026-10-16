@@ -77,6 +77,7 @@ fn grant(alice: &Dev, bot: &Dev) {
         Some(5_000),
         Some(500),
         5,
+        None,
     )
     .unwrap();
 }
@@ -505,6 +506,108 @@ async fn an_approval_is_honoured_by_a_service_exactly_once() {
     recv(&alice, &url).await;
     recv(&bot, &url).await;
     assert!(spike_cli::verifier::present(&bot.0, &id2[..8], "pay.example").is_err());
+}
+
+#[tokio::test]
+async fn small_requests_cannot_add_up_past_the_daily_cap() {
+    let url = relay().await;
+    let (alice, bot) = pair(&url).await;
+    agent::grant(
+        &alice.0,
+        &key(&bot),
+        vec!["payments.send".into()],
+        30,
+        Some(1_000),
+        Some(500),
+        20,
+        Some(1_000),
+    )
+    .unwrap();
+    let ask = |cents| {
+        let (bot, url) = (&bot, &url);
+        async move {
+            ops::agent_request(
+                &bot.0,
+                url,
+                "alice",
+                "payments.send",
+                "Top up",
+                Some(cents),
+                60,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    // Two auto-approved 400s, then a third that would pass 1000: denied by policy.
+    for _ in 0..2 {
+        ask(400).await;
+        let got = recv(&alice, &url).await;
+        assert!(
+            matches!(got.as_slice(), [Outcome::AgentRequest { verdict, .. }] if verdict == "approved by policy"),
+            "{got:?}"
+        );
+    }
+    ask(400).await;
+    let got = recv(&alice, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::AgentRequest { verdict, .. }] if verdict.contains("denied by policy") && verdict.contains("24 hours")),
+        "{got:?}"
+    );
+    // A request that fits still goes through, and a waiting one is reserved.
+    ask(200).await;
+    assert!(
+        matches!(recv(&alice, &url).await.as_slice(), [Outcome::AgentRequest { verdict, .. }] if verdict == "approved by policy")
+    );
+    // 600 more would pass 1000: denied on arrival, the human is never asked.
+    ask(600).await;
+    let got = recv(&alice, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::AgentRequest { verdict, .. }] if verdict.contains("denied by policy")),
+        "{got:?}"
+    );
+
+    // Waiting requests count too, and approval re-checks the cap as it is now.
+    let (alice, bot) = pair(&url).await;
+    let regrant = |daily| {
+        agent::grant(
+            &alice.0,
+            &key(&bot),
+            vec!["payments.send".into()],
+            30,
+            Some(500),
+            None,
+            20,
+            Some(daily),
+        )
+        .unwrap()
+    };
+    regrant(1_000);
+    let mut ids = vec![];
+    for _ in 0..2 {
+        let id = ops::agent_request(&bot.0, &url, "alice", "payments.send", "Pay", Some(500), 60)
+            .await
+            .unwrap();
+        let got = recv(&alice, &url).await;
+        assert!(
+            matches!(got.as_slice(), [Outcome::AgentRequest { verdict, .. }] if verdict == "pending"),
+            "{got:?}"
+        );
+        ids.push(id);
+    }
+    ops::agent_request(&bot.0, &url, "alice", "payments.send", "Pay", Some(1), 60)
+        .await
+        .unwrap();
+    let got = recv(&alice, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::AgentRequest { verdict, .. }] if verdict.contains("denied by policy")),
+        "{got:?}"
+    );
+    regrant(700); // the human tightens the cap while both wait
+    assert!(agent::decide(&alice.0, &ids[0][..8], true, "").is_err());
+    assert!(agent::decide(&alice.0, &ids[0][..8], false, "").is_ok());
+    // With the first denied, only 500 is committed: the second now fits.
+    assert!(agent::decide(&alice.0, &ids[1][..8], true, "").is_ok());
 }
 
 fn now() -> u64 {

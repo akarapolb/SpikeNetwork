@@ -164,6 +164,11 @@ pub struct GrantBody {
     pub auto_below_cents: Option<u64>,
     /// At most this many requests per rolling hour; more are denied.
     pub per_hour: u32,
+    /// Cumulative cap over any rolling 24 hours, counting approved requests and
+    /// those still waiting for a human. `None` = no cumulative cap. Absent in
+    /// grants signed before this field existed, which verify unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_cents: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -212,9 +217,17 @@ pub enum Verdict {
 }
 
 /// Evaluate `req` against the agent's `grant`. `recent` is how many requests
-/// from this agent were received in the last hour (not counting this one).
+/// from this agent were received in the last hour (not counting this one), and
+/// `committed_24h` is the money approved or awaiting approval for this agent
+/// in the last 24 hours (not counting this request).
 /// Order matters: cheap, absolute checks first.
-pub fn evaluate(grant: Option<&Grant>, req: &Request, now: u64, recent: u32) -> Verdict {
+pub fn evaluate(
+    grant: Option<&Grant>,
+    req: &Request,
+    now: u64,
+    recent: u32,
+    committed_24h: u64,
+) -> Verdict {
     let Some(g) = grant else {
         return Verdict::Deny("this agent has no grant".into());
     };
@@ -241,6 +254,14 @@ pub fn evaluate(grant: Option<&Grant>, req: &Request, now: u64, recent: u32) -> 
         }
         None if amount > 0 => return Verdict::Deny("this grant allows no money".into()),
         _ => {}
+    }
+    if let Some(cap) = g.daily_cents {
+        if committed_24h.saturating_add(amount) > cap {
+            return Verdict::Deny(format!(
+                "{amount} cents would take the last 24 hours to {} of the {cap} allowed",
+                committed_24h.saturating_add(amount)
+            ));
+        }
     }
     if recent >= g.per_hour {
         return Verdict::Deny(format!("more than {} requests in an hour", g.per_hour));
@@ -476,6 +497,7 @@ mod tests {
                 max_cents: Some(5000),
                 auto_below_cents: Some(500),
                 per_hour: 3,
+                daily_cents: None,
             },
         )
         .unwrap()
@@ -510,7 +532,7 @@ mod tests {
         let g = grant(&a, &p);
         g.verify().unwrap();
         let ev = |scope: &str, cents: Option<u64>, now: u64, recent: u32| {
-            evaluate(Some(&g), &request(&a, &p, scope, cents), now, recent)
+            evaluate(Some(&g), &request(&a, &p, scope, cents), now, recent, 0)
         };
         assert_eq!(ev("payments.send", Some(500), NOW, 0), Verdict::AutoApprove);
         assert_eq!(ev("files.read", None, NOW, 0), Verdict::AutoApprove);
@@ -527,13 +549,19 @@ mod tests {
             assert!(matches!(denied, Verdict::Deny(_)), "{denied:?}");
         }
         assert!(matches!(
-            evaluate(None, &request(&a, &p, "files.read", None), NOW, 0),
+            evaluate(None, &request(&a, &p, "files.read", None), NOW, 0, 0),
             Verdict::Deny(_)
         ));
         // A grant for one agent does not cover another.
         let other = OwnerKey::generate();
         assert!(matches!(
-            evaluate(Some(&g), &request(&other, &p, "files.read", None), NOW, 0),
+            evaluate(
+                Some(&g),
+                &request(&other, &p, "files.read", None),
+                NOW,
+                0,
+                0
+            ),
             Verdict::Deny(_)
         ));
     }
@@ -547,10 +575,41 @@ mod tests {
         let g = Grant::sign(&p, body).unwrap();
         let r = |c| request(&a, &p, "payments.send", c);
         assert!(matches!(
-            evaluate(Some(&g), &r(Some(1)), NOW, 0),
+            evaluate(Some(&g), &r(Some(1)), NOW, 0, 0),
             Verdict::Deny(_)
         ));
-        assert_eq!(evaluate(Some(&g), &r(None), NOW, 0), Verdict::AskHuman);
+        assert_eq!(evaluate(Some(&g), &r(None), NOW, 0, 0), Verdict::AskHuman);
+    }
+
+    #[test]
+    fn the_daily_cap_counts_what_is_already_committed() {
+        let (a, p) = (OwnerKey::generate(), OwnerKey::generate());
+        let mut body = grant(&a, &p).body;
+        body.daily_cents = Some(3000);
+        let g = Grant::sign(&p, body).unwrap();
+        g.verify().unwrap();
+        let ev = |cents: Option<u64>, committed: u64| {
+            evaluate(
+                Some(&g),
+                &request(&a, &p, "payments.send", cents),
+                NOW,
+                0,
+                committed,
+            )
+        };
+        assert_eq!(ev(Some(400), 0), Verdict::AutoApprove);
+        assert_eq!(ev(Some(1500), 1500), Verdict::AskHuman); // exactly at the cap
+        assert!(matches!(ev(Some(1501), 1500), Verdict::Deny(_)));
+        assert!(matches!(ev(Some(400), 2700), Verdict::Deny(_)));
+        // Small requests cannot add up past it: auto-approval is denied too.
+        assert!(matches!(ev(Some(1), 3000), Verdict::Deny(_)));
+        // Requests with no money are unaffected, and so is overflow.
+        assert_eq!(ev(None, 3000), Verdict::AutoApprove);
+        assert!(matches!(ev(Some(5000), u64::MAX), Verdict::Deny(_)));
+        // Grants signed before the field existed still verify.
+        let old = grant(&a, &p);
+        assert!(!serde_json::to_string(&old.body).unwrap().contains("daily"));
+        old.verify().unwrap();
     }
 
     #[test]

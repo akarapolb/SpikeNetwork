@@ -129,6 +129,9 @@ enum Cmd {
         auto_below_cents: Option<u64>,
         #[arg(long, default_value_t = 10)]
         per_hour: u32,
+        /// Most money in any rolling 24 hours, in cents, counting approved and waiting requests.
+        #[arg(long)]
+        daily_cents: Option<u64>,
     },
     /// Principal: remove an agent's grant.
     AgentRevoke { name: String },
@@ -571,6 +574,7 @@ async fn run() -> Result<()> {
             max_cents,
             auto_below_cents,
             per_hour,
+            daily_cents,
         } => {
             let key = contact_key(&home, &name)?;
             let g = spike_cli::agent::grant(
@@ -581,9 +585,10 @@ async fn run() -> Result<()> {
                 max_cents,
                 auto_below_cents,
                 per_hour,
+                daily_cents,
             )?;
             println!(
-                "{name} may ask for: {}; until {}; max {} ; auto-approve up to {}; at most {}/hour",
+                "{name} may ask for: {}; until {}; max {} ; auto-approve up to {}; at most {}/hour; {} per 24 h",
                 g.body.scopes.join(", "),
                 fmt_utc(g.body.expires),
                 g.body
@@ -592,7 +597,10 @@ async fn run() -> Result<()> {
                 g.body
                     .auto_below_cents
                     .map_or("nothing (always ask)".into(), |c| format!("{c} cents")),
-                g.body.per_hour
+                g.body.per_hour,
+                g.body
+                    .daily_cents
+                    .map_or("no cumulative cap".into(), |c| format!("{c} cents"))
             );
         }
         Cmd::AgentRevoke { name } => {
