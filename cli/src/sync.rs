@@ -6,6 +6,7 @@
 use crate::messages::StoredMessage;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use spike_core::agent::SignedRequest;
 use spike_core::attachment::Attachment;
 use spike_core::envelope::{Envelope, Kind, MAX_TEXT};
 
@@ -30,6 +31,17 @@ pub enum SyncMsg {
     FileOffer {
         msg_id: String,
         attachment: Attachment,
+    },
+    /// From the approver device: "this request waits for a human; you may decide it too."
+    AgentPending {
+        request: SignedRequest,
+        from: String,
+    },
+    /// To the approver device: "the human decided this request here."
+    AgentDecision {
+        request_id: String,
+        approve: bool,
+        note: String,
     },
 }
 
@@ -62,6 +74,12 @@ impl SyncMsg {
             SyncMsg::FileOffer { msg_id, attachment } => {
                 is_hex(msg_id, 32) && attachment.validate().is_ok()
             }
+            SyncMsg::AgentPending { request, from } => {
+                request.verify().is_ok() && from.len() <= 64 && !from.chars().any(char::is_control)
+            }
+            SyncMsg::AgentDecision {
+                request_id, note, ..
+            } => is_hex(request_id, 32) && note.len() <= 200,
             SyncMsg::CatchUpBatch { messages, .. } => messages.iter().all(|m| {
                 is_hex(&m.id, 32)
                     && is_hex(&m.peer, 64)

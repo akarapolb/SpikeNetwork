@@ -651,31 +651,29 @@ async fn run() -> Result<()> {
                         .map_or(String::new(), |c| format!("{c} cents"))
                 );
             }
+            for r in spike_cli::agent::list_remote(&home)? {
+                let q = &r.signed.req;
+                any = true;
+                println!(
+                    "{} {} from {}: {} [{}] {} - WAITING (forwarded by your main device)",
+                    &q.id[..8],
+                    fmt_utc(r.received),
+                    r.from,
+                    q.action,
+                    q.scope,
+                    q.amount_cents
+                        .map_or(String::new(), |c| format!("{c} cents"))
+                );
+            }
             if !any {
                 println!("no requests");
             }
         }
         Cmd::AgentApprove { id, note, relay } => {
-            let sent = ops::agent_decide(&home, target(relay), &id, true, &note).await?;
-            println!(
-                "approved{}",
-                if sent {
-                    ", receipt sent"
-                } else {
-                    "; receipt queued (run `spike agent-flush` when the agent is reachable)"
-                }
-            );
+            decide_command(&home, target(relay), &id, true, &note).await?;
         }
         Cmd::AgentDeny { id, note, relay } => {
-            let sent = ops::agent_decide(&home, target(relay), &id, false, &note).await?;
-            println!(
-                "denied{}",
-                if sent {
-                    ", receipt sent"
-                } else {
-                    "; receipt queued (run `spike agent-flush` when the agent is reachable)"
-                }
-            );
+            decide_command(&home, target(relay), &id, false, &note).await?;
         }
         Cmd::AgentFlush { relay } => {
             let n = ops::flush_receipts(&home, target(relay)).await?;
@@ -882,6 +880,17 @@ async fn run() -> Result<()> {
                     amount_cents.map_or(String::new(), |c| format!(", {c} cents")),
                     if verdict == "pending" { format!("; `spike agent-approve {}` or `agent-deny`", &id[..8]) } else { String::new() }
                 ),
+                Outcome::AgentRemotePending { from, id, scope, action, amount_cents } => println!(
+                    "[agent request {} from {from}, forwarded by your main device: {action} ({scope}{}); `spike agent-approve {}` or `agent-deny`]",
+                    &id[..8],
+                    amount_cents.map_or(String::new(), |c| format!(", {c} cents")),
+                    &id[..8]
+                ),
+                Outcome::AgentRemoteDecision { id, approved } => println!(
+                    "[your other device {} request {}; the receipt is on its way]",
+                    if approved { "approved" } else { "denied" },
+                    &id[..8]
+                ),
                 Outcome::AgentReceipt { from, id, approved, by_policy, note } => println!(
                     "[{from} {} request {}{}{}]",
                     if approved { "APPROVED" } else { "DENIED" },
@@ -907,6 +916,28 @@ async fn run() -> Result<()> {
                 eprintln!("no new messages");
             }
         }
+    }
+    Ok(())
+}
+
+/// `agent-approve` / `agent-deny`. On the approver device this decides and sends
+/// the receipt; on any other device it passes the decision to the approver.
+async fn decide_command(
+    home: &Home,
+    relay: Target,
+    id: &str,
+    approve: bool,
+    note: &str,
+) -> Result<()> {
+    let word = if approve { "approved" } else { "denied" };
+    let sent = ops::agent_decide(home, relay, id, approve, note).await?;
+    let me = home.load_identity()?.device_id();
+    if !spike_cli::agent::is_approver(home, &me)? {
+        println!("{word}; sent to your main device, which records it and sends the receipt when it next runs `spike recv`");
+    } else if sent {
+        println!("{word}, receipt sent");
+    } else {
+        println!("{word}; receipt queued (run `spike agent-flush` when the agent is reachable)");
     }
     Ok(())
 }

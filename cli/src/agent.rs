@@ -24,6 +24,7 @@ const GRANTS: &str = "agent-grants.enc";
 const INBOX: &str = "agent-inbox.enc";
 const OUTBOX: &str = "agent-outbox.enc";
 const AUDIT: &str = "agent-audit.enc";
+const REMOTE: &str = "agent-remote.enc";
 
 /// Requests waiting for a human are capped, so an agent cannot fill the screen or the disk.
 pub const MAX_PENDING: usize = 100;
@@ -185,7 +186,7 @@ pub fn revoke(home: &Home, agent: &str) -> Result<bool> {
 
 /// Whether this device is the one that decides requests: the first device in
 /// the owner's signed list.
-fn is_approver(home: &Home, my_device_id: &str) -> Result<bool> {
+pub fn is_approver(home: &Home, my_device_id: &str) -> Result<bool> {
     Ok(home
         .load_device_list()?
         .verify()?
@@ -334,6 +335,130 @@ pub fn on_request(
     });
     home.save_json(INBOX, &all)?;
     Ok(out)
+}
+
+// ------------------------------------------------- deciding from another device
+
+/// A request the approver device forwarded to this device to be decided here.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Remote {
+    pub signed: SignedRequest,
+    pub from: String,
+    pub received: u64,
+}
+
+/// Forwarded requests that have not expired.
+pub fn list_remote(home: &Home) -> Result<Vec<Remote>> {
+    let now = now_ms();
+    Ok(home
+        .load_json::<Vec<Remote>>(REMOTE)?
+        .into_iter()
+        .filter(|r| r.signed.req.expires > now)
+        .collect())
+}
+
+/// A waiting request, for forwarding (approver side).
+pub fn pending_request(home: &Home, id: &str) -> Result<Option<Inbound>> {
+    Ok(inbox(home)?
+        .into_iter()
+        .find(|r| r.signed.req.id == id && r.status == Status::Pending))
+}
+
+/// Another device of ours forwarded a waiting request. Accepted only from the
+/// approver device, only for requests addressed to us, and only if validly
+/// signed by the agent. The approver stays the one place that decides and logs.
+pub fn on_pending(
+    home: &Home,
+    my_device_id: &str,
+    sender_device: &str,
+    from: &str,
+    signed: SignedRequest,
+) -> Result<Outcome> {
+    let bad = |why: &str| Outcome::Rejected {
+        reason: format!("forwarded request: {why}"),
+    };
+    if is_approver(home, my_device_id)? {
+        return Ok(Outcome::Ignored);
+    }
+    if !is_approver(home, sender_device)? {
+        return Ok(bad("not from your approver device"));
+    }
+    let req = &signed.req;
+    if signed.verify().is_err() || req.principal != hex::encode(home.load_owner()?.public()) {
+        return Ok(bad("not a valid request addressed to you"));
+    }
+    let now = now_ms();
+    if req.expires <= now {
+        return Ok(Outcome::Ignored);
+    }
+    let mut all = home.load_json::<Vec<Remote>>(REMOTE)?;
+    all.retain(|r| r.signed.req.expires > now);
+    if all.iter().any(|r| r.signed.req.id == req.id) {
+        return Ok(Outcome::Duplicate);
+    }
+    if all.len() >= MAX_PENDING {
+        return Ok(bad("too many are waiting"));
+    }
+    let out = Outcome::AgentRemotePending {
+        from: from.into(),
+        id: req.id.clone(),
+        scope: req.scope.clone(),
+        action: req.action.clone(),
+        amount_cents: req.amount_cents,
+    };
+    all.push(Remote {
+        signed,
+        from: from.into(),
+        received: now,
+    });
+    home.save_json(REMOTE, &all)?;
+    Ok(out)
+}
+
+/// Find a forwarded request by id prefix (4+ characters, unambiguous).
+pub fn find_remote(home: &Home, prefix: &str) -> Result<Remote> {
+    if prefix.len() < 4 {
+        bail!("give at least 4 characters of the request id");
+    }
+    let hits: Vec<Remote> = list_remote(home)?
+        .into_iter()
+        .filter(|r| r.signed.req.id.starts_with(prefix))
+        .collect();
+    match hits.as_slice() {
+        [r] => Ok(r.clone()),
+        [] => bail!("no waiting request starts with '{prefix}'"),
+        _ => bail!("'{prefix}' matches several requests; type more characters"),
+    }
+}
+
+pub fn forget_remote(home: &Home, id: &str) -> Result<()> {
+    let mut all = home.load_json::<Vec<Remote>>(REMOTE)?;
+    all.retain(|r| r.signed.req.id != id);
+    home.save_json(REMOTE, &all)
+}
+
+/// The approver device receives a decision made on another of our devices
+/// (already authenticated as ours by the session it arrived on). It applies it
+/// exactly as if the human had decided here, including the grant re-check.
+pub fn on_remote_decision(
+    home: &Home,
+    my_device_id: &str,
+    request_id: &str,
+    approve: bool,
+    note: &str,
+) -> Result<Outcome> {
+    if !is_approver(home, my_device_id)? {
+        return Ok(Outcome::Ignored);
+    }
+    Ok(match decide(home, request_id, approve, note) {
+        Ok(_) => Outcome::AgentRemoteDecision {
+            id: request_id.into(),
+            approved: approve,
+        },
+        Err(e) => Outcome::Rejected {
+            reason: format!("decision from your other device: {e}"),
+        },
+    })
 }
 
 /// Find a request by id prefix (at least 4 hex characters, unambiguous).

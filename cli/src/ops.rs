@@ -470,9 +470,20 @@ pub async fn recv(
                 eprintln!("note: could not answer a request from your other device: {e:#}");
             }
         }
-        let decided =
-            matches!(&outcome, Outcome::AgentRequest { verdict, .. } if verdict != "pending");
+        let decided = matches!(&outcome, Outcome::AgentRequest { verdict, .. } if verdict != "pending")
+            || matches!(&outcome, Outcome::AgentRemoteDecision { .. });
+        let waiting = match &outcome {
+            Outcome::AgentRequest { id, verdict, .. } if verdict == "pending" => Some(id.clone()),
+            _ => None,
+        };
         on(outcome);
+        if let Some(id) = waiting {
+            if let Err(e) = announce_pending(home, &base, &id).await {
+                eprintln!("note: could not tell your other devices about a request: {e:#}");
+            }
+            me = home.load_identity()?;
+            sessions = home.load_sessions()?;
+        }
         if decided {
             // `deliver` keeps its own copy of the ratchet state on disk; reload ours after it.
             if let Err(e) = flush_receipts(home, base.clone()).await {
@@ -721,6 +732,42 @@ pub async fn agent_decide(
     note: &str,
 ) -> Result<bool> {
     let base: Target = relay.into();
+    let my_id = home.load_identity()?.device_id();
+    if !crate::agent::is_approver(home, &my_id)? {
+        // Not the approver: pass the decision to it. It applies and logs it.
+        let r = crate::agent::find_remote(home, id)?;
+        let msg = SyncMsg::AgentDecision {
+            request_id: r.signed.req.id.clone(),
+            approve,
+            note: note.chars().take(200).collect(),
+        };
+        if broadcast_own(home, base, &msg).await? == 0 {
+            bail!("could not reach your other devices; try again");
+        }
+        crate::agent::forget_remote(home, &r.signed.req.id)?;
+        return Ok(true);
+    }
     crate::agent::decide(home, id, approve, note)?;
     Ok(flush_receipts(home, base).await.is_ok())
+}
+
+/// Approver side: tell our other devices that `request_id` waits for a human,
+/// so it can be decided from any of them. A no-op with a single device.
+async fn announce_pending(home: &Home, base: &Target, request_id: &str) -> Result<()> {
+    let Some(r) = crate::agent::pending_request(home, request_id)? else {
+        return Ok(());
+    };
+    if own_other_devices(home, &home.load_identity()?)?.is_empty() {
+        return Ok(());
+    }
+    broadcast_own(
+        home,
+        base.clone(),
+        &SyncMsg::AgentPending {
+            request: r.signed,
+            from: r.from,
+        },
+    )
+    .await?;
+    Ok(())
 }

@@ -69,6 +69,18 @@ pub enum Outcome {
         amount_cents: Option<u64>,
         verdict: String,
     },
+    /// Your approver device forwarded a request that waits for a human; you can
+    /// decide it here (`spike agent-approve` / `agent-deny`).
+    AgentRemotePending {
+        from: String,
+        id: String,
+        scope: String,
+        action: String,
+        amount_cents: Option<u64>,
+    },
+    /// Another of your devices decided a request; this (approver) device applied
+    /// it and the receipt is on its way to the agent.
+    AgentRemoteDecision { id: String, approved: bool },
     /// A principal's signed answer to a request you made as an agent.
     AgentReceipt {
         from: String,
@@ -206,7 +218,7 @@ pub fn process(
                 None => {
                     if env.kind == Kind::Sync {
                         let outcome = match sync::SyncMsg::from_envelope(&env) {
-                            Ok(msg) => apply_sync(home, &contacts, msg, &sender_device)?,
+                            Ok(msg) => apply_sync(home, &contacts, msg, &sender_device, &my_id)?,
                             Err(_) => Outcome::Invalid,
                         };
                         persist(sessions, me)?;
@@ -332,6 +344,7 @@ fn apply_sync(
     contacts: &[state::Contact],
     msg: sync::SyncMsg,
     sender_device: &str,
+    my_device_id: &str,
 ) -> anyhow::Result<Outcome> {
     use sync::SyncMsg;
     Ok(match msg {
@@ -377,6 +390,14 @@ fn apply_sync(
                 },
             }
         }
+        SyncMsg::AgentPending { request, from } => {
+            agent::on_pending(home, my_device_id, sender_device, &from, request)?
+        }
+        SyncMsg::AgentDecision {
+            request_id,
+            approve,
+            note,
+        } => agent::on_remote_decision(home, my_device_id, &request_id, approve, &note)?,
         req @ (SyncMsg::CatchUpRequest { .. } | SyncMsg::FileRequest { .. }) => {
             Outcome::SyncRequest {
                 from_device: sender_device.to_string(),
