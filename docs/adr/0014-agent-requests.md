@@ -27,7 +27,7 @@ Ask, approve, receipt, auto-approve, scope denial; audit log verifies and holds 
 - **The agent does not enforce anything.** A receipt is a signed fact. The service that performs the action (a payment API, a file server) must itself require and check a valid receipt (principal signature, request hash, expiry, single use). No such verifier exists yet; this slice builds the approval and evidence layer only.
 - Receipts are not yet single-use tokens with their own expiry; a verifier must remember the request ids it has honoured.
 - A compromised principal device holds the owner key and can sign anything, including audit entries. The log is evidence against outsiders and accidents, and against silent edits by someone without the owner key, not against the owner's own device.
-- The approval prompt shows the action text the agent wrote. A lying agent can describe an action misleadingly; the scope and amount are shown beside it and are what policy checks. Structured, typed actions are future work.
+- The approval prompt shows the action text the agent wrote. A lying agent can describe an action misleadingly; the scope and amount are shown beside it and are what policy checks. Structured, typed actions now exist (ADR 0017).
 - Single approver device (other devices can now forward decisions to it: ADR 0016), local log (not replicated), a cumulative 24-hour cap is available from ADR 0015's follow-up (`--daily-cents`, below), no agent-to-agent delegation, no revocation notice sent to the agent.
 - Clock-based expiry trusts the principal's clock for its own decisions and allows 5 minutes of skew.
 

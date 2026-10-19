@@ -12,6 +12,7 @@
 //! The log records metadata (scope, amount, decision), never message content.
 //! Everything here is pure: no I/O and no clocks except where `now` is passed in.
 
+use crate::action::{self, Fields};
 use crate::owner::OwnerKey;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -75,6 +76,10 @@ pub struct Request {
     /// Money involved, in the smallest unit (cents). `None` if none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount_cents: Option<u64>,
+    /// Structured fields when `scope` is a known action type (ADR 0017). Signed
+    /// with everything else; absent in free-text requests, which verify unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typed: Option<Fields>,
     pub created: u64,
     pub expires: u64,
 }
@@ -89,7 +94,11 @@ impl Request {
             && self.action.len() <= MAX_TEXT
             && !self.action.chars().any(char::is_control)
             && self.expires > self.created
-            && self.expires - self.created <= MAX_REQUEST_LIFETIME_MS;
+            && self.expires - self.created <= MAX_REQUEST_LIFETIME_MS
+            && self
+                .typed
+                .as_ref()
+                .is_none_or(|f| action::validate(&self.scope, f, self.amount_cents).is_ok());
         if ok {
             Ok(())
         } else {
@@ -102,6 +111,11 @@ impl Request {
     /// Stable identifier of exactly this request, used in receipts and the audit log.
     pub fn hash(&self) -> String {
         sha(REQ_CTX, &self.bytes())
+    }
+    /// The line a human approves, rendered from the typed fields. `None` for a
+    /// free-text request, whose only description is the agent's own words.
+    pub fn summary(&self) -> Option<String> {
+        action::describe(&self.scope, self.typed.as_ref()?, self.amount_cents)
     }
 }
 
@@ -169,6 +183,14 @@ pub struct GrantBody {
     /// grants signed before this field existed, which verify unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_cents: Option<u64>,
+    /// Accept only typed requests (ADR 0017): every scope must be a known
+    /// action type, and free-text requests are denied. Omitted when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub typed_only: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -186,7 +208,8 @@ impl Grant {
             && body.scopes.len() <= 32
             && body.scopes.iter().all(|s| valid_scope(s))
             && body.expires > body.issued
-            && body.per_hour > 0;
+            && body.per_hour > 0
+            && (!body.typed_only || body.scopes.iter().all(|s| action::lookup(s).is_some()));
         if !ok {
             return Err(Error::Malformed);
         }
@@ -246,6 +269,9 @@ pub fn evaluate(
     }
     if !g.scopes.iter().any(|s| s == &req.scope) {
         return Verdict::Deny(format!("scope '{}' is not granted", req.scope));
+    }
+    if g.typed_only && req.typed.is_none() {
+        return Verdict::Deny("this grant accepts only typed actions".into());
     }
     let amount = req.amount_cents.unwrap_or(0);
     match g.max_cents {
@@ -480,6 +506,7 @@ mod tests {
             scope: scope.into(),
             action: "Buy 3 GPU hours".into(),
             amount_cents: cents,
+            typed: None,
             created: NOW,
             expires: NOW + 3_600_000,
         }
@@ -498,6 +525,7 @@ mod tests {
                 auto_below_cents: Some(500),
                 per_hour: 3,
                 daily_cents: None,
+                typed_only: false,
             },
         )
         .unwrap()
@@ -610,6 +638,60 @@ mod tests {
         let old = grant(&a, &p);
         assert!(!serde_json::to_string(&old.body).unwrap().contains("daily"));
         old.verify().unwrap();
+    }
+
+    #[test]
+    fn typed_fields_are_signed_and_checked() {
+        let (a, p) = (OwnerKey::generate(), OwnerKey::generate());
+        let mut req = request(&a, &p, "payments.send", Some(1500));
+        req.typed = Some(action::parse_pairs(["payee=acme-gpu", "currency=USD"]).unwrap());
+        let s = SignedRequest::sign(&a, req.clone()).unwrap();
+        s.verify().unwrap();
+        assert_eq!(s.req.summary().unwrap(), "Pay 15.00 USD to acme-gpu");
+        // Changing the payee after signing breaks the signature.
+        let mut redirected = s.clone();
+        redirected
+            .req
+            .typed
+            .as_mut()
+            .unwrap()
+            .insert("payee".into(), "mallory".into());
+        assert!(redirected.verify().is_err());
+        // Fields that do not fit the type cannot be signed or verified.
+        let mut wrong = req.clone();
+        wrong.typed = Some(action::parse_pairs(["payee=acme-gpu"]).unwrap());
+        assert!(SignedRequest::sign(&a, wrong).is_err());
+        let mut unknown = req.clone();
+        unknown.scope = "gpu.rent".into();
+        assert!(SignedRequest::sign(&a, unknown).is_err());
+        // A free-text request has no summary, and its bytes did not change.
+        let plain = request(&a, &p, "payments.send", Some(1500));
+        assert_eq!(plain.summary(), None);
+        assert!(!String::from_utf8(plain.bytes()).unwrap().contains("typed"));
+    }
+
+    #[test]
+    fn typed_only_grants_deny_free_text() {
+        let (a, p) = (OwnerKey::generate(), OwnerKey::generate());
+        let mut body = grant(&a, &p).body;
+        body.typed_only = true;
+        let g = Grant::sign(&p, body.clone()).unwrap();
+        g.verify().unwrap();
+        let plain = request(&a, &p, "files.read", None);
+        assert!(matches!(
+            evaluate(Some(&g), &plain, NOW, 0, 0),
+            Verdict::Deny(_)
+        ));
+        let mut typed = plain.clone();
+        typed.typed = Some(action::parse_pairs(["path=/notes.txt"]).unwrap());
+        assert_eq!(evaluate(Some(&g), &typed, NOW, 0, 0), Verdict::AutoApprove);
+        // Every scope of a typed-only grant must be a known type.
+        body.scopes.push("gpu.rent".into());
+        assert!(Grant::sign(&p, body).is_err());
+        // Older grants without the field still verify.
+        assert!(!serde_json::to_string(&grant(&a, &p).body)
+            .unwrap()
+            .contains("typed_only"));
     }
 
     #[test]

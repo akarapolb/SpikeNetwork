@@ -34,7 +34,7 @@ No anonymity and no metadata protection is claimed.
 | The audit log is silently edited, reordered or shortened | Partial | Hash chain plus signatures detect edits, removals and reordering. Deleting the newest entries is caught only by an agent that kept a later receipt (audit head). A compromised principal device holds the signing key and is not covered |
 | A revoked agent's waiting request is approved anyway | Mitigated | Approval re-checks the grant at decision time (tested) |
 | An agent floods the principal with requests | Mitigated | Per-hour limit per grant (excess denied), at most 100 waiting; counts denied requests too |
-| An agent's action text misleads the human who approves | Open | The prompt shows the agent's own words next to scope and amount; typed actions are future work |
+| An agent's action text misleads the human who approves | Partial | Typed actions (ADR 0017): the prompt is rendered from signed fields (payee, currency, path...), and the service refuses unless what it is about to do matches them exactly; `--typed-only` grants deny free text. Free-text requests are still allowed by default and labelled as unchecked; a payee id is not proof of who it is |
 | A compromised own device feeds its siblings false history | Accepted | It already holds the owner key (ADR 0010); it still cannot forge a contact's messages into the wrong conversation or direction |
 | Someone forges an edit or delete of another person's message | Mitigated | Only the author (same person, same conversation) may change a message; other changes are refused and reported (ADR 0012) |
 | A deleted message is kept by a recipient's device or screenshot | Open, inherent | Deletion is honoured by honest devices only; the product must not promise erasure |

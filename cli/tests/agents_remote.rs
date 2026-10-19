@@ -95,6 +95,7 @@ fn grant(desktop: &Dev, bot: &Dev) {
         Some(500),
         10,
         None,
+        false,
     )
     .unwrap();
 }

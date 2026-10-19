@@ -14,6 +14,7 @@
 //!
 //! Everything here is pure except the [`SpentStore`] the caller supplies.
 
+use crate::action::Fields;
 use crate::agent::{is_hex, sign, verify, Decision, Receipt, SignedRequest, MAX_SKEW_MS};
 use crate::owner::OwnerKey;
 use crate::{Error, Result};
@@ -112,6 +113,11 @@ pub struct Action<'a> {
     pub scope: &'a str,
     /// Money the service will actually move, in cents. `None` = none.
     pub amount_cents: Option<u64>,
+    /// The typed fields of what the service will actually do (ADR 0017), e.g.
+    /// the payee and currency. Required for a typed approval and must equal its
+    /// fields exactly; giving fields for a free-text approval is refused, so a
+    /// service that knows the type never accepts an untyped approval for it.
+    pub fields: Option<&'a Fields>,
 }
 
 /// Why a presentation was refused. The text is safe to show to the agent.
@@ -141,6 +147,12 @@ pub enum Refusal {
     WrongScope { approved: String, wanted: String },
     #[error("approved for {approved} cents, not {wanted}")]
     AmountTooHigh { approved: u64, wanted: u64 },
+    #[error("the approval is for a typed action; the service must state its fields")]
+    FieldsNotStated,
+    #[error("the approval is free text, not a typed action")]
+    Untyped,
+    #[error("field '{field}' differs from what was approved")]
+    WrongField { field: String },
     #[error("this approval has already been used")]
     AlreadyUsed,
     #[error("the spent-request store failed: {0}")]
@@ -155,8 +167,13 @@ pub struct Authorized {
     pub agent: String,
     pub principal: String,
     pub scope: String,
-    /// What the human approved, in the agent's words.
+    /// The agent's own words for the action.
     pub action: String,
+    /// The approved typed fields and the line the human saw, if typed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typed: Option<Fields>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub approved_cents: Option<u64>,
     /// Position of the principal's audit entry for this decision.
     pub audit_seq: u64,
@@ -242,6 +259,20 @@ pub fn check(
     if wanted > approved {
         return Err(Refusal::AmountTooHigh { approved, wanted });
     }
+    match (&req.typed, action.fields) {
+        (None, None) => {}
+        (Some(_), None) => return Err(Refusal::FieldsNotStated),
+        (None, Some(_)) => return Err(Refusal::Untyped),
+        (Some(have), Some(want)) => {
+            if let Some(k) = have
+                .keys()
+                .chain(want.keys())
+                .find(|k| have.get(*k) != want.get(*k))
+            {
+                return Err(Refusal::WrongField { field: k.clone() });
+            }
+        }
+    }
     Ok(Authorized {
         request_id: req.id.clone(),
         request_hash: hash,
@@ -249,6 +280,8 @@ pub fn check(
         principal: req.principal.clone(),
         scope: req.scope.clone(),
         action: req.action.clone(),
+        typed: req.typed.clone(),
+        summary: req.summary(),
         approved_cents: req.amount_cents,
         audit_seq: p.receipt.body.audit_seq,
     })
@@ -312,6 +345,7 @@ mod tests {
                 scope: "payments.send".into(),
                 action: "Buy 3 GPU hours".into(),
                 amount_cents: cents,
+                typed: None,
                 created: NOW,
                 expires: NOW + 3_600_000,
             },
@@ -344,6 +378,7 @@ mod tests {
     const PAY_1500: Action = Action {
         scope: "payments.send",
         amount_cents: Some(1500),
+        fields: None,
     };
 
     #[test]
@@ -381,11 +416,13 @@ mod tests {
         let less = Action {
             scope: "payments.send",
             amount_cents: Some(900),
+            fields: None,
         };
         assert!(check(&w.cfg, &p, &less, NOW + 3000).is_ok());
         let more = Action {
             scope: "payments.send",
             amount_cents: Some(1501),
+            fields: None,
         };
         assert_eq!(
             check(&w.cfg, &p, &more, NOW + 3000),
@@ -397,6 +434,7 @@ mod tests {
         let other = Action {
             scope: "files.delete",
             amount_cents: None,
+            fields: None,
         };
         assert!(matches!(
             check(&w.cfg, &p, &other, NOW + 3000),
@@ -522,6 +560,68 @@ mod tests {
             check(&w.cfg, &p3, &PAY_1500, NOW + 3000),
             Err(Refusal::Expired)
         );
+    }
+
+    #[test]
+    fn typed_approvals_need_the_same_fields() {
+        let w = world();
+        let fields = |payee: &str| {
+            crate::action::parse_pairs([format!("payee={payee}").as_str(), "currency=USD"]).unwrap()
+        };
+        let mut req = signed(&w, Some(1500)).req;
+        req.typed = Some(fields("acme-gpu"));
+        let s = SignedRequest::sign(&w.agent, req).unwrap();
+        let r = receipt(&w.principal, &s.req, Decision::Approved);
+        let p = Presentation::create(&w.agent, s, r, SVC, NOW + 2000).unwrap();
+        let at = NOW + 3000;
+        fn act(f: Option<&Fields>, cents: u64) -> Action<'_> {
+            Action {
+                scope: "payments.send",
+                amount_cents: Some(cents),
+                fields: f,
+            }
+        }
+        let acme = fields("acme-gpu");
+        let ok = check(&w.cfg, &p, &act(Some(&acme), 1500), at).unwrap();
+        assert_eq!(ok.summary.as_deref(), Some("Pay 15.00 USD to acme-gpu"));
+        // Paying someone else, or in another currency, is refused.
+        let mallory = fields("mallory");
+        assert_eq!(
+            check(&w.cfg, &p, &act(Some(&mallory), 1500), at),
+            Err(Refusal::WrongField {
+                field: "payee".into()
+            })
+        );
+        let mut eur = acme.clone();
+        eur.insert("currency".into(), "EUR".into());
+        assert_eq!(
+            check(&w.cfg, &p, &act(Some(&eur), 1500), at),
+            Err(Refusal::WrongField {
+                field: "currency".into()
+            })
+        );
+        let mut extra = acme.clone();
+        extra.insert("memo".into(), "x".into());
+        assert!(matches!(
+            check(&w.cfg, &p, &act(Some(&extra), 1500), at),
+            Err(Refusal::WrongField { .. })
+        ));
+        // A service that does not state fields cannot redeem a typed approval.
+        assert_eq!(
+            check(&w.cfg, &p, &act(None, 1500), at),
+            Err(Refusal::FieldsNotStated)
+        );
+        // A service that states fields refuses a free-text approval.
+        let plain = present(&w, Some(1500));
+        assert_eq!(
+            check(&w.cfg, &plain, &act(Some(&acme), 1500), at),
+            Err(Refusal::Untyped)
+        );
+        // Amount is still capped for typed approvals.
+        assert!(matches!(
+            check(&w.cfg, &p, &act(Some(&acme), 1501), at),
+            Err(Refusal::AmountTooHigh { .. })
+        ));
     }
 
     #[test]

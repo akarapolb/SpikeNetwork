@@ -692,14 +692,47 @@ pub async fn agent_request(
     amount_cents: Option<u64>,
     minutes: u64,
 ) -> Result<String> {
+    agent_request_typed(
+        home,
+        relay,
+        principal,
+        scope,
+        action,
+        amount_cents,
+        None,
+        minutes,
+    )
+    .await
+}
+
+/// [`agent_request`] with typed fields for a known action type (ADR 0017).
+#[allow(clippy::too_many_arguments)] // agent_request plus the fields
+pub async fn agent_request_typed(
+    home: &Home,
+    relay: impl Into<Target>,
+    principal: &str,
+    scope: &str,
+    action: &str,
+    amount_cents: Option<u64>,
+    typed: Option<spike_core::action::Fields>,
+    minutes: u64,
+) -> Result<String> {
     let contacts = home.load_contacts()?;
     let c = contacts
         .iter()
         .find(|c| c.name == principal)
         .with_context(|| format!("no contact '{principal}'"))?;
     let key = c.conversation_key()?;
-    let signed =
-        crate::agent::new_request(home, principal, &key, scope, action, amount_cents, minutes)?;
+    let signed = crate::agent::new_request(
+        home,
+        principal,
+        &key,
+        scope,
+        action,
+        amount_cents,
+        typed,
+        minutes,
+    )?;
     let env = Envelope::agent(Kind::AgentRequest, &signed.to_json())?;
     deliver(home, relay.into(), principal, env).await?;
     Ok(signed.req.id)

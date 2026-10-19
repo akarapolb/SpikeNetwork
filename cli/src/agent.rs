@@ -127,6 +127,7 @@ pub fn grant(
     auto_below_cents: Option<u64>,
     per_hour: u32,
     daily_cents: Option<u64>,
+    typed_only: bool,
 ) -> Result<Grant> {
     let owner = home.load_owner()?;
     let now = now_ms();
@@ -135,6 +136,14 @@ pub fn grant(
     if let (Some(daily), Some(max)) = (daily_cents, max_cents) {
         if daily < max {
             bail!("--daily-cents cannot be below --max-cents");
+        }
+    }
+    if typed_only {
+        if let Some(s) = scopes
+            .iter()
+            .find(|s| spike_core::action::lookup(s).is_none())
+        {
+            bail!("--typed-only: '{s}' is not a known action type (see `spike agent-types`)");
         }
     }
     if let (Some(auto), Some(max)) = (auto_below_cents, max_cents) {
@@ -155,6 +164,7 @@ pub fn grant(
             auto_below_cents,
             per_hour,
             daily_cents,
+            typed_only,
         },
     )?;
     let mut all = grants(home)?;
@@ -325,6 +335,7 @@ pub fn on_request(
         scope: req.scope.clone(),
         action: req.action.clone(),
         amount_cents: req.amount_cents,
+        summary: req.summary(),
         verdict: label,
     };
     all.push(Inbound {
@@ -405,6 +416,7 @@ pub fn on_pending(
         scope: req.scope.clone(),
         action: req.action.clone(),
         amount_cents: req.amount_cents,
+        summary: req.summary(),
     };
     all.push(Remote {
         signed,
@@ -567,6 +579,7 @@ pub fn list_outbox(home: &Home) -> Result<Vec<Outbound>> {
 }
 
 /// Sign a new request to `principal` (a contact's owner key) and remember it.
+#[allow(clippy::too_many_arguments)] // one argument per request field
 pub fn new_request(
     home: &Home,
     to_name: &str,
@@ -574,8 +587,13 @@ pub fn new_request(
     scope: &str,
     action: &str,
     amount_cents: Option<u64>,
+    typed: Option<spike_core::action::Fields>,
     minutes: u64,
 ) -> Result<SignedRequest> {
+    if let Some(f) = &typed {
+        spike_core::action::validate(scope, f, amount_cents)
+            .map_err(|e| anyhow!("typed action {scope}: {e}"))?;
+    }
     let owner = home.load_owner()?;
     let now = now_ms();
     let mut id = [0u8; 16];
@@ -589,6 +607,7 @@ pub fn new_request(
             scope: scope.into(),
             action: action.into(),
             amount_cents,
+            typed,
             created: now,
             expires: now + minutes.max(1) * 60_000,
         },

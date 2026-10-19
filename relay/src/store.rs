@@ -45,6 +45,7 @@ impl Store {
     pub fn open(path: Option<&Path>) -> rusqlite::Result<Self> {
         let conn = match path {
             Some(p) => {
+                #[cfg(unix)]
                 let existed = p.exists();
                 let c = Connection::open(p)?;
                 #[cfg(unix)]

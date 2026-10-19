@@ -23,6 +23,6 @@ ADR 0014 produces signed receipts, but "the agent does not enforce anything": no
 - **Single use is only as good as the store.** Delete the spent database and approvals are usable again until they expire. Services must keep it and share it between instances.
 - **Redeem-then-act is not atomic with the action.** If the service redeems and then crashes before acting, the approval is lost (fail closed); the agent must ask again. The reverse (act, crash, not recorded) cannot happen if the service redeems first, as documented.
 - **The service chooses which principals to trust.** There is no directory; the operator configures owner keys. Revoking a grant after approval does not un-approve: receipts live until the request's expiry (at most 24 h). Use short expiries for risky actions.
-- **Amounts are cumulative nowhere**: each request is capped alone (unchanged from ADR 0014). Typed actions and cumulative spending limits are still future work.
+- **Amounts are cumulative nowhere**: each request is capped alone (unchanged from ADR 0014). Cumulative limits: ADR 0014 addendum. Typed actions: ADR 0017 (`--field`).
 - The service trusts its own clock (5 minutes of skew allowed).
 - Unreviewed code, like everything else here.

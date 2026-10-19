@@ -78,6 +78,7 @@ fn grant(alice: &Dev, bot: &Dev) {
         Some(500),
         5,
         None,
+        false,
     )
     .unwrap();
 }
@@ -270,6 +271,7 @@ async fn forgeries_replays_and_rate_limits_are_refused() {
             scope: "files.read".into(),
             action: "read".into(),
             amount_cents: None,
+            typed: None,
             created: now(),
             expires: now() + 60_000,
         },
@@ -300,6 +302,7 @@ async fn forgeries_replays_and_rate_limits_are_refused() {
                 scope: "payments.send".into(),
                 action: "pay".into(),
                 amount_cents: Some(1),
+                typed: None,
                 created: now(),
                 expires: now() + 60_000,
             },
@@ -459,6 +462,7 @@ async fn an_approval_is_honoured_by_a_service_exactly_once() {
     let pay = |cents| Action {
         scope: "payments.send",
         amount_cents: Some(cents),
+        fields: None,
     };
     let mut store = spike_cli::verifier::SqliteSpent::open(&db).unwrap();
     let t = now();
@@ -521,6 +525,7 @@ async fn small_requests_cannot_add_up_past_the_daily_cap() {
         Some(500),
         20,
         Some(1_000),
+        false,
     )
     .unwrap();
     let ask = |cents| {
@@ -579,6 +584,7 @@ async fn small_requests_cannot_add_up_past_the_daily_cap() {
             None,
             20,
             Some(daily),
+            false,
         )
         .unwrap()
     };
@@ -608,6 +614,118 @@ async fn small_requests_cannot_add_up_past_the_daily_cap() {
     assert!(agent::decide(&alice.0, &ids[0][..8], false, "").is_ok());
     // With the first denied, only 500 is committed: the second now fits.
     assert!(agent::decide(&alice.0, &ids[1][..8], true, "").is_ok());
+}
+
+#[tokio::test]
+async fn typed_actions_are_shown_by_their_fields_and_checked_by_the_service() {
+    use spike_core::action::parse_pairs;
+    use spike_core::verifier::{redeem, Action, Config, Refusal};
+    let url = relay().await;
+    let (alice, bot) = pair(&url).await;
+    agent::grant(
+        &alice.0,
+        &key(&bot),
+        vec!["payments.send".into()],
+        30,
+        Some(5_000),
+        Some(500),
+        10,
+        None,
+        true,
+    )
+    .unwrap();
+    // A typed-only grant rejects unknown scopes up front.
+    assert!(agent::grant(
+        &alice.0,
+        &key(&bot),
+        vec!["gpu.rent".into()],
+        30,
+        None,
+        None,
+        10,
+        None,
+        true
+    )
+    .is_err());
+
+    // Free text is denied on arrival, however small.
+    ops::agent_request(&bot.0, &url, "alice", "payments.send", "tip", Some(1), 60)
+        .await
+        .unwrap();
+    let got = recv(&alice, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::AgentRequest { verdict, summary: None, .. }] if verdict.contains("only typed")),
+        "{got:?}"
+    );
+    // Fields that do not fit the type are refused before anything is sent.
+    let bad = parse_pairs(["payee=acme-gpu"]).unwrap();
+    assert!(ops::agent_request_typed(
+        &bot.0,
+        &url,
+        "alice",
+        "payments.send",
+        "x",
+        Some(1_500),
+        Some(bad),
+        60
+    )
+    .await
+    .is_err());
+
+    // The human is shown what the fields say, not just the agent's words.
+    let fields = parse_pairs(["payee=acme-gpu", "currency=USD"]).unwrap();
+    let id = ops::agent_request_typed(
+        &bot.0,
+        &url,
+        "alice",
+        "payments.send",
+        "Buy 3 GPU hours",
+        Some(1_500),
+        Some(fields.clone()),
+        60,
+    )
+    .await
+    .unwrap();
+    let got = recv(&alice, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::AgentRequest { verdict, summary: Some(s), .. }]
+            if verdict == "pending" && s == "Pay 15.00 USD to acme-gpu"),
+        "{got:?}"
+    );
+    ops::agent_decide(&alice.0, &url, &id[..8], true, "")
+        .await
+        .unwrap();
+    recv(&bot, &url).await;
+
+    // The service states what it is about to do; only the approved payee works.
+    let p = spike_cli::verifier::present(&bot.0, &id[..8], "pay.example").unwrap();
+    let cfg = Config {
+        audience: "pay.example".into(),
+        principals: vec![key(&alice)],
+    };
+    let mut store = spike_core::verifier::MemorySpent::default();
+    let mallory = parse_pairs(["payee=mallory", "currency=USD"]).unwrap();
+    let act = |f| Action {
+        scope: "payments.send",
+        amount_cents: Some(1_500),
+        fields: f,
+    };
+    assert_eq!(
+        redeem(&cfg, &mut store, &p, &act(Some(&mallory)), now()),
+        Err(Refusal::WrongField {
+            field: "payee".into()
+        })
+    );
+    assert_eq!(
+        redeem(&cfg, &mut store, &p, &act(None), now()),
+        Err(Refusal::FieldsNotStated)
+    );
+    let ok = redeem(&cfg, &mut store, &p, &act(Some(&fields)), now()).unwrap();
+    assert_eq!(ok.summary.as_deref(), Some("Pay 15.00 USD to acme-gpu"));
+    assert_eq!(ok.typed.as_ref(), Some(&fields));
+    // The audit log still records scope and amount only, not the payee.
+    let log = agent::verified_audit(&alice.0).unwrap();
+    assert!(log.iter().all(|e| !e.detail.contains("acme")));
 }
 
 fn now() -> u64 {

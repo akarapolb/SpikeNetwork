@@ -132,6 +132,10 @@ enum Cmd {
         /// Most money in any rolling 24 hours, in cents, counting approved and waiting requests.
         #[arg(long)]
         daily_cents: Option<u64>,
+        /// Accept only typed actions (fields you see and services check), never free text.
+        /// Every scope must be a known type: see `spike agent-types`.
+        #[arg(long)]
+        typed_only: bool,
     },
     /// Principal: remove an agent's grant.
     AgentRevoke { name: String },
@@ -170,6 +174,11 @@ enum Cmd {
         action: String,
         #[arg(long)]
         amount_cents: Option<u64>,
+        /// Typed action field, `key=value`, repeatable (e.g. --field payee=acme
+        /// --field currency=USD). Makes the request typed; the scope must be a
+        /// known type (`spike agent-types`).
+        #[arg(long = "field")]
+        fields: Vec<String>,
         /// How long the request stays valid.
         #[arg(long, default_value_t = 60)]
         minutes: u64,
@@ -178,6 +187,8 @@ enum Cmd {
     },
     /// Agent: show your requests and the receipts you got.
     AgentStatus,
+    /// List the known typed actions and their fields.
+    AgentTypes,
     /// Agent: package an approved request for the service that will act on it
     /// (prints a presentation; give it to that service, which runs `verify-receipt`).
     AgentPresent {
@@ -206,6 +217,10 @@ enum Cmd {
         /// The money you are about to move, in cents (must not exceed the approved amount).
         #[arg(long)]
         amount_cents: Option<u64>,
+        /// What you are about to do, as typed fields `key=value` (repeatable). Required
+        /// for a typed approval and must match it exactly; refuses free-text approvals.
+        #[arg(long = "field")]
+        fields: Vec<String>,
         /// SQLite file remembering used approvals. Keep it; share it between instances.
         #[arg(long)]
         spent_db: PathBuf,
@@ -312,6 +327,7 @@ async fn run() -> Result<()> {
         principals,
         scope,
         amount_cents,
+        fields,
         spent_db,
         input,
         check_only,
@@ -322,10 +338,32 @@ async fn run() -> Result<()> {
             principals,
             scope,
             *amount_cents,
+            fields,
             spent_db,
             input.as_deref(),
             *check_only,
         );
+    }
+    if let Cmd::AgentTypes = &cli.cmd {
+        for t in spike_core::action::REGISTRY {
+            let fields: Vec<String> = t
+                .fields
+                .iter()
+                .map(|(n, k)| format!("{n}=<{k:?}>").to_lowercase())
+                .collect();
+            println!(
+                "{:<14} {}{}   shown as: {}",
+                t.name,
+                fields.join(" "),
+                if t.money == spike_core::action::Money::Required {
+                    " + --amount-cents"
+                } else {
+                    ""
+                },
+                t.template
+            );
+        }
+        return Ok(());
     }
     let dir = match cli.home {
         Some(p) => p,
@@ -365,7 +403,9 @@ async fn run() -> Result<()> {
     };
 
     match cli.cmd {
-        Cmd::Init { .. } | Cmd::VerifyReceipt { .. } => unreachable!("handled above"),
+        Cmd::Init { .. } | Cmd::VerifyReceipt { .. } | Cmd::AgentTypes => {
+            unreachable!("handled above")
+        }
         Cmd::Card => {
             let card = home.identity_card()?;
             let me = IdentityCard::decode(&card)?;
@@ -575,6 +615,7 @@ async fn run() -> Result<()> {
             auto_below_cents,
             per_hour,
             daily_cents,
+            typed_only,
         } => {
             let key = contact_key(&home, &name)?;
             let g = spike_cli::agent::grant(
@@ -586,10 +627,16 @@ async fn run() -> Result<()> {
                 auto_below_cents,
                 per_hour,
                 daily_cents,
+                typed_only,
             )?;
             println!(
-                "{name} may ask for: {}; until {}; max {} ; auto-approve up to {}; at most {}/hour; {} per 24 h",
+                "{name} may ask for: {}{}; until {}; max {} ; auto-approve up to {}; at most {}/hour; {} per 24 h",
                 g.body.scopes.join(", "),
+                if g.body.typed_only {
+                    " (typed actions only)"
+                } else {
+                    ""
+                },
                 fmt_utc(g.body.expires),
                 g.body
                     .max_cents
@@ -641,28 +688,22 @@ async fn run() -> Result<()> {
                 };
                 any = true;
                 println!(
-                    "{} {} from {}: {} [{}] {} - {state}",
+                    "{} {} from {}: {} - {state}",
                     &q.id[..8],
                     fmt_utc(r.received),
                     r.from,
-                    q.action,
-                    q.scope,
-                    q.amount_cents
-                        .map_or(String::new(), |c| format!("{c} cents"))
+                    describe_request(&q.summary(), &q.action, &q.scope, q.amount_cents)
                 );
             }
             for r in spike_cli::agent::list_remote(&home)? {
                 let q = &r.signed.req;
                 any = true;
                 println!(
-                    "{} {} from {}: {} [{}] {} - WAITING (forwarded by your main device)",
+                    "{} {} from {}: {} - WAITING (forwarded by your main device)",
                     &q.id[..8],
                     fmt_utc(r.received),
                     r.from,
-                    q.action,
-                    q.scope,
-                    q.amount_cents
-                        .map_or(String::new(), |c| format!("{c} cents"))
+                    describe_request(&q.summary(), &q.action, &q.scope, q.amount_cents)
                 );
             }
             if !any {
@@ -701,16 +742,26 @@ async fn run() -> Result<()> {
             scope,
             action,
             amount_cents,
+            fields,
             minutes,
             relay,
         } => {
-            let id = ops::agent_request(
+            let typed = if fields.is_empty() {
+                None
+            } else {
+                Some(
+                    spike_core::action::parse_pairs(fields.iter().map(String::as_str))
+                        .map_err(|e| anyhow::anyhow!("--field: {e}"))?,
+                )
+            };
+            let id = ops::agent_request_typed(
                 &home,
                 target(relay),
                 &name,
                 &scope,
                 &action,
                 amount_cents,
+                typed,
                 minutes,
             )
             .await?;
@@ -729,11 +780,10 @@ async fn run() -> Result<()> {
                     Some(x) => format!("{:?} by {:?} {}", x.body.decision, x.body.by, x.body.note),
                 };
                 println!(
-                    "{} to {}: {} [{}] - {state}",
+                    "{} to {}: {} - {state}",
                     &q.id[..8],
                     r.to,
-                    q.action,
-                    q.scope
+                    describe_request(&q.summary(), &q.action, &q.scope, q.amount_cents)
                 );
             }
             if !any {
@@ -874,16 +924,16 @@ async fn run() -> Result<()> {
                 }
                 Outcome::Invalid => eprintln!("dropped undecryptable or replayed message"),
                 Outcome::Duplicate | Outcome::Ignored => {}
-                Outcome::AgentRequest { from, id, scope, action, amount_cents, verdict } => println!(
-                    "[agent request {} from {from}: {action} ({scope}{}) - {verdict}{}]",
+                Outcome::AgentRequest { from, id, scope, action, amount_cents, summary, verdict } => println!(
+                    "[agent request {} from {from}: {} - {verdict}{}]",
                     &id[..8],
-                    amount_cents.map_or(String::new(), |c| format!(", {c} cents")),
+                    describe_request(&summary, &action, &scope, amount_cents),
                     if verdict == "pending" { format!("; `spike agent-approve {}` or `agent-deny`", &id[..8]) } else { String::new() }
                 ),
-                Outcome::AgentRemotePending { from, id, scope, action, amount_cents } => println!(
-                    "[agent request {} from {from}, forwarded by your main device: {action} ({scope}{}); `spike agent-approve {}` or `agent-deny`]",
+                Outcome::AgentRemotePending { from, id, scope, action, amount_cents, summary } => println!(
+                    "[agent request {} from {from}, forwarded by your main device: {}; `spike agent-approve {}` or `agent-deny`]",
                     &id[..8],
-                    amount_cents.map_or(String::new(), |c| format!(", {c} cents")),
+                    describe_request(&summary, &action, &scope, amount_cents),
                     &id[..8]
                 ),
                 Outcome::AgentRemoteDecision { id, approved } => println!(
@@ -920,6 +970,24 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+/// How a request is shown to the human. A typed request is shown by what its
+/// fields say, with the agent's own words marked as such; a free-text request
+/// is marked as unchecked, because only its scope and amount mean anything.
+fn describe_request(
+    summary: &Option<String>,
+    action: &str,
+    scope: &str,
+    amount_cents: Option<u64>,
+) -> String {
+    match summary {
+        Some(s) => format!("{s} [{scope}, typed] (agent's note: \"{action}\")"),
+        None => format!(
+            "\"{action}\" [{scope}{}; free text in the agent's own words, not checked]",
+            amount_cents.map_or(String::new(), |c| format!(", {c} cents"))
+        ),
+    }
+}
+
 /// `agent-approve` / `agent-deny`. On the approver device this decides and sends
 /// the receipt; on any other device it passes the decision to the approver.
 async fn decide_command(
@@ -943,11 +1011,13 @@ async fn decide_command(
 }
 
 /// `spike verify-receipt`: see the command's help. Refusals exit with code 2.
+#[allow(clippy::too_many_arguments)] // one argument per command-line flag
 fn verify_receipt(
     audience: &str,
     principals: &[String],
     scope: &str,
     amount_cents: Option<u64>,
+    fields: &[String],
     spent_db: &std::path::Path,
     input: Option<&std::path::Path>,
     check_only: bool,
@@ -982,9 +1052,19 @@ fn verify_receipt(
         audience: audience.into(),
         principals,
     };
+    let fields = if fields.is_empty() {
+        None
+    } else {
+        let f = spike_core::action::parse_pairs(fields.iter().map(String::as_str))
+            .map_err(|e| anyhow::anyhow!("--field: {e}"))?;
+        spike_core::action::validate(scope, &f, amount_cents)
+            .map_err(|e| anyhow::anyhow!("--field: {e}"))?;
+        Some(f)
+    };
     let action = Action {
         scope,
         amount_cents,
+        fields: fields.as_ref(),
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?

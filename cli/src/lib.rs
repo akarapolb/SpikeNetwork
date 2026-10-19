@@ -67,6 +67,8 @@ pub enum Outcome {
         scope: String,
         action: String,
         amount_cents: Option<u64>,
+        /// Rendered from the typed fields (ADR 0017); `None` for free text.
+        summary: Option<String>,
         verdict: String,
     },
     /// Your approver device forwarded a request that waits for a human; you can
@@ -77,6 +79,7 @@ pub enum Outcome {
         scope: String,
         action: String,
         amount_cents: Option<u64>,
+        summary: Option<String>,
     },
     /// Another of your devices decided a request; this (approver) device applied
     /// it and the receipt is on its way to the agent.
