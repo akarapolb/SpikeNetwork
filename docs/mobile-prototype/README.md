@@ -20,6 +20,11 @@ Live canvas (private, owner-only until shared): https://claude.ai/artifact/MvZut
 | `AddContact.dc.html` | 10 · Add a contact | Interactive tabs: show my code (in-person scan verifies both), scan, invite link (one-time, 7 days, arrives unverified); optional username on your home relay |
 | `Requests.dc.html` | 11 · Message requests | Interactive accept / decline / block; unknown senders' messages and links stay hidden until accepted |
 
+## Colour and typed actions (2026-10-19)
+The files here now follow the same quieter colour rule as `../desktop-prototype/`: colour means status only (teal for actions and selection, amber only for "waiting for you", red only for danger, green only as a small verified or connected mark); avatars and tags are neutral; scope chips use ✓ / ✕. The agent approval screen (`AgentRequest`) now headlines the signed typed fields ("Pay €286.00 to harbor-travel", ADR 0017) and shows the agent's own words as "Agent says (not verified)".
+
+**The live canvas linked above predates this change.** Republish these files to it before sharing the link.
+
 ## Format
 The `.dc.html` files are Design Component pages for the claude.ai Design canvas; `canvas.json` lays them out. They need the canvas runtime (`support.js`), so they do not render correctly when opened directly in a browser. To view or edit, use the canvas link above. To change the design, edit the canvas there (or edit these files and republish them to the canvas), then copy the updated files back here.
 

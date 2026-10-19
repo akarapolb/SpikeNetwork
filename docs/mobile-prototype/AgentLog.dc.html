@@ -49,8 +49,8 @@ a{color:#0B6B73}a:hover{color:#084F55}
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"></path></svg>
     </a>
 
-    <div style="display: flex; gap: 8px; align-items: center; font-size: 12px; color: #1F5E3A">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"></path></svg>
+    <div style="display: flex; gap: 8px; align-items: center; font-size: 12px; color: #52606D">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color: #1F7A45; flex: none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"></path></svg>
       <span>Log is hash-chained and signed. Chain checked: 148 entries intact. No message content is logged.</span>
     </div>
   </div>
@@ -77,10 +77,10 @@ class Component extends DCLogic {
     const accent = this.props.accent ?? '#0B6B73';
     const S = {
       waiting: { label: 'Waiting for you', bg: '#FBEED0', fg: '#7A4A00' },
-      approved: { label: 'Approved by you', bg: '#DFF3E6', fg: '#1F3D2A' },
-      denied: { label: 'Denied by you', bg: '#F8E1E1', fg: '#6E1F1C' },
+      approved: { label: 'Approved by you', bg: '#E6EBF0', fg: '#3A4753' },
+      denied: { label: 'Denied by you', bg: '#E6EBF0', fg: '#3A4753' },
       allowed: { label: 'Allowed by scope', bg: '#E6EBF0', fg: '#3A4753' },
-      local: { label: 'On this phone only', bg: '#DFF0F1', fg: '#0B5A61' }
+      local: { label: 'On this phone only', bg: '#E6EBF0', fg: '#3A4753' }
     };
     const all = [
       { agent: 'Harbor Travel', initials: 'HT', when: '09:42', what: 'Asked to book Hotel Lumen and charge €286', k: 'waiting' },
@@ -92,8 +92,7 @@ class Component extends DCLogic {
     const pick = { all: () => true, waiting: r => r.k === 'waiting', decided: r => r.k === 'approved' || r.k === 'denied', auto: r => r.k === 'allowed' || r.k === 'local' };
     const rows = all.filter(pick[this.state.filter]).map(r => {
       const s = S[r.k];
-      const agentColor = r.initials === 'HT' ? { iconBg: '#FBEED0', iconFg: '#7A4A00' } : { iconBg: accent, iconFg: '#FFFFFF' };
-      return { ...r, ...agentColor, status: s.label, tagBg: s.bg, tagFg: s.fg };
+      return { ...r, iconBg: '#E6EBF0', iconFg: '#3A4753', status: s.label, tagBg: s.bg, tagFg: s.fg };
     });
     const defs = [['all', 'All'], ['waiting', 'Waiting'], ['decided', 'Your decisions'], ['auto', 'Automatic']];
     const filters = defs.map(([id, label]) => {
