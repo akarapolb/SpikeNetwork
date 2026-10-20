@@ -22,7 +22,7 @@ sudo install -m 0755 target/release/spike-relay /usr/local/bin/spike-relay
 | `--ttl-secs N` | How long an unacknowledged message is kept | 604800 (7 days) |
 | `--queue-cap N` | Most queued messages per recipient device | 1000 |
 
-Fixed in code for now (not flags): messages up to 64 KiB, attachments kept 30 days with 1 GiB per device, and **at most 4 live connections per device** (the oldest beyond that is closed). The relay refuses plain `ws://` on a non-loopback address unless you pass `--insecure-no-tls`.
+Fixed in code for now (not flags): messages up to 64 KiB, attachments kept 30 days with 1 GiB per device, **at most 4 live connections per device** (the oldest beyond that is closed), and a connection that has sent nothing for **120 seconds** is closed (waiting clients ping every 25 s, so only dead or abandoned connections reach that). The relay refuses plain `ws://` on a non-loopback address unless you pass `--insecure-no-tls`.
 
 ## 3. Pick how clients will trust it
 Clients (the app and the CLI) only connect with TLS unless the relay is on the same computer. Choose one:
@@ -57,7 +57,7 @@ Put every name or IP clients will use in `subjectAltName`. Keep `CA:FALSE` (a ce
 ```sh
 spike-relay --listen 127.0.0.1:8787 --db /var/lib/spike-relay/relay.db
 ```
-Caddy (`Caddyfile`): `relay.example.org { reverse_proxy 127.0.0.1:8787 }`. nginx needs the WebSocket headers and a long read timeout: `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_read_timeout 3600s;`. The app keeps one connection open so messages arrive instantly, and that connection carries no traffic while nothing happens (there is no keepalive ping yet). A proxy with a short idle timeout (nginx's default is 60 seconds) will close it; the app reconnects within a second and loses nothing, but it is wasteful, so **set the idle timeout to an hour or more**. If the proxy is on another machine, you need `--insecure-no-tls` and a private network between them.
+Caddy (`Caddyfile`): `relay.example.org { reverse_proxy 127.0.0.1:8787 }`. nginx needs the WebSocket headers and a long read timeout: `proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; proxy_read_timeout 3600s;`. The app keeps one connection open so messages arrive instantly. While it waits it sends a small ping every 25 seconds, which keeps typical proxy idle timeouts (nginx's default is 60 seconds) from closing it; if a proxy has a shorter timeout the app reconnects within a second and loses nothing, but it is wasteful, so keep the idle timeout above 30 seconds (an hour is fine). If the proxy is on another machine, you need `--insecure-no-tls` and a private network between them.
 
 ## 4. Run it as a service (systemd)
 ```sh
@@ -109,7 +109,7 @@ Desktop app: **Settings → Home relay** → `wss://relay.example.org` → **Tes
 
 ## 7. Limits to know before exposing it
 - **Anyone can register a device and use quota.** There is no allow-list and no per-IP or per-sender rate limiting; abuse controls are the per-recipient queue cap, the per-device attachment quota and the connection cap. For a pilot, run the relay for your own group and put it behind a VPN or an IP allow-list.
-- **No keepalive yet:** if a home router or firewall silently drops an idle connection (some do after a few minutes), the app only notices at its next 60-second check, so delivery can be up to a minute late until then. A ping that detects dead connections is planned.
+- **Dead connections are noticed within about 40 seconds** (a ping goes unanswered for 15 s), and the app reconnects; a router that silently drops an idle connection therefore delays delivery by at most that long.
 - **One node, one file:** no replication or high availability. SQLite calls run on the async runtime threads; fine at pilot scale, not for load.
 - **Metadata is visible** to the operator and, partly, to network observers: device ids, timing and sizes. Plain `ws://` (allowed only by explicit opt-in) additionally exposes the connection itself.
 - **Unreviewed code.** Nothing here has had an independent security review.
@@ -120,6 +120,6 @@ Desktop app: **Settings → Home relay** → `wss://relay.example.org` → **Tes
 | `invalid peer certificate: UnknownIssuer` | The relay's certificate is private or self-signed: trust it (section 3B) |
 | `refusing plain ws:// to <host>` | Use `wss://`, or allow plain connections on a network you control (Settings, and only there) |
 | `TLS handshake ... failed` with a public certificate | The name in the address must match the certificate; check the date and clock |
-| The log shows a reconnect about every minute | A proxy or firewall is closing idle connections: raise its idle timeout (section 3C). Nothing is lost, delivery is just wasteful |
+| The log shows a reconnect every 30 seconds or so | A proxy or firewall is closing connections that look idle: raise its idle timeout above 30 s (section 3C). Nothing is lost, delivery is just wasteful |
 | Relay exits at start with "file not found" | The certificate or key path is wrong or unreadable by the service user |
 | Everything lost after restart | The relay was started without `--db` |

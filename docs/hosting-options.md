@@ -1,5 +1,7 @@
 # Hosting relays: options and a decision for you (roadmap Phase 4)
 
+> You chose the multi-tenant hosted service (option C). The scope, slices and the decisions it needs are in [`hosted-relay-plan.md`](hosted-relay-plan.md).
+
 **Status: a brief for a decision, not a plan that has been agreed.** Nothing here is built beyond the relay itself (`docs/deploy-relay.md` explains how anyone can run one today). The roadmap puts "hosted relays, billing, org accounts, self-host docs" in months 7 to 9; this note says what that choice involves so it can be made deliberately and not by default.
 
 ## What "hosted" would have to mean
@@ -24,7 +26,6 @@ A relay stores only ciphertext and metadata, so hosting is mostly about **who op
 5. **Budget and timing:** a pilot relay is a small recurring cost plus someone on call; multi-tenant hosting is a project. I have not estimated prices; get quotes for your chosen provider and region.
 
 ## Engineering that any hosted option needs first
-- A keepalive ping so dead connections are noticed (`docs/deploy-relay.md`, section 7).
 - Per-IP and per-sender rate limits, `spawn_blocking` (or a pool) for SQLite, schema migrations, and basic metrics that never include content.
 - A published legal-requests policy and a decided response to an order to weaken the product (business plan 8a).
 - The independent security review before public use, as the roadmap's release gates require.
