@@ -63,9 +63,15 @@ impl Default for Config {
     }
 }
 
+/// Live connections one device may hold at once. A client may keep one open to be told the moment
+/// something arrives while another does its work (receiving sends receipts over a second
+/// connection). Past this, the oldest is closed so a buggy or hostile client cannot pile them up.
+const MAX_LIVE_PER_DEVICE: usize = 4;
+
 #[derive(Default)]
 struct State {
-    online: HashMap<String, (u64, mpsc::UnboundedSender<ServerMsg>)>,
+    /// Device id -> its live connections, oldest first. A new message is pushed to all of them.
+    online: HashMap<String, Vec<(u64, mpsc::UnboundedSender<ServerMsg>)>>,
     next_conn: u64,
 }
 
@@ -177,13 +183,18 @@ where
         return Err(());
     };
 
-    // 2. Register (replacing any older connection for this device) and flush the queue.
+    // 2. Register (a device may hold a few live connections; the oldest beyond the cap is closed) and flush the queue.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel();
     let registered = (|| {
         let mut st = state.state.lock().unwrap();
         st.next_conn += 1;
         let conn_id = st.next_conn;
-        st.online.insert(me.clone(), (conn_id, out_tx));
+        let conns = st.online.entry(me.clone()).or_default();
+        conns.push((conn_id, out_tx));
+        while conns.len() > MAX_LIVE_PER_DEVICE {
+            // Dropping the sender makes that connection's serve loop end (see below).
+            conns.remove(0);
+        }
         // Hold the state lock while reading the backlog so a message sent in
         // between is either in the backlog or delivered live, never both.
         let backlog: Vec<ServerMsg> = state
@@ -221,7 +232,12 @@ where
         let mut claims = 0usize;
         loop {
             tokio::select! {
-                Some(m) = out_rx.recv() => send_json(&mut tx, &m).await?,
+                m = out_rx.recv() => match m {
+                    Some(m) => send_json(&mut tx, &m).await?,
+                    // Evicted because the device opened more connections than allowed. Close this one so its
+                    // client notices; left open it would wait forever for messages that will never come.
+                    None => return Ok(()),
+                },
                 frame = rx.next() => {
                     let Some(Ok(frame)) = frame else { return Ok::<(), ()>(()) };
                     let Message::Text(text) = frame else {
@@ -255,8 +271,11 @@ where
     let result = run.await;
 
     let mut st = state.state.lock().unwrap();
-    if st.online.get(&me).map(|(c, _)| *c) == Some(conn_id) {
-        st.online.remove(&me);
+    if let Some(conns) = st.online.get_mut(&me) {
+        conns.retain(|(c, _)| *c != conn_id);
+        if conns.is_empty() {
+            st.online.remove(&me);
+        }
     }
     result
 }
@@ -284,7 +303,7 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
         Ok(Enqueued::Full) => return Some(err("queue_full", "recipient queue is full")),
         Err(_) => return Some(internal()),
     };
-    if let Some((_, live)) = st.online.get(to) {
+    for (_, live) in st.online.get(to).into_iter().flatten() {
         let _ = live.send(ServerMsg::Deliver {
             id: id.clone(),
             blob: blob_hex.to_string(),

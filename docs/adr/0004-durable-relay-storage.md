@@ -11,6 +11,7 @@ The relay stores queued ciphertext and prekeys in SQLite (`rusqlite`, bundled), 
 - Per-recipient queue cap, TTL and expiry purge (lazy plus every 60 s) still apply; expiry uses wall-clock time so it holds across restarts.
 - The database file is created `0600`.
 - A message that arrives while its recipient is connecting is delivered either from the backlog or live, never both (state lock held across backlog read and registration).
+- **Addendum 2026-10-20 (ADR 0020):** a device may hold up to four live connections and a new message is pushed to all of them; the oldest beyond four is closed. Earlier, a newer connection silently took over delivery from an older one that stayed open and deaf.
 
 ## What the relay's disk reveals
 Ciphertext (opaque), recipient device IDs, message sizes, and timing. Not plaintext, sender IDs or keys that can read anything. This is still metadata: an operator or thief of the file learns who receives how much and when, until messages are acked or expire. Operators should put the file on an encrypted volume; the relay does not encrypt the database itself.
