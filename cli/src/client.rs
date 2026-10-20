@@ -8,7 +8,7 @@ use spike_core::identity::{Identity, SignedPrekey};
 use spike_core::owner::DeviceList;
 use spike_core::wire::{ClientMsg, ServerMsg};
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
 pub struct Delivery {
@@ -24,7 +24,18 @@ pub struct Relay {
     pub prekeys: usize,
     /// Age of our fallback prekey on the relay, if it holds one.
     pub fallback_age_secs: Option<u64>,
+    /// While waiting for deliveries, ping this often.
+    keepalive: Duration,
+    /// How long an answer to a ping may take before the connection counts as lost.
+    pong_wait: Duration,
+    next_ping: Instant,
+    /// Set after a ping went out; cleared by anything the relay sends.
+    pong_due: Option<Instant>,
 }
+
+/// Ping every 25 s (under the 60 s idle timeout many proxies use) and give up after 15 s of silence.
+const KEEPALIVE: Duration = Duration::from_secs(25);
+const PONG_WAIT: Duration = Duration::from_secs(15);
 
 impl Relay {
     pub async fn connect(target: impl Into<Target>, me: &Identity) -> Result<Self> {
@@ -35,6 +46,10 @@ impl Relay {
             device_id: String::new(),
             prekeys: 0,
             fallback_age_secs: None,
+            keepalive: KEEPALIVE,
+            pong_wait: PONG_WAIT,
+            next_ping: Instant::now() + KEEPALIVE,
+            pong_due: None,
         };
         let ServerMsg::Challenge { nonce } = r.read().await? else {
             bail!("relay did not send a challenge")
@@ -83,19 +98,75 @@ impl Relay {
         }
     }
 
+    /// Change how often a waiting connection pings and how long it waits for the answer.
+    /// The defaults (25 s and 15 s) suit real networks; tests use short ones.
+    pub fn set_keepalive(&mut self, interval: Duration, pong_wait: Duration) {
+        self.keepalive = interval;
+        self.pong_wait = pong_wait;
+        self.next_ping = Instant::now() + interval;
+        self.pong_due = None;
+    }
+
+    /// Round-trip time to the relay: send a ping and wait for the pong. Deliveries that
+    /// arrive meanwhile are kept for `next_delivery`.
+    pub async fn ping(&mut self) -> Result<Duration> {
+        let t = Instant::now();
+        self.write(&ClientMsg::Ping).await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::Pong => return Ok(t.elapsed()),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                _ => {}
+            }
+        }
+    }
+
     /// Next delivery, waiting up to `idle` (forever if `None`). `Ok(None)` means
-    /// nothing arrived within the idle window.
+    /// nothing arrived within the idle window. While waiting, the connection pings the
+    /// relay now and then; if the relay stops answering, this returns an error so the
+    /// caller can reconnect (a router may have dropped the connection without telling us).
     pub async fn next_delivery(&mut self, idle: Option<Duration>) -> Result<Option<Delivery>> {
+        let deadline = idle.map(|d| Instant::now() + d);
         loop {
             if let Some(d) = self.pending.pop_front() {
                 return Ok(Some(d));
             }
-            let msg = match idle {
-                Some(d) => match tokio::time::timeout(d, self.read()).await {
-                    Ok(m) => m?,
-                    Err(_) => return Ok(None),
-                },
-                None => self.read().await?,
+            // Wake for the earliest of: the caller's idle window, the next ping, the pong deadline.
+            let mut wake = self.next_ping;
+            if let Some(due) = self.pong_due {
+                wake = wake.min(due);
+            }
+            if let Some(d) = deadline {
+                wake = wake.min(d);
+            }
+            let msg = match tokio::time::timeout_at(wake.into(), self.read()).await {
+                Ok(m) => {
+                    // The relay is alive: anything it sends counts as an answer.
+                    self.pong_due = None;
+                    self.next_ping = Instant::now() + self.keepalive;
+                    m?
+                }
+                Err(_) => {
+                    let now = Instant::now();
+                    if self.pong_due.is_some_and(|due| now >= due) {
+                        bail!("lost the connection to the relay (no answer to a ping)");
+                    }
+                    if deadline.is_some_and(|d| now >= d) {
+                        return Ok(None);
+                    }
+                    if now >= self.next_ping {
+                        self.write(&ClientMsg::Ping).await?;
+                        // The deadline runs from the first ping nobody has answered: a later
+                        // ping must not push it back.
+                        self.pong_due.get_or_insert(now + self.pong_wait);
+                        self.next_ping = now + self.keepalive;
+                    }
+                    continue;
+                }
             };
             match msg {
                 ServerMsg::Deliver { id, blob } => {

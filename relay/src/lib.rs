@@ -34,6 +34,9 @@ pub struct Config {
     pub ttl: Duration,
     /// Time allowed to complete authentication after connecting.
     pub auth_timeout: Duration,
+    /// A connection that has sent nothing for this long is closed. Waiting clients send a
+    /// `Ping` every 25 seconds, so only dead or abandoned connections reach it.
+    pub idle_timeout: Duration,
     /// Prekeys one connection may claim from others before being refused.
     pub max_claims_per_conn: usize,
     /// How long attachment chunks are kept.
@@ -54,6 +57,7 @@ impl Default for Config {
             queue_cap: 1000,
             ttl: Duration::from_secs(7 * 24 * 3600),
             auth_timeout: Duration::from_secs(10),
+            idle_timeout: Duration::from_secs(120),
             max_claims_per_conn: 20,
             blob_ttl: Duration::from_secs(30 * 24 * 3600),
             blob_quota: 1024 * 1024 * 1024,
@@ -230,8 +234,12 @@ where
 
         // 3. Serve.
         let mut claims = 0usize;
+        let idle = tokio::time::sleep(cfg.idle_timeout);
+        tokio::pin!(idle);
         loop {
             tokio::select! {
+                // Nothing from the client for too long: it is gone or abandoned this connection.
+                () = &mut idle => return Ok(()),
                 m = out_rx.recv() => match m {
                     Some(m) => send_json(&mut tx, &m).await?,
                     // Evicted because the device opened more connections than allowed. Close this one so its
@@ -240,6 +248,7 @@ where
                 },
                 frame = rx.next() => {
                     let Some(Ok(frame)) = frame else { return Ok::<(), ()>(()) };
+                    idle.as_mut().reset(tokio::time::Instant::now() + cfg.idle_timeout);
                     let Message::Text(text) = frame else {
                         if matches!(frame, Message::Close(_)) { return Ok(()) }
                         continue;
@@ -247,6 +256,7 @@ where
                     let reply = match serde_json::from_str::<ClientMsg>(&text) {
                         Ok(ClientMsg::Send { to, blob }) => on_send(&state, &cfg, &to, &blob),
                         Ok(ClientMsg::Ack { id }) => { on_ack(&state, &me, &id); None }
+                        Ok(ClientMsg::Ping) => Some(ServerMsg::Pong),
                         Ok(ClientMsg::PublishPrekeys { keys }) => Some(on_publish(&state, &me, &my_ed, &keys)),
                         Ok(ClientMsg::PublishFallback { key }) => Some(on_fallback(&state, &me, &my_ed, &key)),
                         Ok(ClientMsg::PublishDeviceList { list }) => Some(on_publish_list(&state, &cfg, &me, &list)),

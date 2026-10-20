@@ -42,6 +42,10 @@ pub enum ClientMsg {
     },
     /// Fetch one chunk of a blob (anyone who knows the random blob id may).
     GetBlobChunk { blob: String, index: u32 },
+    /// Keepalive: the relay answers `Pong`. A client waiting for deliveries sends one now
+    /// and then, so a connection that died silently (a router dropped it) is noticed, and
+    /// so the relay can close connections that have gone quiet.
+    Ping,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -99,6 +103,8 @@ pub enum ServerMsg {
         #[serde(default)]
         fallback: bool,
     },
+    /// Reply to `Ping`.
+    Pong,
     Error {
         code: String,
         message: String,
