@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: nothing here needs to write to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # core, relay and the CLI: formatting, lints (warnings are errors) and every test.
+  workspace:
+    name: core, relay, cli (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all
+
+  # The real binaries end to end: two devices, a TLS relay that is killed mid-run.
+  demo:
+    name: demo script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/demo.sh
+
+  # The desktop app (Tauri 2) has its own workspace. Windows is the platform it is exercised on.
+  desktop:
+    name: desktop (windows-latest)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  # Linux needs WebKitGTK. Not exercised by hand yet, so a failure here informs but does not block.
+  desktop-linux:
+    name: desktop (ubuntu, informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install WebKitGTK and friends
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - run: cargo test
+
+  # The webview UI is plain JavaScript with no build step: check it parses, and
+  # that nothing in it reaches for the network (the CSP forbids it anyway).
+  desktop-ui:
+    name: desktop UI checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: JavaScript syntax
+        run: node --check desktop/ui/app.js
+      - name: No remote URLs in the UI
+        run: |
+          if grep -nE "https?://" desktop/ui/index.html desktop/ui/app.css desktop/ui/app.js | grep -v "www.w3.org/2000/svg"; then
+            echo "::error::the desktop UI must not reference remote resources"
+            exit 1
+          fi
+      - name: No inline scripts or event-handler attributes
+        run: |
+          if grep -nE "<script[^>]*>[^<]+|[[:space:]]on[a-z]+=" desktop/ui/index.html; then
+            echo "::error::the desktop UI's CSP forbids inline script"
+            exit 1
+          fi
+
+  # Advisories (RustSec), licences, duplicate or banned crates and untrusted sources, for both lockfiles.
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --manifest-path Cargo.toml check
+      - run: cargo deny --manifest-path desktop/src-tauri/Cargo.toml check
