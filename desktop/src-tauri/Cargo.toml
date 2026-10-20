@@ -1,0 +1,40 @@
+[package]
+name = "spike-desktop"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "Spike Connect desktop app (Tauri 2)"
+
+# Its own workspace: the webview toolchain stays out of `cargo test --all` for core, relay and CLI.
+[workspace]
+
+[lib]
+name = "spike_desktop"
+
+[[bin]]
+name = "spike-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+spike-core = { path = "../../core" }
+spike-cli = { path = "../../cli" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+hex = "0.4"
+zeroize = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+[dev-dependencies]
+spike-relay = { path = "../../relay" }
+
+[profile.release]
+overflow-checks = true
+
+# Optimise dependencies even in dev builds so Argon2 and the ratchet are fast.
+[profile.dev.package."*"]
+opt-level = 3

@@ -2,7 +2,7 @@
 
 Written 2026-10-13. Branch: `claude/charming-ramanujan-5cl13k` (all work committed and pushed; working tree clean at `12eb7f8`).
 Start here, then read `README.md`, `docs/threat-model.md` and the ADRs in `docs/adr/` in that order.
-**Newer: [HANDOFF-session-2.md](HANDOFF-session-2.md) covers session 2 (receipt verifier, daily cap, approving from another device). Read this file for background, that one for the current state.**
+**Newest: [HANDOFF-session-3.md](HANDOFF-session-3.md) (typed actions, prototypes, the Tauri desktop app). Then [HANDOFF-session-2.md](HANDOFF-session-2.md) (receipt verifier, daily cap, approving from another device). Read this file for background, those for the current state.**
 
 ## 1. What this project is
 Spike Connect is a privacy-first communication network for people, AI agents and devices (application: **Spike Connect**; infrastructure: **Spike Network**). The source is the strategy paper *Spike Connect: Product Vision, Roadmap, Business Model* v1.0 (13 Oct 2026). Its plans are summarized in `docs/product-roadmap.md`, `docs/business-plan.md` and `docs/engineering-plan.md` (also as one page: `docs/spike-connect-plans.html`, and `docs/architecture.html`).

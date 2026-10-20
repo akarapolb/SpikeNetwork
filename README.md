@@ -20,6 +20,7 @@ A privacy-first communication network for people, AI agents and devices. See [`d
 - One identity per person: an owner key signs a versioned list of that person's devices; contacts verify the person once; rollbacks and conflicting lists are refused; older single-device cards still work
 - Encrypted local message history: every sent and received message stored per conversation, sealed row by row, exactly once even across crashes
 - Agent requests with human approval: signed requests, standing grants, signed receipts, a hash-chained audit log (ADR 0014), and a **receipt verifier** a service runs before acting: trusted principals, audience binding, scope and amount checks, single use (ADR 0015), and **typed actions** whose fields the human sees and the service must match exactly (ADR 0017): `agent-grant [--typed-only]`, `agent-request [--field k=v]`, `agent-present`, `verify-receipt [--field k=v]`, `agent-types`
+- **A desktop app (Tauri 2, first slice):** create or unlock an identity, chat, add contacts by pasting a card, verify them, and approve agent requests shown by their signed typed fields. Windows is exercised; see [`desktop/README.md`](desktop/README.md) and ADR 0019
 - A CLI: `init`, `card`, `add`, `verify`, `contacts`, `keys`, `send`, `recv`, `history`, `prune`, `link-new`, `link-device`, `send-file`, `fetch`, `edit`, `delete`, `read`, `unread`, `sync`, `request-file`
 - Contacts start unverified; key changes are refused unless forced
 
@@ -48,10 +49,11 @@ spike --home /tmp/b recv
 | `core/` | Identity, sealed messages, relay wire types |
 | `relay/` | Relay library and `spike-relay` binary |
 | `cli/` | Client library and `spike` binary |
+| `desktop/` | Desktop app (Tauri 2, own Cargo workspace; UI is plain HTML/CSS/JS) |
 | `docs/adr/` | Decision records (start with 0001) |
 | `docs/threat-model.md` | What is and is not protected |
 
 ## Known limitations (Phase 0)
-No passphrase change or recovery, no rollback protection, keys live in memory while the CLI runs, single-node relay storage, no direct P2P path yet, no attachments, no groups, no independent review. Details in `docs/threat-model.md` and `docs/adr/`.
+No passphrase change or recovery, no rollback protection, keys live in memory while the CLI runs, single-node relay storage, no direct P2P path yet, no groups or calls (designed, not built), no independent review. Details in `docs/threat-model.md` and `docs/adr/`.
 
 No license has been chosen yet (Apache-2.0 is the candidate).

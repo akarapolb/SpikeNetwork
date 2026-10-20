@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["core", "relay", "cli"]
+# The desktop app has its own workspace (webview toolchain); build it with `cargo build` in desktop/src-tauri.
+exclude = ["desktop"]
 
 [workspace.package]
 version = "0.0.1"
