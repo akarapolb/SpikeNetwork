@@ -8,13 +8,17 @@
 //! corrupt it if they overlapped.
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
 use serde::Serialize;
 use spike_cli::agent::{self, Status};
+use spike_cli::link;
 use spike_cli::messages::Direction;
 use spike_cli::state::{Added, Home};
 use spike_cli::transport::Target;
 use spike_cli::{ops, Outcome};
+use spike_core::action;
 use spike_core::agent::{DecidedBy, Decision};
+use spike_core::link::LinkSession;
 use spike_core::owner::IdentityCard;
 use spike_core::vault::KdfParams;
 use std::collections::BTreeMap;
@@ -34,16 +38,69 @@ pub struct Session {
     home: Home,
     relay: Mutex<String>,
     net: tokio::sync::Mutex<()>,
+    /// This (new) device is waiting to be linked: its code and, once the
+    /// existing device answered, the safety code to compare.
+    link_new: Mutex<Option<(link::Waiting, Option<LinkSession>)>>,
+    /// This (existing) device compared codes with a new device and is about to share.
+    link_old: Mutex<Option<link::Pending>>,
 }
 
 // ------------------------------------------------------------------ DTOs
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DeviceDto {
+    /// First characters of the device id: enough to tell devices apart.
+    pub id: String,
+    pub this: bool,
+    /// The first device in the signed list decides agent requests.
+    pub approver: bool,
+    pub relay: Option<String>,
+}
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct Me {
     pub fingerprint: String,
     pub card: String,
     pub devices: usize,
+    pub device_list: Vec<DeviceDto>,
+    pub list_version: u64,
     pub approver: bool,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct InstalledDto {
+    pub version: u64,
+    pub contacts: usize,
+    pub messages: usize,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct LinkedDto {
+    pub version: u64,
+    pub contacts: usize,
+    pub messages: usize,
+    pub files: usize,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct ActionTypeDto {
+    pub name: String,
+    pub fields: Vec<String>,
+    pub money: bool,
+    pub template: String,
+}
+
+/// What the UI sends to create a grant. Amounts are in the smallest unit (cents).
+#[derive(Deserialize, Debug, Clone)]
+pub struct GrantRequest {
+    pub agent: String,
+    pub scopes: Vec<String>,
+    pub days: u64,
+    pub max_cents: Option<u64>,
+    pub auto_below_cents: Option<u64>,
+    pub per_hour: u32,
+    pub daily_cents: Option<u64>,
+    pub typed_only: bool,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -170,6 +227,8 @@ impl Session {
             home,
             relay: Mutex::new(relay),
             net: tokio::sync::Mutex::new(()),
+            link_new: Mutex::new(None),
+            link_old: Mutex::new(None),
         })
     }
 
@@ -203,7 +262,22 @@ impl Session {
     pub fn overview(&self) -> Result<Overview> {
         let card = self.home.identity_card()?;
         let me = IdentityCard::decode(&card)?;
-        let approver = agent::is_approver(&self.home, &self.device_id()?)?;
+        let my_id = self.device_id()?;
+        let approver = agent::is_approver(&self.home, &my_id)?;
+        let device_list: Vec<DeviceDto> = me
+            .device_relays()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (d, relay))| {
+                let id = d.device_id();
+                DeviceDto {
+                    this: id == my_id,
+                    approver: i == 0,
+                    id: id.chars().take(12).collect(),
+                    relay,
+                }
+            })
+            .collect();
         let unread: BTreeMap<String, usize> = ops::unread_counts(&self.home)?.into_iter().collect();
         let grants = agent::list_grants(&self.home)?;
         let store = self.home.messages()?;
@@ -249,6 +323,8 @@ impl Session {
                 fingerprint: me.fingerprint(),
                 card,
                 devices: me.devices().len(),
+                device_list,
+                list_version: me.version(),
                 approver,
             },
             contacts,
@@ -485,6 +561,204 @@ impl Session {
             format!("{word}. Signed receipt sent.")
         } else {
             format!("{word}. The receipt is queued until the agent is reachable.")
+        })
+    }
+}
+
+// ------------------------------------------------------------- grants
+
+/// The known typed action types, for the grant form.
+pub fn action_types() -> Vec<ActionTypeDto> {
+    action::REGISTRY
+        .iter()
+        .map(|t| ActionTypeDto {
+            name: t.name.into(),
+            fields: t.fields.iter().map(|(n, _)| (*n).to_string()).collect(),
+            money: t.money == action::Money::Required,
+            template: t.template.into(),
+        })
+        .collect()
+}
+
+impl Session {
+    /// Give `g.agent` (a contact) a standing permission, replacing any earlier one.
+    /// Only the approver device decides requests, so only it may hold grants.
+    pub fn grant(&self, g: GrantRequest) -> Result<()> {
+        if !agent::is_approver(&self.home, &self.device_id()?)? {
+            bail!("grants are kept on your main device; create this one there");
+        }
+        if g.scopes.is_empty()
+            || g.scopes.len() > 32
+            || !g.scopes.iter().all(|s| spike_core::agent::valid_scope(s))
+        {
+            bail!("choose at least one permission");
+        }
+        if !(1..=365).contains(&g.days) {
+            bail!("a grant lasts 1 to 365 days");
+        }
+        if !(1..=1000).contains(&g.per_hour) {
+            bail!("requests per hour must be between 1 and 1000");
+        }
+        let key = self.contact_key(&g.agent)?;
+        agent::grant(
+            &self.home,
+            &key,
+            g.scopes,
+            g.days,
+            g.max_cents,
+            g.auto_below_cents,
+            g.per_hour,
+            g.daily_cents,
+            g.typed_only,
+        )?;
+        Ok(())
+    }
+
+    /// Remove an agent's grant. Approvals already given live until they expire.
+    pub fn revoke(&self, agent_name: &str) -> Result<bool> {
+        let key = self.contact_key(agent_name)?;
+        agent::revoke(&self.home, &key)
+    }
+
+    // -------------------------------------------------------- attachments
+
+    /// Encrypt a file, upload it to the relay, and send the message carrying it.
+    pub async fn send_file(
+        &self,
+        name: &str,
+        file_name: &str,
+        bytes: &[u8],
+        caption: &str,
+    ) -> Result<usize> {
+        if bytes.is_empty() {
+            bail!("that file is empty");
+        }
+        if bytes.len() as u64 > spike_core::attachment::MAX_FILE {
+            bail!(
+                "files are limited to {} MiB",
+                spike_core::attachment::MAX_FILE / (1024 * 1024)
+            );
+        }
+        let file_name = spike_core::attachment::safe_file_name(file_name);
+        let _net = self.net.lock().await;
+        let r = ops::send_file(
+            &self.home,
+            self.target(),
+            name,
+            &file_name,
+            bytes,
+            caption.trim_end(),
+        )
+        .await?;
+        Ok(r.delivered())
+    }
+
+    /// The file of message `id` (a full message id): from this device if kept,
+    /// else fetched from the relay, checked and kept. Returns (name, bytes).
+    pub async fn attachment(&self, id: &str) -> Result<(String, Vec<u8>)> {
+        let _net = self.net.lock().await;
+        let (a, bytes) = ops::fetch_attachment(&self.home, self.target(), id).await?;
+        Ok((spike_core::attachment::safe_file_name(&a.name), bytes))
+    }
+
+    // ------------------------------------------------------------ linking
+
+    /// NEW device: make a link code to type on a device that already has your identity.
+    pub fn link_offer(&self) -> Result<String> {
+        let w = link::offer(&self.home, self.target())?;
+        let code = w.code.clone();
+        *self.link_new.lock().expect("link lock") = Some((w, None));
+        Ok(code)
+    }
+
+    /// NEW device: wait for the existing device and return the safety code to compare.
+    /// Holds the network lock while waiting, so nothing else touches the relay
+    /// mailbox. Call again after a timeout; the code stays valid.
+    pub async fn link_wait(&self, timeout: Duration) -> Result<String> {
+        let _net = self.net.lock().await;
+        let (w, _) = self
+            .link_new
+            .lock()
+            .expect("link lock")
+            .take()
+            .ok_or_else(|| anyhow!("no link in progress; start again"))?;
+        let r = link::await_hello(&self.home, &w, timeout).await;
+        match r {
+            Ok(session) => {
+                let code = session.safety_code.clone();
+                *self.link_new.lock().expect("link lock") = Some((w, Some(session)));
+                Ok(code)
+            }
+            Err(e) => {
+                *self.link_new.lock().expect("link lock") = Some((w, None));
+                Err(e)
+            }
+        }
+    }
+
+    /// NEW device: the person confirmed both screens show the same code.
+    pub async fn link_receive(&self, timeout: Duration) -> Result<InstalledDto> {
+        let _net = self.net.lock().await;
+        let (w, session) = self
+            .link_new
+            .lock()
+            .expect("link lock")
+            .take()
+            .ok_or_else(|| anyhow!("no link in progress; start again"))?;
+        let Some(session) = session else {
+            *self.link_new.lock().expect("link lock") = Some((w, None));
+            bail!("compare the safety codes first");
+        };
+        let r = link::receive(&self.home, &w, &session, timeout).await?;
+        Ok(InstalledDto {
+            version: r.version,
+            contacts: r.contacts,
+            messages: r.messages,
+        })
+    }
+
+    /// Either side: give up. Nothing was installed or shared.
+    pub fn link_cancel(&self) {
+        *self.link_new.lock().expect("link lock") = None;
+        *self.link_old.lock().expect("link lock") = None;
+    }
+
+    /// EXISTING device: type the new device's code; returns the safety code to compare.
+    pub async fn link_begin(&self, code: &str) -> Result<String> {
+        if !agent::is_approver(&self.home, &self.device_id()?)? {
+            bail!("link new devices from your main device (the first one you set up)");
+        }
+        let _net = self.net.lock().await;
+        let p = link::begin(&self.home, self.target(), code.trim()).await?;
+        let safety = p.safety_code.clone();
+        *self.link_old.lock().expect("link lock") = Some(p);
+        Ok(safety)
+    }
+
+    /// EXISTING device: the person confirmed the codes match. `history` is
+    /// `all`, `recent` (last `days` days) or `none`.
+    pub async fn link_finish(&self, history: &str, days: u64) -> Result<LinkedDto> {
+        let mode = match history {
+            "all" => link::History::All,
+            "recent" => link::History::Recent {
+                days: days.clamp(1, 3650),
+            },
+            "none" => link::History::None,
+            other => bail!("unknown history choice '{other}'"),
+        };
+        let p = self
+            .link_old
+            .lock()
+            .expect("link lock")
+            .take()
+            .ok_or_else(|| anyhow!("no link in progress; enter the code again"))?;
+        let _net = self.net.lock().await;
+        let r = link::finish(&self.home, self.target(), p, mode).await?;
+        Ok(LinkedDto {
+            version: r.version,
+            contacts: r.contacts,
+            messages: r.messages,
+            files: r.files,
         })
     }
 }

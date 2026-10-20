@@ -3,7 +3,7 @@
    Every value from the backend is inserted as text (createTextNode), never as HTML.
    Keys never reach this file: the backend only returns names, message text and request summaries. */
 
-const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+const invoke = (cmd, args, options) => window.__TAURI__.core.invoke(cmd, args, options);
 const $ = (id) => document.getElementById(id);
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
@@ -30,6 +30,8 @@ const PATHS = {
   shield: '<path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
   send: '<path d="M4 12l16-8-6 16-2-7z"/>',
   file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
+  devices: '<rect x="3" y="5" width="12" height="9" rx="1.5"/><path d="M1.5 17h15"/><rect x="17" y="8" width="5.5" height="12" rx="1.2"/>',
+  clip: '<path d="M21 12l-8.5 8.5a5 5 0 0 1-7-7L14 5a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 8"/>',
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
 };
 function icon(name) { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("class", "i"); s.setAttribute("aria-hidden", "true"); s.innerHTML = PATHS[name]; return s; }
@@ -42,7 +44,7 @@ const ini = (n) => (n.trim()[0] || "?").toUpperCase();
 async function call(cmd, args) { try { return await invoke(cmd, args); } catch (e) { if (e === "locked") { gate("unlock"); } else toast(String(e)); throw e; } }
 
 /* ---------- state ---------- */
-const st = { section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
+const st = { linkNew: false, linking: false, linkStep: 0, linkCode: "", linkSafety: "", linkMode: "all", linkErr: "", grantForm: null, section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
 
 /* ---------- gate ---------- */
 async function gate(mode) {
@@ -68,10 +70,11 @@ async function gate(mode) {
     h("label", { class: "lbl", for: "pass", style: "font-weight:600" }, create ? "Choose a passphrase" : "Passphrase"), h("div", { class: "field" }, pass),
     create ? [h("div", { class: "field" }, pass2), h("div", { class: "note", id: "passHelp" }, "10 characters or more. It encrypts your keys and history here. If you lose it and have no other device, this identity cannot be recovered.")] : h("div", { id: "passHelp", class: "sr" }, ""),
     err, btn,
+    create ? h("label", { class: "toggle" }, h("input", { type: "checkbox", onchange: (e) => { st.linkNew = e.target.checked; } }), h("span", {}, "I already use Spike on another device: link this computer to it after setup")) : null,
     h("p", { class: "note" }, "Unreviewed prototype software: do not use it for real secrets yet.")));
   pass.focus();
 }
-async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.screen = null; await refresh(); syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 15000); }
+async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.screen = null; await refresh(); if (st.linkNew) { st.linkNew = false; st.section = "devices"; st.screen = "linknew"; render(); startLinkNew(); } else syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 15000); }
 function stop() { clearInterval(st.polling); st.polling = null; st.ov = st.agents = null; st.msgs = []; }
 
 /* ---------- data ---------- */
@@ -84,7 +87,7 @@ async function refresh() {
   render();
 }
 async function syncNow() {
-  if (st.busy) return; st.busy = true;
+  if (st.busy || st.linking) return; st.busy = true;
   try {
     const r = await invoke("sync");
     st.offline = false;
@@ -99,12 +102,12 @@ async function syncNow() {
 function go(section) { st.section = section; st.screen = null; render(); }
 function renderRail() {
   const unread = st.ov ? st.ov.contacts.reduce((a, c) => a + c.unread, 0) : 0, w = st.ov ? st.ov.waiting : 0;
-  const keys = { chats: 1, agents: 2, settings: 3 };
+  const keys = { chats: 1, agents: 2, devices: 3, settings: 4 };
   const item = (k, label, n, warn) => h("button", { type: "button", "aria-current": st.section === k ? "page" : null, "aria-label": n ? `${label}, ${n} ${warn ? "waiting" : "unread"}` : label, onclick: () => go(k) },
     icon(k), h("span", { class: "tip", "aria-hidden": "true" }, `${label}  Ctrl+${keys[k]}`), n ? h("span", { class: "badge" + (warn ? " warn" : ""), "aria-hidden": "true" }, n) : null);
   $("rail").replaceChildren(
     h("span", { class: "tile sm c-neutral me", title: "This device", "aria-hidden": "true" }, icon("shield")),
-    item("chats", "Chats", unread), item("agents", "Agents", w, true), item("settings", "Settings"),
+    item("chats", "Chats", unread), item("agents", "Agents", w, true), item("devices", "Devices"), item("settings", "Settings"),
     h("span", { class: "spacer" }),
     h("button", { type: "button", "aria-label": "Switch light or dark", onclick: () => { const r = document.documentElement; const dark = matchMedia("(prefers-color-scheme: dark)").matches; r.dataset.theme = (r.dataset.theme || (dark ? "dark" : "light")) === "dark" ? "light" : "dark"; } }, icon("moon"), h("span", { class: "tip", "aria-hidden": "true" }, "Light or dark")),
     h("span", { class: "sep", "aria-hidden": "true" }),
@@ -134,6 +137,25 @@ function chatsList() {
         : h("p", { class: "empty" }, "No contacts yet. Add one with the button above: paste their identity card.")),
   ];
 }
+const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const MAX_FILE = 100 * 1024 * 1024;
+async function sendFile(name, file, caption) {
+  if (file.size === 0) return toast("That file is empty.");
+  if (file.size > MAX_FILE) return toast("Files are limited to 100 MB.");
+  toast(`Encrypting and uploading ${file.name}…`);
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const enc = encodeURIComponent;
+    const n = await invoke("send_file", bytes, { headers: { "x-contact": enc(name), "x-filename": enc(file.name), "x-caption": enc(caption || "") } });
+    const t = $("main").querySelector("textarea"); if (t) t.value = "";
+    toast(n ? "File sent." : "Saved, but no device could be reached yet. It will be delivered when they connect.");
+    await refresh(); scrollEnd();
+  } catch (e) { toast(String(e)); }
+}
+async function saveFile(m) {
+  toast("Fetching and checking the file…");
+  try { toast("Saved to " + (await invoke("save_attachment", { id: m.id })) + ". Only open files from people you trust."); } catch (e) { toast(String(e)); }
+}
 async function openChat(name) {
   st.chat = name; st.screen = null; st.verifyDone = null;
   try { st.msgs = await invoke("conversation", { name }); } catch (e) { toast(String(e)); }
@@ -159,9 +181,10 @@ function chatMain() {
     const d = dayOf(m.ts); if (d !== day) { day = d; items.push(h("div", { class: "day" }, d)); }
     items.push(h("div", { class: "msg" + (m.out ? " out" : "") },
       m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : (m.body ? h("div", { class: "bubble" }, m.body) : null),
-      m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, `${Math.max(1, Math.round(m.file.size / 1024))} KB · attachments open from the command line for now`))) : null,
+      m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "")));
   }
+  const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
   const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: "Message", rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } } });
   async function send() {
     const text = ta.value; if (!text.trim()) return; ta.disabled = true;
@@ -170,7 +193,7 @@ function chatMain() {
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
   return [head, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : h("p", { class: "empty" }, c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
-    h("div", { class: "composer" }, h("div", { class: "bar" }, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
+    h("div", { class: "composer" }, h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
 }
 
 /* ---------- verify + add ---------- */
@@ -225,11 +248,107 @@ function agentsMain() {
     h("div", { class: "chips" }, g.scopes.map((s) => h("span", { class: "yes" }, s))),
     h("dl", { class: "kv" }, h("dt", {}, "Per request"), h("dd", {}, g.max_cents == null ? "no money allowed" : `up to ${g.max_cents} cents; alone up to ${g.auto_below_cents ?? 0}`),
       h("dt", {}, "Per 24 hours"), h("dd", {}, g.daily_cents == null ? "no cumulative cap" : `${g.daily_cents} cents`), h("dt", {}, "Rate"), h("dd", {}, `${g.per_hour} requests an hour`),
-      h("dt", {}, "Typed only"), h("dd", {}, g.typed_only ? "Yes: free text is refused" : "No: free text is allowed but marked unchecked"), h("dt", {}, "Ends"), h("dd", {}, new Date(g.expires).toLocaleDateString())));
+      h("dt", {}, "Typed only"), h("dd", {}, g.typed_only ? "Yes: free text is refused" : "No: free text is allowed but marked unchecked"), h("dt", {}, "Ends"), h("dd", {}, new Date(g.expires).toLocaleDateString())),
+    a.approver ? h("div", { style: "display:flex;gap:8px" },
+      h("button", { class: "btn", type: "button", onclick: () => { openGrantForm(g.agent); } }, "Change"),
+      h("button", { class: "btn danger", type: "button", onclick: async () => { try { await invoke("revoke", { name: g.agent }); toast(`${g.agent}'s grant removed. Approvals already given live until they expire.`); await refresh(); } catch (e) { toast(String(e)); } } }, "Revoke")) : null);
   return [h("div", { class: "head" }, h("h1", { style: "flex:none" }, "Agent requests"), h("span", { class: "tag " + (w.length ? "waiting" : "neutral") }, w.length ? `${w.length} waiting` : "nothing waiting"), h("span", { class: "spacer" }), a.approver ? null : h("span", { class: "note" }, "This is not your main device: decisions are forwarded to it")),
     h("div", { class: "scroll" }, h("div", { class: "page" },
-      w.length || done.length ? [w.map(approvalCard), done.length ? h("h2", { class: "eyebrow", style: "margin:8px 0 0" }, "Decided") : null, done.map(approvalCard)] : h("div", { class: "status plain" }, h("b", {}, "No requests yet"), h("span", { class: "note" }, "Give an agent a standing permission with `spike agent-grant`; its requests appear here. Creating grants from this window comes later.")),
-      a.grants.map(grant)))];
+      w.length || done.length ? [w.map(approvalCard), done.length ? h("h2", { class: "eyebrow", style: "margin:8px 0 0" }, "Decided") : null, done.map(approvalCard)] : h("div", { class: "status plain" }, h("b", {}, "No requests yet"), h("span", { class: "note" }, "Give an agent a standing permission first; its requests then appear here.")),
+      a.grants.map(grant),
+      a.approver ? h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => openGrantForm(null) }, icon("addperson"), "Give an agent a grant") : null))];
+}
+async function openGrantForm(agent) {
+  let types = [];
+  try { types = await invoke("action_types"); } catch (_) {}
+  const g = agent && st.agents.grants.find((x) => x.agent === agent);
+  st.grantForm = { types, agent: agent || (st.ov.contacts[0] && st.ov.contacts[0].name) || "", scopes: g ? [...g.scopes] : [], custom: "", days: 30, max: g && g.max_cents != null ? String(g.max_cents) : "", auto: g && g.auto_below_cents != null ? String(g.auto_below_cents) : "", daily: g && g.daily_cents != null ? String(g.daily_cents) : "", perHour: g ? g.per_hour : 10, typedOnly: g ? g.typed_only : false };
+  st.section = "agents"; st.screen = "grant"; render();
+}
+function grantScreen() {
+  const f = st.grantForm, num = (v) => (v.trim() === "" ? null : Number(v));
+  const toggleScope = (n, on) => { f.scopes = on ? [...new Set([...f.scopes, n])] : f.scopes.filter((x) => x !== n); render(); };
+  const input = (key, label, hint, type) => h("label", { style: "display:flex;flex-direction:column;gap:4px" }, h("b", { style: "font-weight:600" }, label), h("div", { class: "field" }, h("input", { type: type || "text", inputmode: "numeric", value: f[key], oninput: (e) => { f[key] = e.target.value; } })), hint ? h("span", { class: "note" }, hint) : null);
+  const save = async () => {
+    const scopes = [...f.scopes, ...f.custom.split(/[\s,]+/).filter(Boolean)];
+    try {
+      await invoke("grant", { request: { agent: f.agent, scopes, days: Number(f.days), max_cents: num(f.max), auto_below_cents: num(f.auto), per_hour: Number(f.perHour), daily_cents: num(f.daily), typed_only: f.typedOnly } });
+      toast(`${f.agent} may now ask within these limits.`); st.screen = null; await refresh();
+    } catch (e) { toast(String(e)); }
+  };
+  return [header("Give an agent a grant", () => { st.screen = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
+    h("p", { class: "lead" }, "An agent is a contact that asks you for permission. Anything outside the grant is denied. A new grant replaces the old one."),
+    h("label", { style: "display:flex;flex-direction:column;gap:4px" }, h("b", { style: "font-weight:600" }, "Agent"), h("div", { class: "field" }, h("select", { "aria-label": "Agent", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { f.agent = e.target.value; } }, st.ov.contacts.map((c) => h("option", { value: c.name, selected: c.name === f.agent || null }, c.name))))),
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "What it may ask for"),
+      f.types.map((t) => h("label", { class: "pick" }, h("input", { type: "checkbox", checked: f.scopes.includes(t.name) || null, onchange: (e) => toggleScope(t.name, e.target.checked) }),
+        h("span", { style: "flex:1" }, h("b", { style: "font-weight:600" }, t.name), h("div", { class: "note" }, `${t.template.replace(/\{(\w+)\}/g, (_, k) => "<" + k + ">")}${t.money ? " · moves money" : ""}`)))),
+      h("label", { style: "display:flex;flex-direction:column;gap:4px;margin-top:6px" }, h("b", { style: "font-weight:600" }, "Other permissions (free text)"), h("div", { class: "field" }, h("input", { placeholder: "e.g. travel.dates.read, separated by spaces", value: f.custom, disabled: f.typedOnly || null, oninput: (e) => { f.custom = e.target.value; } })), h("span", { class: "note" }, "These cannot be checked by a service. Not allowed when typed actions only is on."))),
+    h("label", { class: "toggle" }, h("input", { type: "checkbox", checked: f.typedOnly || null, onchange: (e) => { f.typedOnly = e.target.checked; if (f.typedOnly) f.custom = ""; render(); } }), h("span", {}, h("b", { style: "font-weight:600" }, "Accept typed actions only"), h("div", { class: "note" }, "Requests must carry fields you see and a service checks. Free text is refused."))),
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Limits (amounts in cents: 100 = 1.00 of the request's currency)"),
+      input("max", "Most per request", "Empty means no money at all.", "number"), input("auto", "Approve without asking up to", "Empty means always ask you.", "number"), input("daily", "Most in any 24 hours", "Counts approved and waiting requests. Empty means no cap.", "number"),
+      input("perHour", "Most requests per hour", "", "number"), input("days", "Grant lasts (days)", "", "number")),
+    h("button", { class: "btn primary big", type: "button", disabled: !f.agent || null, onclick: save }, "Save grant")))];
+}
+
+/* ---------- devices and linking ---------- */
+function devicesMain() {
+  const me = st.ov.me;
+  return [h("div", { class: "head" }, h("h1", {}, "Your devices"), h("button", { class: "btn primary", type: "button", disabled: !me.approver || null, title: me.approver ? "" : "Link new devices from your main device", onclick: () => { st.screen = "linkold"; st.linkStep = 1; st.linkErr = ""; st.linkCode = ""; render(); } }, "Link a new device")),
+    h("div", { class: "scroll" }, h("div", { class: "page" },
+      h("p", { class: "lead" }, "Contacts encrypt every message separately for each of these. Signed device list ", h("b", {}, "v" + me.list_version), "."),
+      h("section", { class: "card", style: "gap:0;padding-top:4px;padding-bottom:4px" }, me.device_list.map((d) => h("div", { class: "devrow" }, h("span", { class: "tile sm sq c-neutral" }, icon("devices")),
+        h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, d.this ? "This computer" : "Another device"), h("div", { class: "note mono" }, d.id + (d.relay ? " · " + d.relay : "")), d.approver ? h("div", { class: "note" }, "Main device: decides agent requests and links new devices") : null),
+        d.this ? h("span", { class: "pill neutral" }, "You are here") : null))),
+      h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Your identity"), h("span", { class: "mono", style: "font-size:16px;overflow-wrap:anywhere" }, me.fingerprint), h("span", { class: "note" }, "Contacts compare this when they verify you. It signs your device list; it never signs messages.")),
+      h("div", { class: "status soft" }, h("b", {}, "Encrypted backup is not available yet."), h("span", {}, "Keep at least one other device linked: if you lose every device and the passphrase, the identity is gone. Removing a device is not in the app yet.")))) ];
+}
+// NEW device: show a code, wait for the other device, compare, receive.
+async function startLinkNew() {
+  st.linking = true; st.linkStep = 1; st.linkErr = ""; st.linkSafety = "";
+  try { st.linkCode = await invoke("link_offer"); } catch (e) { st.linkErr = String(e); st.linking = false; return render(); }
+  render();
+  while (st.screen === "linknew" && !st.linkSafety) {
+    try { st.linkSafety = await invoke("link_wait"); st.linkStep = 2; render(); }
+    catch (e) { if (!/timed out/i.test(String(e))) { st.linkErr = String(e); break; } }
+  }
+  render();
+}
+function linkNewScreen() {
+  const cancel = async () => { try { await invoke("link_cancel"); } catch (_) {} st.linking = false; st.screen = null; st.linkSafety = ""; render(); syncNow(); };
+  const done = st.linkStep === 3;
+  return [header("Link this computer", cancel), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
+    h("div", { class: "steps" }, ["1 · Show code", "2 · Compare", "3 · Done"].map((t, i) => h("span", { class: i + 1 === st.linkStep ? "on" : i + 1 < st.linkStep ? "done" : "" }, t))),
+    st.linkErr ? h("div", { class: "status bad", role: "alert" }, h("b", {}, "Linking stopped."), h("span", {}, st.linkErr)) : null,
+    st.linkStep === 1 && !st.linkErr ? [
+      h("p", { class: "lead" }, "On a device that already uses your identity, open Devices, choose Link a new device, and paste this code."),
+      h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Link code", onfocus: (e) => e.target.select() }, st.linkCode),
+      h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(st.linkCode); toast("Code copied."); } catch (_) { toast("Select the text and copy it."); } } }, "Copy code"),
+      h("p", { class: "note", role: "status" }, "Waiting for your other device…")] : null,
+    st.linkStep === 2 ? [
+      h("p", { class: "lead" }, "Both screens must show the same code. If they differ, someone is in the middle: cancel."),
+      h("div", { class: "code mono", style: "font-size:26px;text-align:center;letter-spacing:3px;padding:14px;background:var(--panel-2);border-radius:12px" }, st.linkSafety),
+      h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:10px" }, h("button", { class: "btn big", type: "button", onclick: cancel }, "Different: cancel"),
+        h("button", { class: "btn primary big", type: "button", onclick: async () => { try { toast("Receiving your identity and history…"); const r = await invoke("link_receive"); st.linkStep = 3; st.linking = false; st.linkErr = ""; await refresh(); toast(`Linked: ${r.contacts} contacts and ${r.messages} messages copied.`); st.screen = null; st.section = "chats"; render(); syncNow(); } catch (e) { st.linkErr = String(e); st.linking = false; render(); } } }, "Same code"))] : null,
+    st.linkErr ? h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => { st.screen = null; st.linking = false; render(); } }, "Back") : null,
+    done ? h("div", { class: "status good" }, "Linked.") : null))];
+}
+// EXISTING device: paste the code, compare, choose history.
+function linkOldScreen() {
+  const modes = [["all", "All text, recent attachments", "Recommended. Older attachments stay here and open on demand."], ["recent", "Last 30 days only", "Messages and attachments from the past month."], ["none", "Start fresh", "No history. New messages only."]];
+  const cancel = async () => { try { await invoke("link_cancel"); } catch (_) {} st.screen = null; render(); };
+  const box = h("textarea", { class: "cardbox mono", "aria-label": "Code from the new device", placeholder: "Paste the code the new device shows" });
+  return [header("Link a new device", cancel), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
+    h("div", { class: "steps" }, ["1 · Paste code", "2 · Compare", "3 · History"].map((t, i) => h("span", { class: i + 1 === st.linkStep ? "on" : i + 1 < st.linkStep ? "done" : "" }, t))),
+    st.linkErr ? h("div", { class: "status bad", role: "alert" }, h("span", {}, st.linkErr)) : null,
+    st.linkStep === 1 ? [h("p", { class: "lead" }, "On the new device choose “I already use Spike on another device”. It shows a code. Paste it here."), box,
+      h("button", { class: "btn primary big", type: "button", onclick: async () => { st.linkErr = ""; try { st.linkSafety = await invoke("link_begin", { code: box.value }); st.linkStep = 2; } catch (e) { st.linkErr = String(e); } render(); } }, "Continue")] : null,
+    st.linkStep === 2 ? [h("p", { class: "lead" }, "Both screens must show the same code. If they differ, someone is in the middle: cancel and try again."),
+      h("div", { class: "code mono", style: "font-size:26px;text-align:center;letter-spacing:3px;padding:14px;background:var(--panel-2);border-radius:12px" }, st.linkSafety),
+      h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:10px" }, h("button", { class: "btn big", type: "button", onclick: cancel }, "Different: cancel"), h("button", { class: "btn primary big", type: "button", onclick: () => { st.linkStep = 3; render(); } }, "Same code"))] : null,
+    st.linkStep === 3 ? [h("p", { class: "lead" }, "What should the new device bring?"),
+      h("div", { role: "radiogroup", "aria-label": "History to copy", style: "display:flex;flex-direction:column;gap:8px" }, modes.map(([v, t, d]) => h("button", { class: "option", type: "button", role: "radio", "aria-checked": String(st.linkMode === v), onclick: () => { st.linkMode = v; render(); } }, h("span", { class: "radio" }), h("span", {}, h("b", { style: "font-weight:600" }, t), h("div", { class: "note" }, d))))),
+      h("button", { class: "btn primary big", type: "button", onclick: async () => { try { toast("Linking…"); const r = await invoke("link_finish", { history: st.linkMode, days: 30 }); st.linkErr = ""; st.screen = null; await refresh(); toast(`Linked. Device list v${r.version}; ${r.contacts} contacts and ${r.messages} messages sent, encrypted to the new device.`); } catch (e) { st.linkErr = String(e); render(); } } }, "Link device"),
+      h("span", { class: "note", style: "text-align:center" }, "Sent encrypted to the new device only. Deleted and expired messages are never copied.")] : null))];
 }
 
 /* ---------- settings ---------- */
@@ -243,16 +362,16 @@ function settingsMain() {
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Home relay"), h("div", { class: "field" }, relay),
       h("span", { class: "note" }, "wss:// for a real relay; ws:// only for one on this computer. A relay sees which devices connect and message sizes, never text or files."),
       h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Relay saved."); await refresh(); syncNow(); } catch (e) { toast(String(e)); } } }, "Save relay")),
-    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "devices and linking, attachments, edit and delete, groups and calls (all in the CLI or planned). This is an unreviewed prototype.")),
+    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "edit and delete, removing a device, groups and calls, message requests (some are in the CLI, some only planned). This is an unreviewed prototype.")),
     h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: lockNow }, icon("lock"), "Lock now")))];
 }
 
-const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { main: agentsMain }, settings: { main: settingsMain } };
-const SCREENS = { verify: verifyScreen, add: addScreen };
+const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { main: agentsMain }, devices: { main: devicesMain }, settings: { main: settingsMain } };
+const SCREENS = { verify: verifyScreen, add: addScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
 
 document.addEventListener("keydown", (e) => {
   if (!e.ctrlKey || e.altKey || $("app").hidden) return;
-  const k = { "1": "chats", "2": "agents", "3": "settings" }[e.key];
+  const k = { "1": "chats", "2": "agents", "3": "devices", "4": "settings" }[e.key];
   if (k) { e.preventDefault(); go(k); } else if (e.key.toLowerCase() === "l") { e.preventDefault(); lockNow(); }
 });
 window.addEventListener("DOMContentLoaded", () => gate());

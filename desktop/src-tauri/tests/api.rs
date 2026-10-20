@@ -275,3 +275,216 @@ async fn an_unreachable_relay_is_an_error_not_a_hang() {
     assert!(d.s.sync(IDLE).await.is_err());
     assert!(t.elapsed() < Duration::from_secs(20));
 }
+
+#[tokio::test]
+async fn grants_are_created_validated_and_revoked_from_the_app() {
+    use spike_desktop::api::GrantRequest;
+    let url = relay().await;
+    let (alice, bot) = (dev("alice", &url), dev("bot", &url));
+    alice.s.add_contact("bot", &card(&bot)).unwrap();
+    let req = |scopes: &[&str]| GrantRequest {
+        agent: "bot".into(),
+        scopes: scopes.iter().map(|s| s.to_string()).collect(),
+        days: 30,
+        max_cents: Some(5_000),
+        auto_below_cents: Some(500),
+        per_hour: 10,
+        daily_cents: Some(5_000),
+        typed_only: false,
+    };
+    // The form's choices come from the registry.
+    let types = spike_desktop::api::action_types();
+    assert!(types
+        .iter()
+        .any(|t| t.name == "payments.send" && t.money && t.fields == ["payee", "currency"]));
+
+    alice
+        .s
+        .grant(req(&["payments.send", "files.read"]))
+        .unwrap();
+    let g = &alice.s.agents().unwrap().grants[0];
+    assert_eq!(
+        (g.agent.as_str(), g.scopes.len(), g.max_cents, g.typed_only),
+        ("bot", 2, Some(5_000), false)
+    );
+    // A second grant replaces the first.
+    let mut tighter = req(&["files.read"]);
+    tighter.typed_only = true;
+    alice.s.grant(tighter).unwrap();
+    let grants = alice.s.agents().unwrap().grants;
+    assert_eq!(
+        (
+            grants.len(),
+            grants[0].scopes.as_slice(),
+            grants[0].typed_only
+        ),
+        (1, &["files.read".to_string()][..], true)
+    );
+
+    // Bad input is refused before anything is stored.
+    assert!(alice.s.grant(req(&[])).is_err());
+    assert!(alice.s.grant(req(&["Bad Scope"])).is_err());
+    assert!(
+        alice.s.grant(req(&["admin.wipe"])).is_ok(),
+        "free-text scopes are allowed unless typed-only"
+    );
+    let mut typed_unknown = req(&["admin.wipe"]);
+    typed_unknown.typed_only = true;
+    assert!(
+        alice.s.grant(typed_unknown).is_err(),
+        "typed-only needs known action types"
+    );
+    let mut forever = req(&["files.read"]);
+    forever.days = 0;
+    assert!(alice.s.grant(forever).is_err());
+    let mut daily_below_max = req(&["files.read"]);
+    daily_below_max.daily_cents = Some(100);
+    assert!(alice.s.grant(daily_below_max).is_err());
+    let mut unknown_agent = req(&["files.read"]);
+    unknown_agent.agent = "nobody".into();
+    assert!(alice.s.grant(unknown_agent).is_err());
+
+    assert!(alice.s.revoke("bot").unwrap());
+    assert!(alice.s.agents().unwrap().grants.is_empty());
+    assert!(!alice.s.revoke("bot").unwrap());
+}
+
+#[tokio::test]
+async fn files_are_sent_encrypted_and_saved_by_the_receiver() {
+    let url = relay().await;
+    let (alice, bob) = (dev("alice", &url), dev("bob", &url));
+    alice.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    bob.s.add_contact("Alice", &card(&alice)).unwrap();
+
+    // Two chunks' worth of bytes with a recognisable pattern.
+    let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    assert!(
+        alice
+            .s
+            .send_file("Bob", "report.bin", &[], "")
+            .await
+            .is_err(),
+        "empty files are refused"
+    );
+    assert_eq!(
+        alice
+            .s
+            .send_file("Bob", "..\\evil/report.bin", &data, "here you go")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(bob.s.sync(IDLE).await.unwrap().received, 1);
+
+    let m = bob.s.conversation("Alice", 10).unwrap().pop().unwrap();
+    assert_eq!(m.body, "here you go");
+    let f = m.file.as_ref().unwrap();
+    assert_eq!(
+        (f.name.as_str(), f.size),
+        ("report.bin", data.len() as u64),
+        "path parts are stripped from the name"
+    );
+    assert!(bob.s.overview().unwrap().contacts[0]
+        .last
+        .as_deref()
+        .unwrap()
+        .contains("(file)"));
+
+    // The receiver downloads and checks it; the sender already has its own copy.
+    let (name, bytes) = bob.s.attachment(&m.id).await.unwrap();
+    assert_eq!((name.as_str(), bytes == data), ("report.bin", true));
+    let mine = alice.s.conversation("Bob", 10).unwrap().pop().unwrap();
+    assert_eq!(alice.s.attachment(&mine.id).await.unwrap().1, data);
+    assert!(bob.s.attachment("deadbeef").await.is_err());
+}
+
+#[tokio::test]
+async fn a_new_device_links_to_your_identity_and_receives_history() {
+    let url = relay().await;
+    let (alice, bob, phone) = (dev("alice", &url), dev("bob", &url), dev("phone", &url));
+    alice.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    bob.s.add_contact("Alice", &card(&alice)).unwrap();
+    alice
+        .s
+        .send("Bob", "history before the phone")
+        .await
+        .unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+
+    let before = phone.s.overview().unwrap();
+    assert_eq!((before.me.devices, before.contacts.len()), (1, 0));
+
+    // The phone shows a code; Alice's computer enters it; both show the same safety code.
+    let code = phone.s.link_offer().unwrap();
+    let t = Duration::from_secs(20);
+    let (phone_safety, alice_safety) = tokio::join!(phone.s.link_wait(t), async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        alice.s.link_begin(&code).await
+    });
+    let (phone_safety, alice_safety) = (phone_safety.unwrap(), alice_safety.unwrap());
+    assert_eq!(
+        phone_safety, alice_safety,
+        "both screens must show the same code"
+    );
+
+    // Receiving before the existing device shares, or finishing without a link, is refused cleanly.
+    assert!(alice.s.link_finish("sideways", 30).await.is_err());
+    let (done, got) = tokio::join!(alice.s.link_finish("all", 30), async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        phone.s.link_receive(t).await
+    });
+    let (done, got) = (done.unwrap(), got.unwrap());
+    assert_eq!((done.contacts, done.messages), (1, 1));
+    assert_eq!((got.contacts, got.messages), (1, 1));
+
+    // The phone is now one of Alice's devices, with her contacts and history.
+    let ov = phone.s.overview().unwrap();
+    assert_eq!(
+        ov.me.fingerprint,
+        alice.s.overview().unwrap().me.fingerprint,
+        "one identity"
+    );
+    assert_eq!(
+        (ov.me.devices, ov.me.device_list.len(), ov.me.approver),
+        (2, 2, false)
+    );
+    assert_eq!(ov.me.device_list.iter().filter(|d| d.this).count(), 1);
+    assert_eq!(
+        phone.s.conversation("Bob", 10).unwrap()[0].body,
+        "history before the phone"
+    );
+    let a = alice.s.overview().unwrap().me;
+    assert_eq!(
+        (a.devices, a.approver, a.list_version),
+        (2, true, ov.me.list_version)
+    );
+
+    // Only the main device links new devices and holds grants.
+    assert!(phone.s.link_begin("whatever").await.is_err());
+    assert!(phone
+        .s
+        .grant(spike_desktop::api::GrantRequest {
+            agent: "Bob".into(),
+            scopes: vec!["files.read".into()],
+            days: 1,
+            max_cents: None,
+            auto_below_cents: None,
+            per_hour: 1,
+            daily_cents: None,
+            typed_only: false,
+        })
+        .is_err());
+
+    // Bob's next message reaches both of Alice's devices.
+    bob.s.sync(IDLE).await.unwrap();
+    bob.s
+        .send("Alice", "to both of your devices")
+        .await
+        .unwrap();
+    assert_eq!(alice.s.sync(IDLE).await.unwrap().received, 1);
+    assert_eq!(phone.s.sync(IDLE).await.unwrap().received, 1);
+}

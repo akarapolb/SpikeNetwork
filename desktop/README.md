@@ -17,7 +17,7 @@ It is its own Cargo workspace, so the main `cargo test --all` does not build it.
 ```sh
 cd desktop/src-tauri
 cargo run                      # first build compiles Tauri: about 10 minutes
-cargo test                     # 5 API tests, a few seconds
+cargo test                     # 10 tests (8 API against a real relay, 2 unit), a few seconds
 ```
 You need a relay (loopback plain `ws://` is fine for a trial) and the WebView2 runtime (built into Windows 11):
 ```sh
@@ -25,8 +25,16 @@ cargo run -q -p spike-relay -- --listen 127.0.0.1:8787 --insecure-no-tls
 ```
 State lives in the platform app-data directory (`network.spike.connect`). To run a second identity on one machine, set `SPIKE_DESKTOP_HOME` to another directory. A desktop home is a normal `Home`: the CLI can open it with `--home`.
 
+## Built
+Create and unlock an identity; chats; send and receive; add contacts by pasted card; verify; relay setting; **attachments** (attach button, files up to 100 MB encrypted before upload, Save writes to Downloads and never overwrites); **agent grants** (create, change, revoke, typed-only, limits) and approvals; **devices and linking** (a Devices screen, "link this computer" at first start, and "Link a new device" on your main device, with the safety-code comparison and history choice).
+
 ## Not built yet
-Devices and linking, attachments, edit and delete in the UI, creating agent grants (use `spike agent-grant`), groups, calls, message requests, search, Windows Hello, idle auto-lock, tray and notifications, installer, auto-update, signed builds. Receiving is by polling every 15 seconds.
+Edit and delete in the UI, removing a device, groups, calls, message requests, search, Windows Hello, idle auto-lock, tray and notifications, installer, auto-update, signed builds. Receiving is by polling every 15 seconds (polling is paused while this computer is waiting to be linked, because a poll would consume the link frames).
+
+## Developer notes
+- Raw file bytes go over Tauri's binary IPC as the request body, with the contact, file name and caption as percent-encoded headers (`x-contact`, `x-filename`, `x-caption`). The UI's `invoke` wrapper must pass the third `options` argument through.
+- `SPIKE_DESKTOP_DOWNLOADS` overrides where Save writes (default: the Downloads folder).
+- Linking codes are about 850 characters (a device card plus an ephemeral key): paste them, they are not meant to be typed. A QR code is future work.
 
 ## Known gaps
 - The passphrase crosses the bridge once as a JavaScript string, which cannot be zeroized (ADR 0019).

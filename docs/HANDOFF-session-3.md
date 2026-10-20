@@ -12,10 +12,10 @@ Written 2026-10-19. Branch `claude/charming-ramanujan-5cl13k`. Read this, then `
 | **Desktop app** | **Tauri 2 first slice, working end to end on Windows** | ADR 0019, `desktop/` |
 
 ## 2. The desktop app, in one paragraph
-`desktop/` is its own Cargo workspace (excluded from the main one). `src-tauri/src/api.rs` holds all logic as plain functions over a `Session` (the unlocked `Home` plus the relay); `lib.rs` wraps them as Tauri commands. The UI is plain HTML/CSS/JS in `ui/` with a strict CSP, no npm, no remote content. Keys never enter the webview. All network operations are serialized by one lock because `send` and `recv` each load and save ratchet state. Receiving polls every 15 s. Built: create/unlock/lock, chats, send, receive, add contact by pasted card, verify, relay setting, agent panel (typed approvals, approve/deny). Not built: devices and linking, attachments, edit/delete, grant creation, groups, calls, message requests, search, Windows Hello, auto-lock, tray, installer, signing.
+`desktop/` is its own Cargo workspace (excluded from the main one). `src-tauri/src/api.rs` holds all logic as plain functions over a `Session` (the unlocked `Home` plus the relay); `lib.rs` wraps them as Tauri commands. The UI is plain HTML/CSS/JS in `ui/` with a strict CSP, no npm, no remote content. Keys never enter the webview. All network operations are serialized by one lock because `send` and `recv` each load and save ratchet state. Receiving polls every 15 s. Built: create/unlock/lock, chats, send, receive, add contact by pasted card, verify, relay setting, agent panel (typed approvals, approve/deny, create/change/revoke grants), attachments (send, save), devices and linking (both sides). Not built: edit/delete, removing a device, groups, calls, message requests, search, Windows Hello, auto-lock, tray, installer, signing.
 
 ## 3. State
-- `cd desktop/src-tauri && cargo test`: 5 passed (real relay, no window). The main workspace's `cargo test --all` was 150 passed before the desktop work and is unaffected by it (the desktop crate is excluded).
+- `cd desktop/src-tauri && cargo test`: 10 passed (8 API against a real relay, 2 unit). The main workspace's `cargo test --all` was 150 passed before the desktop work and is unaffected by it (the desktop crate is excluded).
 - Verified by driving the real app: two instances (`SPIKE_DESKTOP_HOME`) exchanged messages including Thai text; wrong and right passphrase after a restart; a typed request approved in the window; the agent received the receipt; `verify-receipt` refused payee `mallory` and accepted `acme-gpu`.
 - First `cargo build` of the desktop crate takes about 10 minutes (Tauri with optimised dependencies); later builds 10 to 20 s.
 
@@ -25,7 +25,7 @@ WebView2 exposes a debug port: start the exe with `WEBVIEW2_ADDITIONAL_BROWSER_A
 ## 5. Next steps (recommended order)
 1. **Decide on pushing and a PR.** Ask first.
 2. **CI** (fmt, clippy, tests for both workspaces, `cargo audit`, license check). None configured; the desktop crate needs a Windows runner at least.
-3. **Desktop, next slice:** devices and linking screens (the code exists in `cli/src/link.rs`), attachments (send, open), creating agent grants from the UI, auto-lock, notifications, then an installer with `tauri-cli`.
+3. **Desktop, next slice:** edit/delete, removing a device, message requests, auto-lock, notifications, a QR code for linking, then an installer with `tauri-cli`.
 4. **Mobile and desktop parity** for groups: groups are design only. The proposed small-group approach (pairwise fan-out, up to 20) needs an ADR and a group membership model before code.
 5. **Spike OS integration and telemetry** still need the user's definitions (see session 2 handoff).
 6. Earlier open items: "resolved" notice for forwarded agent requests (ADR 0016), relay hardening, payee/path allowlists in grants, `docs/architecture.html` is stale.
@@ -36,6 +36,9 @@ WebView2 exposes a debug port: start the exe with `WEBVIEW2_ADDITIONAL_BROWSER_A
 - **`cargo clippy` in the desktop crate recompiles Tauri** with different flags (long first run).
 - The Bash tool still mishandles long heredocs sometimes; writing scripts to the scratchpad with the Write tool and running them was reliable again.
 - The Artifact canvas read returns files into the scratchpad; `\r` line endings in the repo copies differ from the canvas copies, so strip `\r` before publishing or comparing.
+- **The UI's `invoke` wrapper dropped Tauri's third argument** (the headers for raw-body calls), so `send_file` got an empty contact. Calls made straight through `window.__TAURI__` worked, which hid it: when something works directly but not in the app, check the wrapper.
+- **Polling during linking would swallow the link frames** (`recv` acks what it cannot decrypt), so the UI stops polling while the new device waits.
+- **git-bash `/tmp` is not Windows Python's `/tmp`:** pass real Windows paths to Python scripts.
 - `Home` is not `Debug`, and tests use `.err().unwrap()`; the desktop `Session` follows the same habit (no `Debug`).
 
 ## 7. Decisions and approvals

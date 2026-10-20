@@ -16,13 +16,15 @@ The pilot needs desktop-to-desktop chat people can click (roadmap MVP scope). Un
 - **Relay:** a URL in settings (default `ws://127.0.0.1:8787`, loopback only without TLS, as in the CLI). Receiving is by polling every 15 seconds (`ops::recv` with a short idle timeout); a persistent connection with push is later work.
 
 ## In this slice
+**Second batch (same day):** attachments, creating and revoking agent grants, and device linking, all from the window. Linking holds the network lock while waiting and pauses polling, because `recv` would consume (and ack) the link frames. Raw file bytes use Tauri's binary IPC; saving writes to the Downloads folder with `create_new`, so files are never overwritten. Only the main device (first in the signed list) creates grants and links new devices, matching ADR 0014/0016.
+
 Create identity and unlock (Argon2id vault), lock, conversation list with unread counts, conversation view, send, receive, add a contact from a pasted card, show your own card and fingerprint, compare and mark a contact verified, relay setting, and the agent panel: grants, waiting requests rendered from the signed typed fields (ADR 0017), approve or deny (ADR 0014, 0016).
 
 ## Verified
-`cargo test` in `desktop/src-tauri` (5 tests, real relay, no window): create, unlock and passphrase rules, chat with unread and verification, typed agent requests shown by their fields and decided, free text marked as such, an unreachable relay. The real app was also driven end to end through the webview's debug port: two instances exchanged messages, a typed request was approved in the window, the agent received the signed receipt, and a service refused a wrong payee and accepted the right one.
+`cargo test` in `desktop/src-tauri` (10 tests, real relay, no window): create, unlock and passphrase rules, chat with unread and verification, typed agent requests shown by their fields and decided, free text marked as such, an unreachable relay, grants created, validated and revoked, files sent and saved byte for byte, and a full device link (matching safety codes, history copied, one identity on two devices, a later message reaching both). The real app was also driven end to end through the webview's debug port: two instances exchanged messages, a typed request was approved in the window, the agent received the signed receipt, and a service refused a wrong payee and accepted the right one. A third window was linked to an existing identity through the UI, then received the same message as the first. A 300 KB file with a Thai name was sent in one window and saved identically from another.
 
 ## Not in this slice (shown in the prototype, not built)
-Devices and linking screens, attachments, edit and delete in the UI, groups, calls (ADR 0018), message requests, search, Windows Hello, idle auto-lock, system tray and notifications, installer and updater, code signing.
+Edit and delete in the UI, removing a device, groups, calls (ADR 0018), message requests, search, Windows Hello, idle auto-lock, system tray and notifications, installer and updater, code signing.
 
 ## Limits (honest list)
 - Unreviewed code, like everything else here; the webview is a large attack surface even with a strict CSP and no remote content. Never load remote pages in it.
