@@ -21,6 +21,12 @@ sudo install -m 0755 target/release/spike-relay /usr/local/bin/spike-relay
 | `--insecure-no-tls` | Allow plain WebSocket on a non-loopback address (only behind a TLS-terminating proxy) | off |
 | `--ttl-secs N` | How long an unacknowledged message is kept | 604800 (7 days) |
 | `--queue-cap N` | Most queued messages per recipient device | 1000 |
+| `--max-conns-per-ip N` | Connections one client address may hold open (0 = unlimited) | 64 |
+| `--conn-rate-per-ip N` | New connections one address may open per minute (0 = unlimited) | 300 |
+| `--req-rate R` `--req-burst N` | Requests per second one connection may sustain, and the burst allowed (0 rate = unlimited) | 50 / 200 |
+| `--trusted-proxy CIDR` | Reverse proxy (address or network, repeat or comma-separate) whose `X-Forwarded-For` is believed. **Set this when behind a proxy**, or every client looks like the proxy and shares one limit | none |
+| `--metrics-listen ADDR` | Serve `/healthz` and `/metrics` (plain HTTP, numbers only) on this address | off |
+| `--metrics-token TOKEN` (or `SPIKE_RELAY_METRICS_TOKEN`) | Require `Authorization: Bearer TOKEN` for `/metrics`. Mandatory on a non-loopback metrics address | none |
 
 Fixed in code for now (not flags): messages up to 64 KiB, attachments kept 30 days with 1 GiB per device, **at most 4 live connections per device** (the oldest beyond that is closed), and a connection that has sent nothing for **120 seconds** is closed (waiting clients ping every 25 s, so only dead or abandoned connections reach that). The relay refuses plain `ws://` on a non-loopback address unless you pass `--insecure-no-tls`.
 
@@ -103,14 +109,14 @@ Desktop app: **Settings → Home relay** → `wss://relay.example.org` → **Tes
 ## 6. Operating it
 - **Disk:** put the database on an encrypted volume. The file holds ciphertext and metadata (recipient device ids, sizes, times) until messages are acknowledged or expire; the relay does not encrypt it. It is created with mode 0600.
 - **Backups:** the queue is transient. If you lose the file, undelivered messages are lost; clients publish fresh prekeys the next time they connect. A nightly copy of the file while the service runs is safe (SQLite WAL), but you only need it to preserve messages that are still waiting.
-- **Upgrades:** build the new binary, `sudo install` it, `sudo systemctl restart spike-relay`. There are no schema migrations yet (tables are created if missing), so take a copy of the database before upgrading.
+- **Upgrades:** build the new binary, `sudo install` it, `sudo systemctl restart spike-relay`. The database carries a schema version and is upgraded on start. Before changing a file that holds data, the relay copies it to `<db>.before-v<N>` (delete the copy once you are satisfied). A database written by a *newer* relay is refused, not downgraded: the relay exits with a message.
 - **Capacity:** a small VPS is enough for a pilot. Attachments are the heavy part: up to 1 GiB per device for 30 days.
-- **Monitoring:** there are no metrics yet. Watch the process, disk space and the certificate's expiry date.
+- **Monitoring:** with `--metrics-listen 127.0.0.1:9100`, `GET /healthz` answers 200 when the database responds (use it for a load balancer or uptime check), and `GET /metrics` returns Prometheus-format counters: connections, sign-ins, refusals by reason, messages and bytes accepted, error replies by code, queue depth and stored bytes. They are numbers only: no device id, address or content appears in any name or label (tested). Also watch disk space and the certificate's expiry date.
 
 ## 7. Limits to know before exposing it
-- **Anyone can register a device and use quota.** There is no allow-list and no per-IP or per-sender rate limiting; abuse controls are the per-recipient queue cap, the per-device attachment quota and the connection cap. For a pilot, run the relay for your own group and put it behind a VPN or an IP allow-list.
+- **Anyone can register a device and use quota.** There is no allow-list. Abuse controls are the per-recipient queue cap, the per-device attachment quota, the per-address connection and rate limits, and the per-connection request rate (ADR 0022). They slow abuse from one address; they do not stop a determined attacker with many addresses, and the relay cannot see who sends a message, so there is no per-sender limit. Enrolling devices per organisation is designed but not built (ADR 0023). For a pilot, run the relay for your own group and put it behind a VPN or an IP allow-list.
 - **Dead connections are noticed within about 40 seconds** (a ping goes unanswered for 15 s), and the app reconnects; a router that silently drops an idle connection therefore delays delivery by at most that long.
-- **One node, one file:** no replication or high availability. SQLite calls run on the async runtime threads; fine at pilot scale, not for load.
+- **One node, one file:** no replication or high availability. Database calls run on blocking threads, so a slow disk delays only the connection that asked, but all requests still share one SQLite connection.
 - **Metadata is visible** to the operator and, partly, to network observers: device ids, timing and sizes. Plain `ws://` (allowed only by explicit opt-in) additionally exposes the connection itself.
 - **Unreviewed code.** Nothing here has had an independent security review.
 

@@ -3,11 +3,19 @@
 //! Ed25519 challenge-response, enforces size/queue/TTL limits, and logs no
 //! message content. Queues and prekeys are stored in SQLite (see [`store`]);
 //! with no database path they live in memory and are lost on restart.
+//!
+//! Abuse limits (per-address connection caps, per-connection request rates) live in
+//! [`limits`], and content-free counters in [`metrics`]. Every request is processed on a
+//! blocking thread so a slow disk cannot stall the connections of everyone else (ADR 0022).
 
+pub mod limits;
+pub mod metrics;
 pub mod store;
 pub mod tls;
 
 use futures_util::{SinkExt, StreamExt};
+use limits::{client_ip, is_trusted, Admission, Cidr, IpLimits, Refused, TokenBucket};
+use metrics::Metrics;
 use rand::{rngs::OsRng, RngCore};
 use spike_core::attachment::{CHUNK, MAX_FILE, OVERHEAD};
 use spike_core::identity::{
@@ -16,12 +24,15 @@ use spike_core::identity::{
 use spike_core::owner::DeviceList;
 use spike_core::wire::{ClientMsg, ServerMsg, WirePrekey};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use store::{Enqueued, PutChunk, Store};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::{protocol::WebSocketConfig, Message};
 
 #[derive(Clone, Debug)]
@@ -43,6 +54,20 @@ pub struct Config {
     pub blob_ttl: Duration,
     /// Attachment bytes one device may have stored at once (all its unexpired chunks).
     pub blob_quota: usize,
+    /// Connections one client address may hold open at once (0 = unlimited).
+    pub max_conns_per_ip: usize,
+    /// New connections one client address may open per minute (0 = unlimited).
+    pub conn_rate_per_ip: u32,
+    /// Requests per second one connection may sustain (0 = unlimited). Pings are free and
+    /// acknowledgements cost a quarter of a request.
+    pub req_rate: f64,
+    /// Requests one connection may make in a burst before the sustained rate applies.
+    pub req_burst: f64,
+    /// Reverse proxies whose `X-Forwarded-For` header is believed. Empty means no proxy: the
+    /// header is ignored and the connection's own address is used.
+    pub trusted_proxies: Vec<Cidr>,
+    /// If set, `/metrics` needs `Authorization: Bearer <token>`.
+    pub metrics_token: Option<String>,
     /// SQLite file for queues and prekeys; `None` keeps them in memory only.
     pub db_path: Option<PathBuf>,
     /// Terminate TLS in the relay. Without it the relay speaks plain WebSocket
@@ -61,6 +86,12 @@ impl Default for Config {
             max_claims_per_conn: 20,
             blob_ttl: Duration::from_secs(30 * 24 * 3600),
             blob_quota: 1024 * 1024 * 1024,
+            max_conns_per_ip: 64,
+            conn_rate_per_ip: 300,
+            req_rate: 50.0,
+            req_burst: 200.0,
+            trusted_proxies: Vec::new(),
+            metrics_token: None,
             db_path: None,
             tls: None,
         }
@@ -71,6 +102,9 @@ impl Default for Config {
 /// something arrives while another does its work (receiving sends receipts over a second
 /// connection). Past this, the oldest is closed so a buggy or hostile client cannot pile them up.
 const MAX_LIVE_PER_DEVICE: usize = 4;
+
+/// After this many consecutive refused requests the connection is closed: it is not going to slow down.
+const MAX_RATE_LIMIT_STREAK: u32 = 200;
 
 #[derive(Default)]
 struct State {
@@ -83,13 +117,29 @@ struct State {
 struct Shared {
     state: Mutex<State>,
     store: Store,
+    metrics: Metrics,
+    limits: Arc<IpLimits>,
+    started: Instant,
 }
 
 pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
+    serve_with_metrics(listener, None, cfg).await
+}
+
+/// [`serve`], plus an HTTP listener for `/healthz` and `/metrics` if one is given. Keep that
+/// listener on loopback or behind a firewall: it holds no content, but it is for the operator.
+pub async fn serve_with_metrics(
+    listener: TcpListener,
+    metrics_listener: Option<TcpListener>,
+    cfg: Config,
+) -> std::io::Result<()> {
     let store = Store::open(cfg.db_path.as_deref()).map_err(std::io::Error::other)?;
     let state = Arc::new(Shared {
         state: Mutex::default(),
         store,
+        metrics: Metrics::default(),
+        limits: IpLimits::new(cfg.max_conns_per_ip, cfg.conn_rate_per_ip),
+        started: Instant::now(),
     });
     let acceptor = cfg.tls.as_ref().map(tls::acceptor).transpose()?;
     let cfg = Arc::new(cfg);
@@ -98,15 +148,38 @@ pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
         let state = state.clone();
         tokio::spawn(async move {
             loop {
-                let _ = state.store.purge_expired();
+                let s = state.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = s.store.purge_expired();
+                    s.limits.purge();
+                })
+                .await;
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
         });
     }
+    if let Some(ml) = metrics_listener {
+        tokio::spawn(serve_metrics(ml, state.clone(), cfg.metrics_token.clone()));
+    }
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, peer) = listener.accept().await?;
         let (state, cfg, acceptor) = (state.clone(), cfg.clone(), acceptor.clone());
         tokio::spawn(async move {
+            let peer_ip = peer.ip();
+            // A connection from a trusted proxy is admitted after the handshake, once its real
+            // address is known. Everyone else is admitted (or turned away) before any work is done.
+            let proxied = is_trusted(peer_ip, &cfg.trusted_proxies);
+            let admission = if proxied {
+                None
+            } else {
+                match state.limits.admit(peer_ip) {
+                    Ok(a) => Some(a),
+                    Err(r) => {
+                        count_refusal(&state, r);
+                        return;
+                    }
+                }
+            };
             // Connection errors are routine (peers disconnect); never log content.
             match acceptor {
                 Some(a) => {
@@ -116,13 +189,20 @@ pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
                     else {
                         return;
                     };
-                    let _ = handle(stream, state, cfg).await;
+                    let _ = handle(stream, peer_ip, admission, state, cfg).await;
                 }
                 None => {
-                    let _ = handle(stream, state, cfg).await;
+                    let _ = handle(stream, peer_ip, admission, state, cfg).await;
                 }
             }
         });
+    }
+}
+
+fn count_refusal(state: &Shared, r: Refused) {
+    match r {
+        Refused::TooManyConnections => Metrics::inc(&state.metrics.refused_too_many_connections),
+        Refused::TooFast => Metrics::inc(&state.metrics.refused_too_fast),
     }
 }
 
@@ -141,19 +221,84 @@ where
     tx.send(Message::Text(s)).await.map_err(|_| ())
 }
 
-async fn handle<S>(stream: S, state: Arc<Shared>, cfg: Arc<Config>) -> Result<(), ()>
+/// Who is on the other end of a connection, once it has signed in.
+struct Peer {
+    me: String,
+    my_ed: [u8; 32],
+}
+
+/// What a request costs the connection's token bucket.
+fn cost(m: &ClientMsg) -> f64 {
+    match m {
+        ClientMsg::Ping => 0.0,
+        ClientMsg::Ack { .. } => 0.25,
+        _ => 1.0,
+    }
+}
+
+/// Keeps `connections_current` right however a connection ends.
+struct OpenGauge(Arc<Shared>);
+impl Drop for OpenGauge {
+    fn drop(&mut self) {
+        self.0
+            .metrics
+            .connections_current
+            .fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+async fn handle<S>(
+    stream: S,
+    peer_ip: IpAddr,
+    admission: Option<Admission>,
+    state: Arc<Shared>,
+    cfg: Arc<Config>,
+) -> Result<(), ()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    Metrics::inc(&state.metrics.connections_total);
+    state
+        .metrics
+        .connections_current
+        .fetch_add(1, Ordering::Relaxed);
+    let _open = OpenGauge(state.clone());
     let ws_cfg = WebSocketConfig {
         // Room for the largest message blob or attachment chunk, hex-encoded in JSON.
         max_message_size: Some(frame_limit(&cfg)),
         max_frame_size: Some(frame_limit(&cfg)),
         ..Default::default()
     };
-    let ws = tokio_tungstenite::accept_async_with_config(stream, Some(ws_cfg))
+    // Remember the forwarded-for header from the upgrade request: it is only believed if the
+    // connection came from a trusted proxy (decided below).
+    let forwarded = Arc::new(Mutex::new(None::<String>));
+    let seen = forwarded.clone();
+    #[allow(clippy::result_large_err)]
+    let callback = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+        *seen.lock().unwrap() = req
+            .headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        Ok(resp)
+    };
+    let ws = tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(ws_cfg))
         .await
         .map_err(|_| ())?;
+    let _admission = match admission {
+        Some(a) => a,
+        None => {
+            let header = forwarded.lock().unwrap().clone();
+            let ip = client_ip(peer_ip, header.as_deref(), &cfg.trusted_proxies);
+            match state.limits.admit(ip) {
+                Ok(a) => a,
+                Err(r) => {
+                    count_refusal(&state, r);
+                    return Err(());
+                }
+            }
+        }
+    };
     let (mut tx, mut rx) = ws.split();
 
     // 1. Challenge / response.
@@ -174,6 +319,7 @@ where
     };
     let Ok(ClientMsg::Auth { ed25519, sig }) = serde_json::from_str::<ClientMsg>(&text) else {
         let _ = send_json(&mut tx, &err("bad_request", "expected auth")).await;
+        state.metrics.error("bad_request");
         return Err(());
     };
     let verified = (|| {
@@ -184,38 +330,26 @@ where
     })();
     let Some((me, my_ed)) = verified else {
         let _ = send_json(&mut tx, &err("auth_failed", "signature rejected")).await;
+        Metrics::inc(&state.metrics.auth_failed);
+        state.metrics.error("auth_failed");
         return Err(());
     };
+    Metrics::inc(&state.metrics.auth_ok);
+    let peer = Arc::new(Peer {
+        me: me.clone(),
+        my_ed,
+    });
 
-    // 2. Register (a device may hold a few live connections; the oldest beyond the cap is closed) and flush the queue.
+    // 2. Register (a device may hold a few live connections; the oldest beyond the cap is closed)
+    // and flush the queue. The database work runs on a blocking thread.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel();
-    let registered = (|| {
-        let mut st = state.state.lock().unwrap();
-        st.next_conn += 1;
-        let conn_id = st.next_conn;
-        let conns = st.online.entry(me.clone()).or_default();
-        conns.push((conn_id, out_tx));
-        while conns.len() > MAX_LIVE_PER_DEVICE {
-            // Dropping the sender makes that connection's serve loop end (see below).
-            conns.remove(0);
-        }
-        // Hold the state lock while reading the backlog so a message sent in
-        // between is either in the backlog or delivered live, never both.
-        let backlog: Vec<ServerMsg> = state
-            .store
-            .backlog(&me)?
-            .into_iter()
-            .map(|m| ServerMsg::Deliver {
-                id: m.id.to_string(),
-                blob: hex::encode(&m.blob),
-            })
-            .collect();
-        let prekeys = state.store.prekey_count(&me)?;
-        let fallback_age = state.store.fallback_age_secs(&me)?;
-        Ok::<_, rusqlite::Error>((conn_id, backlog, prekeys, fallback_age))
-    })();
-    let Ok((conn_id, backlog, prekeys, fallback_age_secs)) = registered else {
+    let registered = {
+        let (state, me) = (state.clone(), me.clone());
+        tokio::task::spawn_blocking(move || register(&state, &me, out_tx)).await
+    };
+    let Ok(Ok((conn_id, backlog, prekeys, fallback_age_secs))) = registered else {
         let _ = send_json(&mut tx, &err("internal", "storage error")).await;
+        state.metrics.error("internal");
         return Err(());
     };
     let run = async {
@@ -228,18 +362,24 @@ where
             },
         )
         .await?;
+        Metrics::add(&state.metrics.delivered_backlog, backlog.len() as u64);
         for m in backlog {
             send_json(&mut tx, &m).await?;
         }
 
         // 3. Serve.
         let mut claims = 0usize;
+        let mut bucket = TokenBucket::new(cfg.req_rate, cfg.req_burst);
+        let mut limited_streak = 0u32;
         let idle = tokio::time::sleep(cfg.idle_timeout);
         tokio::pin!(idle);
         loop {
             tokio::select! {
                 // Nothing from the client for too long: it is gone or abandoned this connection.
-                () = &mut idle => return Ok(()),
+                () = &mut idle => {
+                    Metrics::inc(&state.metrics.connections_idle_closed);
+                    return Ok(());
+                }
                 m = out_rx.recv() => match m {
                     Some(m) => send_json(&mut tx, &m).await?,
                     // Evicted because the device opened more connections than allowed. Close this one so its
@@ -253,27 +393,37 @@ where
                         if matches!(frame, Message::Close(_)) { return Ok(()) }
                         continue;
                     };
-                    let reply = match serde_json::from_str::<ClientMsg>(&text) {
-                        Ok(ClientMsg::Send { to, blob }) => on_send(&state, &cfg, &to, &blob),
-                        Ok(ClientMsg::Ack { id }) => { on_ack(&state, &me, &id); None }
-                        Ok(ClientMsg::Ping) => Some(ServerMsg::Pong),
-                        Ok(ClientMsg::PublishPrekeys { keys }) => Some(on_publish(&state, &me, &my_ed, &keys)),
-                        Ok(ClientMsg::PublishFallback { key }) => Some(on_fallback(&state, &me, &my_ed, &key)),
-                        Ok(ClientMsg::PublishDeviceList { list }) => Some(on_publish_list(&state, &cfg, &me, &list)),
-                        Ok(ClientMsg::FetchDeviceList { owner }) => Some(on_fetch_list(&state, &owner)),
-                        Ok(ClientMsg::PutBlobChunk { blob, index, total, data }) => Some(on_put_chunk(&state, &cfg, &me, &blob, index, total, &data)),
-                        Ok(ClientMsg::GetBlobChunk { blob, index }) => Some(on_get_chunk(&state, &blob, index)),
-                        Ok(ClientMsg::ClaimPrekey { device }) => {
-                            claims += 1;
-                            if claims > cfg.max_claims_per_conn {
-                                Some(err("rate_limited", "too many prekey claims on this connection"))
-                            } else {
-                                Some(on_claim(&state, &device))
-                            }
-                        }
-                        _ => Some(err("bad_request", "unexpected message")),
+                    let Ok(msg) = serde_json::from_str::<ClientMsg>(&text) else {
+                        state.metrics.error("bad_request");
+                        send_json(&mut tx, &err("bad_request", "unexpected message")).await?;
+                        continue;
                     };
-                    if let Some(r) = reply { send_json(&mut tx, &r).await?; }
+                    // Slow down a connection that asks too fast, and hang up on one that never does.
+                    let c = cost(&msg);
+                    if c > 0.0 && !bucket.allow(c) {
+                        Metrics::inc(&state.metrics.rate_limited_requests);
+                        state.metrics.error("rate_limited");
+                        limited_streak += 1;
+                        send_json(&mut tx, &err("rate_limited", "too many requests: slow down")).await?;
+                        if limited_streak > MAX_RATE_LIMIT_STREAK { return Ok(()) }
+                        continue;
+                    }
+                    limited_streak = 0;
+                    // The database is blocking: run the request on a blocking thread so a slow
+                    // disk delays this connection only, not everyone's.
+                    let (st, cf, pr) = (state.clone(), cfg.clone(), peer.clone());
+                    let (reply, c2) = tokio::task::spawn_blocking(move || {
+                        let mut claims = claims;
+                        let r = dispatch(&st, &cf, &pr, &mut claims, msg);
+                        (r, claims)
+                    })
+                    .await
+                    .map_err(|_| ())?;
+                    claims = c2;
+                    if let Some(r) = reply {
+                        if let ServerMsg::Error { code, .. } = &r { state.metrics.error(code); }
+                        send_json(&mut tx, &r).await?;
+                    }
                 }
             }
         }
@@ -288,6 +438,105 @@ where
         }
     }
     result
+}
+
+/// Register a signed-in device and read what is waiting for it. The state lock is held while the
+/// backlog is read so a message sent in between is either in the backlog or delivered live, never both.
+fn register(
+    state: &Shared,
+    me: &str,
+    out_tx: mpsc::UnboundedSender<ServerMsg>,
+) -> rusqlite::Result<(u64, Vec<ServerMsg>, usize, Option<u64>)> {
+    let mut st = state.state.lock().unwrap();
+    st.next_conn += 1;
+    let conn_id = st.next_conn;
+    let conns = st.online.entry(me.to_string()).or_default();
+    conns.push((conn_id, out_tx));
+    while conns.len() > MAX_LIVE_PER_DEVICE {
+        // Dropping the sender makes that connection's serve loop end (see `handle`).
+        conns.remove(0);
+        Metrics::inc(&state.metrics.connections_evicted);
+    }
+    let backlog: Vec<ServerMsg> = state
+        .store
+        .backlog(me)?
+        .into_iter()
+        .map(|m| ServerMsg::Deliver {
+            id: m.id.to_string(),
+            blob: hex::encode(&m.blob),
+        })
+        .collect();
+    let prekeys = state.store.prekey_count(me)?;
+    let fallback_age = state.store.fallback_age_secs(me)?;
+    Ok((conn_id, backlog, prekeys, fallback_age))
+}
+
+/// Handle one request from a signed-in device. Runs on a blocking thread.
+fn dispatch(
+    state: &Shared,
+    cfg: &Config,
+    p: &Peer,
+    claims: &mut usize,
+    msg: ClientMsg,
+) -> Option<ServerMsg> {
+    let m = &state.metrics;
+    match msg {
+        ClientMsg::Send { to, blob } => on_send(state, cfg, &to, &blob),
+        ClientMsg::Ack { id } => {
+            Metrics::inc(&m.acks);
+            on_ack(state, &p.me, &id);
+            None
+        }
+        ClientMsg::Ping => Some(ServerMsg::Pong),
+        ClientMsg::PublishPrekeys { keys } => {
+            let r = on_publish(state, &p.me, &p.my_ed, &keys);
+            if matches!(r, ServerMsg::Published { .. }) {
+                Metrics::add(&m.prekeys_published, keys.len() as u64);
+            }
+            Some(r)
+        }
+        ClientMsg::PublishFallback { key } => Some(on_fallback(state, &p.me, &p.my_ed, &key)),
+        ClientMsg::PublishDeviceList { list } => {
+            let r = on_publish_list(state, cfg, &p.me, &list);
+            if matches!(r, ServerMsg::DeviceListStored { .. }) {
+                Metrics::inc(&m.device_lists_published);
+            }
+            Some(r)
+        }
+        ClientMsg::FetchDeviceList { owner } => Some(on_fetch_list(state, &owner)),
+        ClientMsg::PutBlobChunk {
+            blob,
+            index,
+            total,
+            data,
+        } => {
+            let r = on_put_chunk(state, cfg, &p.me, &blob, index, total, &data);
+            if matches!(r, ServerMsg::BlobChunkStored { .. }) {
+                Metrics::inc(&m.chunks_stored);
+            }
+            Some(r)
+        }
+        ClientMsg::GetBlobChunk { blob, index } => {
+            let r = on_get_chunk(state, &blob, index);
+            if matches!(r, ServerMsg::BlobChunk { data: Some(_), .. }) {
+                Metrics::inc(&m.chunks_served);
+            }
+            Some(r)
+        }
+        ClientMsg::ClaimPrekey { device } => {
+            *claims += 1;
+            if *claims > cfg.max_claims_per_conn {
+                Some(err(
+                    "rate_limited",
+                    "too many prekey claims on this connection",
+                ))
+            } else {
+                Metrics::inc(&m.prekey_claims);
+                Some(on_claim(state, &device))
+            }
+        }
+        _ => Some(err("bad_request", "unexpected message")),
+    }
 }
 
 fn internal() -> ServerMsg {
@@ -313,11 +562,18 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
         Ok(Enqueued::Full) => return Some(err("queue_full", "recipient queue is full")),
         Err(_) => return Some(internal()),
     };
+    Metrics::inc(&state.metrics.messages_accepted);
+    Metrics::add(&state.metrics.bytes_accepted, blob.len() as u64);
     for (_, live) in st.online.get(to).into_iter().flatten() {
-        let _ = live.send(ServerMsg::Deliver {
-            id: id.clone(),
-            blob: blob_hex.to_string(),
-        });
+        if live
+            .send(ServerMsg::Deliver {
+                id: id.clone(),
+                blob: blob_hex.to_string(),
+            })
+            .is_ok()
+        {
+            Metrics::inc(&state.metrics.delivered_live);
+        }
     }
     Some(ServerMsg::Accepted { id })
 }
@@ -504,4 +760,98 @@ fn on_claim(state: &Shared, device: &str) -> ServerMsg {
         }
         Err(_) => internal(),
     }
+}
+
+// ---------------------------------------------------------------- operator HTTP
+
+/// Compare two strings without stopping at the first difference, so response time does not leak
+/// how much of a token was right.
+fn same_secret(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut diff = (a.len() ^ b.len()) as u8;
+    for i in 0..a.len().max(b.len()) {
+        diff |= a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0);
+    }
+    diff == 0
+}
+
+async fn serve_metrics(listener: TcpListener, state: Arc<Shared>, token: Option<String>) {
+    loop {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let (state, token) = (state.clone(), token.clone());
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(5),
+                http_once(&mut sock, &state, token.as_deref()),
+            )
+            .await;
+        });
+    }
+}
+
+/// Answer one HTTP/1.1 request on a socket, then close it. Only `GET /healthz` and
+/// `GET /metrics`; there is nothing else to serve.
+async fn http_once(sock: &mut tokio::net::TcpStream, state: &Arc<Shared>, token: Option<&str>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    while !buf.windows(4).any(|w| w == b"\r\n\r\n") && buf.len() < 8192 {
+        match sock.read(&mut chunk).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
+    let head = String::from_utf8_lossy(&buf).into_owned();
+    let mut lines = head.split("\r\n");
+    let request = lines.next().unwrap_or("");
+    let mut parts = request.split(' ');
+    let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    let bearer = lines
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        .and_then(|(_, v)| v.trim().strip_prefix("Bearer "))
+        .map(str::trim);
+    let (status, body) = if method != "GET" {
+        ("405 Method Not Allowed", "method not allowed\n".to_string())
+    } else if path == "/healthz" {
+        let s = state.clone();
+        match tokio::task::spawn_blocking(move || s.store.ping()).await {
+            Ok(Ok(())) => ("200 OK", "ok\n".to_string()),
+            _ => (
+                "503 Service Unavailable",
+                "database unavailable\n".to_string(),
+            ),
+        }
+    } else if path == "/metrics" {
+        let allowed = token.is_none_or(|t| bearer.is_some_and(|b| same_secret(b, t)));
+        if !allowed {
+            (
+                "401 Unauthorized",
+                "a bearer token is required\n".to_string(),
+            )
+        } else {
+            let s = state.clone();
+            let stats = tokio::task::spawn_blocking(move || s.store.stats().ok())
+                .await
+                .ok()
+                .flatten();
+            let live = state.state.lock().unwrap().online.len();
+            (
+                "200 OK",
+                state
+                    .metrics
+                    .render(state.started.elapsed().as_secs(), live, stats.as_ref()),
+            )
+        }
+    } else {
+        ("404 Not Found", "not found\n".to_string())
+    };
+    let reply = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = sock.write_all(reply.as_bytes()).await;
+    let _ = sock.shutdown().await;
 }

@@ -50,7 +50,7 @@ No anonymity and no metadata protection is claimed.
 | Stolen disk or leaked backup | Mitigated | All state is encrypted under an Argon2id-derived key (ADR 0003); tests check nothing identifying is stored in the clear and that tampering, truncation and file swaps are rejected. Strength depends on the passphrase |
 | Rollback to an older valid state file | **Open** | An attacker with write access could restore an old ratchet state; needs a monotonic counter / hardware keystore |
 | Compromised running endpoint (malware, debugger) | **Open** | Keys are in memory while unlocked; out of scope for Phase 0 |
-| Relay resource abuse / spam | Partial | Size, per-recipient queue cap and TTL enforced; no per-sender rate limit or abuse controls |
+| Relay resource abuse / spam | Partial | Size, per-recipient queue cap and TTL enforced; per-address connection and rate limits and a per-connection request rate (ADR 0022). No per-sender limit (the relay cannot see senders) and many addresses defeat per-address limits; tenant enrollment (ADR 0023) is proposed, not built |
 | Relay crash or restart loses queues and prekeys | Mitigated with `--db` | Durable SQLite storage (ADR 0004); verified by tests and a real `kill -9`. Without `--db` the relay is in-memory and says so. Single disk, no replication: a lost disk loses undelivered messages |
 | Theft of the relay database | Partial | Contains ciphertext and routing metadata only (recipient IDs, sizes, timing), `0600`; not encrypted by the relay itself, so use an encrypted volume |
 | Message lost or duplicated on crash during receive | Mitigated | Stored before ratchet state is saved; idempotent on message id; tested (ADR 0007) |

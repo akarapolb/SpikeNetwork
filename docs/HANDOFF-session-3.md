@@ -59,3 +59,9 @@ WebView2 exposes a debug port: start the exe with `WEBVIEW2_ADDITIONAL_BROWSER_A
 
 ## 8. Honest status
 Unreviewed prototype code (README: "Do not use it for real secrets"). The webview is a large attack surface even with a strict CSP; the passphrase crosses the bridge as a JavaScript string; only Windows has been run; no signed builds, no auto-update.
+
+## Update: hosted relay slice 0 (ADR 0022) and the tenant design (ADR 0023)
+- Built: per-address and per-connection limits, trusted-proxy address handling, SQLite calls on blocking threads, schema migrations (`user_version`, backup before upgrade, newer database refused), `/healthz` and content-free `/metrics`, new relay flags (see `docs/deploy-relay.md`).
+- Tests: root workspace 184 pass on Windows and Ubuntu (WSL); `cli/tests/hardening.rs` is new. Two `ownsync` tests with 400 ms and 2 s expiries were flaky under load (also before this change); their times were widened.
+- ADR 0023 (tenants and enrollment tokens) is a proposal for your review. Nothing of it is built. Its "Decisions I need from you" section lists what to answer.
+- Still to do from the same request: desktop polish (QR for linking, signing and auto-update, Linux/macOS pass, faster on-screen delivery) and small groups (ADR first).

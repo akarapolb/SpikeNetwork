@@ -8,9 +8,62 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use spike_core::wire::WirePrekey;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// The schema this build writes. It is stored in the database (`PRAGMA user_version`) and
+/// raised by [`migrate`], never lowered: a database from a newer relay is refused, not guessed at.
+///
+/// - 1: the original tables (databases from before versioning are treated as version 1).
+/// - 2: indexes on `expires`, so the expiry purge no longer scans whole tables.
+pub const SCHEMA_VERSION: i64 = 2;
+
+#[derive(Debug)]
+pub enum StoreError {
+    Sqlite(rusqlite::Error),
+    /// The file was written by a newer relay than this one.
+    Newer {
+        found: i64,
+        supported: i64,
+    },
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlite(e) => write!(f, "database error: {e}"),
+            Self::Newer { found, supported } => write!(
+                f,
+                "this database has schema version {found} but this relay only understands up to {supported}: upgrade the relay, do not downgrade the data"
+            ),
+            Self::Io(e) => write!(f, "backing up the database before an upgrade failed: {e}"),
+        }
+    }
+}
+impl std::error::Error for StoreError {}
+impl From<rusqlite::Error> for StoreError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sqlite(e)
+    }
+}
+impl From<std::io::Error> for StoreError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+/// Counts for the metrics endpoint. Numbers only: nothing that identifies a device or holds content.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Stats {
+    pub queued_messages: u64,
+    pub queued_bytes: u64,
+    pub blob_chunks: u64,
+    pub blob_bytes: u64,
+    pub prekeys: u64,
+    pub device_lists: u64,
+}
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -33,6 +86,97 @@ pub struct Stored {
     pub blob: Vec<u8>,
 }
 
+/// Version 1: the tables the relay has always had. `IF NOT EXISTS` makes it safe on a database that
+/// predates versioning, which already has them.
+const V1: &str = "CREATE TABLE IF NOT EXISTS messages (
+         id        INTEGER PRIMARY KEY AUTOINCREMENT,
+         recipient TEXT    NOT NULL,
+         blob      BLOB    NOT NULL,
+         expires   INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient, id);
+     CREATE TABLE IF NOT EXISTS prekeys (
+         id     INTEGER PRIMARY KEY AUTOINCREMENT,
+         device TEXT NOT NULL,
+         key    TEXT NOT NULL,
+         sig    TEXT NOT NULL,
+         UNIQUE(device, key)
+     );
+     CREATE TABLE IF NOT EXISTS blob_chunks (
+         blob     TEXT    NOT NULL,
+         idx      INTEGER NOT NULL,
+         total    INTEGER NOT NULL,
+         uploader TEXT    NOT NULL,
+         data     BLOB    NOT NULL,
+         expires  INTEGER NOT NULL,
+         PRIMARY KEY (blob, idx)
+     );
+     CREATE INDEX IF NOT EXISTS blob_chunks_uploader ON blob_chunks(uploader);
+     CREATE TABLE IF NOT EXISTS device_lists (
+         owner   TEXT PRIMARY KEY,
+         version INTEGER NOT NULL,
+         list    TEXT    NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS fallbacks (
+         device   TEXT PRIMARY KEY,
+         key      TEXT    NOT NULL,
+         sig      TEXT    NOT NULL,
+         uploaded INTEGER NOT NULL
+     );";
+
+/// Version 2: the periodic purge deletes by `expires`; without an index that scans every row.
+const V2: &str = "CREATE INDEX IF NOT EXISTS messages_expires ON messages(expires);
+     CREATE INDEX IF NOT EXISTS blob_chunks_expires ON blob_chunks(expires);";
+
+/// Apply every migration between the stored version and [`SCHEMA_VERSION`], each in its own
+/// transaction. A database from before versioning has user_version 0 and the version 1 tables:
+/// it is told apart from a brand new one by having a `messages` table.
+fn migrate(conn: &mut Connection, path: Option<&Path>) -> Result<(), StoreError> {
+    let found: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if found > SCHEMA_VERSION {
+        return Err(StoreError::Newer {
+            found,
+            supported: SCHEMA_VERSION,
+        });
+    }
+    if found == SCHEMA_VERSION {
+        return Ok(());
+    }
+    let has_data: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages')",
+        [],
+        |r| r.get(0),
+    )?;
+    // Back up a file that already holds data, before changing it.
+    if let (Some(p), true) = (path, has_data) {
+        let from = found.max(1);
+        let backup: PathBuf = {
+            let mut name = p.as_os_str().to_owned();
+            name.push(format!(".before-v{from}"));
+            name.into()
+        };
+        if !backup.exists() {
+            conn.execute("VACUUM INTO ?1", [backup.to_string_lossy().as_ref()])?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+    }
+    let steps: [(i64, &str); 2] = [(1, V1), (2, V2)];
+    for (version, sql) in steps {
+        if found >= version {
+            continue;
+        }
+        let tx = conn.transaction()?;
+        tx.execute_batch(sql)?;
+        tx.pragma_update(None, "user_version", version)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -41,9 +185,11 @@ fn now_ms() -> i64 {
 }
 
 impl Store {
-    /// Open (creating if needed) a database file, or an in-memory one for `None`.
-    pub fn open(path: Option<&Path>) -> rusqlite::Result<Self> {
-        let conn = match path {
+    /// Open (creating if needed) a database file, or an in-memory one for `None`, and bring its
+    /// schema up to [`SCHEMA_VERSION`]. A file with data from an older schema is copied to
+    /// `<file>.before-v<N>` first, so a bad upgrade can be undone by hand.
+    pub fn open(path: Option<&Path>) -> Result<Self, StoreError> {
+        let mut conn = match path {
             Some(p) => {
                 #[cfg(unix)]
                 let existed = p.exists();
@@ -59,45 +205,37 @@ impl Store {
             None => Connection::open_in_memory()?,
         };
         conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS messages (
-                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                 recipient TEXT    NOT NULL,
-                 blob      BLOB    NOT NULL,
-                 expires   INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS messages_recipient ON messages(recipient, id);
-             CREATE TABLE IF NOT EXISTS prekeys (
-                 id     INTEGER PRIMARY KEY AUTOINCREMENT,
-                 device TEXT NOT NULL,
-                 key    TEXT NOT NULL,
-                 sig    TEXT NOT NULL,
-                 UNIQUE(device, key)
-             );
-             CREATE TABLE IF NOT EXISTS blob_chunks (
-                 blob     TEXT    NOT NULL,
-                 idx      INTEGER NOT NULL,
-                 total    INTEGER NOT NULL,
-                 uploader TEXT    NOT NULL,
-                 data     BLOB    NOT NULL,
-                 expires  INTEGER NOT NULL,
-                 PRIMARY KEY (blob, idx)
-             );
-             CREATE INDEX IF NOT EXISTS blob_chunks_uploader ON blob_chunks(uploader);
-             CREATE TABLE IF NOT EXISTS device_lists (
-                 owner   TEXT PRIMARY KEY,
-                 version INTEGER NOT NULL,
-                 list    TEXT    NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS fallbacks (
-                 device   TEXT PRIMARY KEY,
-                 key      TEXT    NOT NULL,
-                 sig      TEXT    NOT NULL,
-                 uploaded INTEGER NOT NULL
-             );",
-        )?;
+        migrate(&mut conn, path)?;
         Ok(Self {
             conn: Mutex::new(conn),
+        })
+    }
+
+    /// The schema version stored in the database.
+    pub fn schema_version(&self) -> rusqlite::Result<i64> {
+        let c = self.conn.lock().unwrap();
+        c.pragma_query_value(None, "user_version", |r| r.get(0))
+    }
+
+    /// A cheap query that proves the database answers (for the health check).
+    pub fn ping(&self) -> rusqlite::Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.query_row("SELECT 1", [], |_| Ok(()))
+    }
+
+    pub fn stats(&self) -> rusqlite::Result<Stats> {
+        let c = self.conn.lock().unwrap();
+        let one = |sql: &str| -> rusqlite::Result<u64> {
+            c.query_row(sql, [], |r| r.get::<_, i64>(0))
+                .map(|v| v.max(0) as u64)
+        };
+        Ok(Stats {
+            queued_messages: one("SELECT COUNT(*) FROM messages")?,
+            queued_bytes: one("SELECT COALESCE(SUM(LENGTH(blob)), 0) FROM messages")?,
+            blob_chunks: one("SELECT COUNT(*) FROM blob_chunks")?,
+            blob_bytes: one("SELECT COALESCE(SUM(LENGTH(data)), 0) FROM blob_chunks")?,
+            prekeys: one("SELECT COUNT(*) FROM prekeys")?,
+            device_lists: one("SELECT COUNT(*) FROM device_lists")?,
         })
     }
 
@@ -338,5 +476,98 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("spike-store-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("relay.db")
+    }
+
+    /// What a relay from before versioning left on disk: the version 1 tables, user_version 0, one message.
+    fn old_database(path: &Path) {
+        let c = Connection::open(path).unwrap();
+        c.execute_batch(V1).unwrap();
+        c.execute(
+            "INSERT INTO messages (recipient, blob, expires) VALUES ('r', x'0102', 9999999999999)",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_new_database_is_created_at_the_current_version() {
+        let s = Store::open(None).unwrap();
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+        s.ping().unwrap();
+        assert_eq!(s.stats().unwrap(), Stats::default());
+    }
+
+    #[test]
+    fn an_old_database_is_upgraded_keeping_its_data_and_backed_up_first() {
+        let path = temp_db("upgrade");
+        old_database(&path);
+        let s = Store::open(Some(&path)).unwrap();
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(s.stats().unwrap().queued_messages, 1, "data survives");
+        let backup = PathBuf::from(format!("{}.before-v1", path.display()));
+        assert!(backup.exists(), "a copy of the old file is kept");
+        // The copy is the old database: still version 0, still readable.
+        let b = Connection::open(&backup).unwrap();
+        let v: i64 = b
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 0);
+        // The new indexes exist.
+        let has: bool = s
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'messages_expires')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has);
+    }
+
+    #[test]
+    fn opening_twice_is_harmless_and_makes_no_second_backup() {
+        let path = temp_db("twice");
+        old_database(&path);
+        drop(Store::open(Some(&path)).unwrap());
+        let s = Store::open(Some(&path)).unwrap();
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(s.stats().unwrap().queued_messages, 1);
+        assert!(!PathBuf::from(format!("{}.before-v2", path.display())).exists());
+    }
+
+    #[test]
+    fn a_database_from_a_newer_relay_is_refused_untouched() {
+        let path = temp_db("newer");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(V1).unwrap();
+            c.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+                .unwrap();
+        }
+        match Store::open(Some(&path)) {
+            Err(StoreError::Newer { found, supported }) => {
+                assert_eq!((found, supported), (SCHEMA_VERSION + 1, SCHEMA_VERSION));
+            }
+            other => panic!("expected a refusal, got {:?}", other.err()),
+        }
+        let c = Connection::open(&path).unwrap();
+        let v: i64 = c
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION + 1, "the file was not downgraded");
     }
 }

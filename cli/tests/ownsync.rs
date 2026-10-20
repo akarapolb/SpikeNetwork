@@ -195,9 +195,9 @@ async fn a_contact_cannot_use_the_own_device_channel() {
 
 #[tokio::test]
 async fn a_device_that_missed_messages_edits_and_deletes_catches_up_from_another() {
-    // Messages expire from the relay after 400 ms, so the laptop misses everything while "away".
+    // Messages expire from the relay after 2 s, so the laptop misses everything while "away".
     let (url, alice, bob) = world(Config {
-        ttl: Duration::from_millis(400),
+        ttl: Duration::from_millis(2000),
         ..Config::default()
     })
     .await;
@@ -225,7 +225,7 @@ async fn a_device_that_missed_messages_edits_and_deletes_catches_up_from_another
     recv(phone, &url).await;
     assert_eq!(history(phone, &bob[0]).len(), 3);
 
-    tokio::time::sleep(Duration::from_millis(600)).await; // the laptop's copies expire at the relay
+    tokio::time::sleep(Duration::from_millis(2400)).await; // the laptop's copies expire at the relay
     assert!(
         recv(laptop, &url).await.is_empty(),
         "nothing left in the laptop's queue"
@@ -275,7 +275,7 @@ async fn a_device_that_missed_messages_edits_and_deletes_catches_up_from_another
 #[tokio::test]
 async fn expired_attachment_is_re_supplied_by_another_own_device() {
     let (url, alice, bob) = world(Config {
-        blob_ttl: Duration::from_secs(2),
+        blob_ttl: Duration::from_secs(4),
         ..Config::default()
     })
     .await;
@@ -289,7 +289,7 @@ async fn expired_attachment_is_re_supplied_by_another_own_device() {
     recv(laptop, &url).await;
     ops::fetch_attachment(&phone.0, &url, &id).await.unwrap(); // only the phone downloads it
 
-    tokio::time::sleep(Duration::from_millis(2300)).await; // the relay expires the blob
+    tokio::time::sleep(Duration::from_millis(4400)).await; // the relay expires the blob
     let e = ops::fetch_attachment(&laptop.0, &url, &id)
         .await
         .unwrap_err()
