@@ -231,6 +231,23 @@ enum Cmd {
         #[arg(long)]
         check_only: bool,
     },
+    /// List message requests: people who are not contacts and wrote to you.
+    Requests,
+    /// Accept a message request: they become a contact (not verified) and their messages join the chat.
+    RequestAccept {
+        /// Request id or its first 8+ characters (from `requests`).
+        id: String,
+        /// The name to give them.
+        name: String,
+    },
+    /// Decline a message request: it is deleted and the sender is not told.
+    RequestDecline { id: String },
+    /// Block the sender of a request: decline it, and drop anything they send from now on.
+    RequestBlock { id: String },
+    /// List the people you blocked.
+    Blocked,
+    /// Stop blocking someone (owner key or fingerprint, 8+ characters).
+    Unblock { who: String },
     /// Edit a message you sent (by id or its first 6+ characters from `spike history`).
     Edit {
         id: String,
@@ -804,6 +821,65 @@ async fn run() -> Result<()> {
                 None => println!("{}", p.to_json()),
             }
         }
+        Cmd::Requests => {
+            let all = spike_cli::requests::list(&home)?;
+            if all.is_empty() {
+                println!("no message requests");
+            }
+            for r in all {
+                println!(
+                    "{} {} fingerprint {} ({} message{} held)",
+                    &r.key[..8],
+                    fmt_utc(r.received),
+                    r.fingerprint,
+                    r.held.len(),
+                    if r.held.len() == 1 { "" } else { "s" }
+                );
+                for h in &r.held {
+                    println!(
+                        "    {}{}",
+                        h.body
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .take(120)
+                            .collect::<String>(),
+                        h.file
+                            .as_ref()
+                            .map_or(String::new(), |f| format!("  [file \"{f}\" not kept]"))
+                    );
+                }
+            }
+        }
+        Cmd::RequestAccept { id, name } => {
+            let n = spike_cli::requests::accept(&home, &id, &name)?;
+            println!("{name} added (UNVERIFIED); {n} message(s) joined the conversation. Compare their fingerprint over a second channel, then `spike verify {name} <fingerprint>`.");
+        }
+        Cmd::RequestDecline { id } => {
+            spike_cli::requests::decline(&home, &id)?;
+            println!("declined; the sender is not told");
+        }
+        Cmd::RequestBlock { id } => {
+            spike_cli::requests::block(&home, &id)?;
+            println!("blocked: their messages are dropped when they arrive (the relay still carries them until then)");
+        }
+        Cmd::Blocked => {
+            let all = spike_cli::requests::blocked(&home)?;
+            if all.is_empty() {
+                println!("nobody is blocked");
+            }
+            for b in all {
+                println!(
+                    "{} fingerprint {} blocked {}",
+                    &b.owner[..16],
+                    b.fingerprint,
+                    fmt_utc(b.at)
+                );
+            }
+        }
+        Cmd::Unblock { who } => {
+            spike_cli::requests::unblock(&home, &who)?;
+            println!("unblocked");
+        }
         Cmd::Edit { id, text, relay } => {
             let r = ops::edit(&home, target(relay), &id, &text).await?;
             for n in &r.notes {
@@ -919,9 +995,15 @@ async fn run() -> Result<()> {
                     println!("[{from}{tag}] {}", String::from_utf8_lossy(&body));
                     n += 1;
                 }
-                Outcome::UnknownSender { fingerprint_hint } => {
-                    eprintln!("dropped message from unknown key {fingerprint_hint}…; add them with `spike add` to receive");
+                Outcome::UnknownSender { fingerprint_hint, .. } => {
+                    eprintln!("dropped message from unknown key {fingerprint_hint}… (no valid introduction); add them with `spike add` to receive");
                 }
+                Outcome::MessageRequest { id, fingerprint, held, new } => println!(
+                    "[message request {}{}: {fingerprint} wrote to you ({held} held); `spike request-accept {} <name>`, `request-decline` or `request-block`]",
+                    &id[..8],
+                    if new { " (new)" } else { "" },
+                    &id[..8]
+                ),
                 Outcome::Invalid => eprintln!("dropped undecryptable or replayed message"),
                 Outcome::Duplicate | Outcome::Ignored => {}
                 Outcome::AgentRequest { from, id, scope, action, amount_cents, summary, verdict } => println!(

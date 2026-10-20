@@ -362,7 +362,6 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
     let peer = c.identity()?;
     env.to = Some(peer.owner_hex());
     env.lamport = home.next_lamport()?;
-    let plaintext = env.to_bytes();
 
     let my_id = me.device_id();
     let mine = IdentityCard::decode(&home.identity_card()?)?;
@@ -377,6 +376,17 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
             .filter(|(d, _)| d.device_id() != my_id)
             .map(|(d, r)| (d, r, true)),
     );
+
+    // Starting a session with someone who may not know us: say who we are (ADR 0021). A contact
+    // who already has a session with us ignores it; a stranger needs it to treat this as a request.
+    if env.kind == Kind::Text
+        && targets
+            .iter()
+            .any(|(d, _, own)| !*own && !sessions.has_session(d))
+    {
+        env.intro = Some(home.identity_card()?);
+    }
+    let plaintext = env.to_bytes();
 
     let mut pool = Pool {
         base: base.clone(),
@@ -460,6 +470,17 @@ pub async fn recv(
             refresh_contacts(&mut relay, home, None).await?;
             sync_own_list(&mut relay, home).await?;
             outcome = process(home, &mut me, &mut sessions, &d.blob)?;
+        }
+        // Still nobody we know: a stranger writing to us becomes a message request if they
+        // introduced themselves properly (ADR 0021); otherwise it is dropped.
+        if let Outcome::UnknownSender { identity_key, .. } = &outcome {
+            let key = *identity_key;
+            outcome = crate::requests::on_stranger(home, &mut me, &d.blob, key)?;
+        } else if matches!(outcome, Outcome::Invalid) {
+            // A later message of a session that is still a request.
+            if let Some(o) = crate::requests::on_pending(home, &mut me, &d.blob)? {
+                outcome = o;
+            }
         }
         // Acknowledge first: the request is now durably handled on our side, and
         // an answer that fails can be asked for again.

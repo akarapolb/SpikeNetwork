@@ -7,8 +7,8 @@
 pub mod api;
 
 use api::{
-    ActionTypeDto, AgentsDto, GrantRequest, InstalledDto, LinkedDto, MessageDto, Overview, Session,
-    SyncDto,
+    ActionTypeDto, AgentsDto, BlockedDto, GrantRequest, InstalledDto, LinkedDto, MessageDto,
+    MessageRequestDto, Overview, Session, SyncDto,
 };
 use spike_core::vault::KdfParams;
 use std::path::PathBuf;
@@ -202,7 +202,9 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
             let attention = s.attention().unwrap_or(0);
             drop(s);
             if let Some(w) = app.get_webview_window("main") {
-                if (r.received > 0 || r.agent_requests > 0) && !w.is_focused().unwrap_or(true) {
+                if (r.received > 0 || r.agent_requests > 0 || r.message_requests > 0)
+                    && !w.is_focused().unwrap_or(true)
+                {
                     let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
                 }
             }
@@ -301,6 +303,36 @@ async fn delete_message(state: State<'_, AppState>, id: String) -> Result<(), St
 #[tauri::command]
 async fn remove_device(state: State<'_, AppState>, id: String) -> Result<(), String> {
     session(&state)?.remove_device(&id).await.map_err(err)
+}
+
+#[tauri::command]
+fn message_requests(state: State<'_, AppState>) -> Result<Vec<MessageRequestDto>, String> {
+    session(&state)?.message_requests().map_err(err)
+}
+
+#[tauri::command]
+fn accept_request(state: State<'_, AppState>, id: String, name: String) -> Result<usize, String> {
+    session(&state)?.accept_request(&id, &name).map_err(err)
+}
+
+#[tauri::command]
+fn decline_request(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.decline_request(&id).map_err(err)
+}
+
+#[tauri::command]
+fn block_request(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.block_request(&id).map_err(err)
+}
+
+#[tauri::command]
+fn blocked(state: State<'_, AppState>) -> Result<Vec<BlockedDto>, String> {
+    session(&state)?.blocked().map_err(err)
+}
+
+#[tauri::command]
+fn unblock(state: State<'_, AppState>, owner: String) -> Result<(), String> {
+    session(&state)?.unblock(&owner).map_err(err)
 }
 
 #[tauri::command]
@@ -501,6 +533,12 @@ pub fn run() {
             decide,
             set_relay,
             action_types,
+            message_requests,
+            accept_request,
+            decline_request,
+            block_request,
+            blocked,
+            unblock,
             set_relay_ca,
             set_allow_insecure,
             test_relay,

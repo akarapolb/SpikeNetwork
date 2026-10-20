@@ -791,3 +791,108 @@ async fn linking_pauses_the_listener_until_it_finishes_or_is_cancelled() {
     phone.s.link_cancel();
     assert!(!phone.s.paused());
 }
+
+// ------------------------------------------------------- message requests
+
+#[tokio::test]
+async fn strangers_wait_as_message_requests_until_you_decide() {
+    let url = relay().await;
+    let (alice, bob) = (dev("alice", &url), dev("bob", &url));
+    alice.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    // Alice has Bob's card; Bob has never heard of Alice.
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    alice
+        .s
+        .send("Bob", "hello, we met at the site visit")
+        .await
+        .unwrap();
+
+    let got = bob.s.sync(IDLE).await.unwrap();
+    assert_eq!(
+        (got.received, got.message_requests),
+        (0, 1),
+        "a request, not a message"
+    );
+    let ov = bob.s.overview().unwrap();
+    assert_eq!(
+        (ov.requests, ov.contacts.len()),
+        (1, 0),
+        "no contact, no conversation"
+    );
+    assert_eq!(bob.s.attention().unwrap(), 1, "it asks for your attention");
+
+    let reqs = bob.s.message_requests().unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(
+        reqs[0].fingerprint,
+        alice.s.overview().unwrap().me.fingerprint,
+        "their real, validated card"
+    );
+    assert_eq!(reqs[0].held[0].body, "hello, we met at the site visit");
+
+    // Accepting needs a sensible name; then she is a contact, not verified, and the chat has her message.
+    assert!(bob.s.accept_request(&reqs[0].id, "   ").is_err());
+    assert_eq!(bob.s.accept_request(&reqs[0].id, "Alice").unwrap(), 1);
+    let ov = bob.s.overview().unwrap();
+    assert_eq!(
+        (
+            ov.requests,
+            ov.contacts[0].name.as_str(),
+            ov.contacts[0].verified
+        ),
+        (0, "Alice", false)
+    );
+    assert_eq!(
+        bob.s.conversation("Alice", 5).unwrap()[0].body,
+        "hello, we met at the site visit"
+    );
+
+    // The conversation continues in both directions.
+    bob.s.send("Alice", "nice to meet you").await.unwrap();
+    assert_eq!(alice.s.sync(IDLE).await.unwrap().received, 1);
+    alice.s.send("Bob", "likewise").await.unwrap();
+    assert_eq!(bob.s.sync(IDLE).await.unwrap().received, 1);
+}
+
+#[tokio::test]
+async fn blocking_a_stranger_drops_them_and_can_be_undone() {
+    let url = relay().await;
+    let (carol, bob) = (dev("carol", &url), dev("bob", &url));
+    carol.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    carol.s.add_contact("Bob", &card(&bob)).unwrap();
+    carol.s.send("Bob", "buy my thing").await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    let id = bob.s.message_requests().unwrap()[0].id.clone();
+
+    bob.s.block_request(&id).unwrap();
+    assert!(bob.s.message_requests().unwrap().is_empty());
+    let blocked = bob.s.blocked().unwrap();
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(
+        blocked[0].fingerprint,
+        carol.s.overview().unwrap().me.fingerprint
+    );
+
+    // More from them is dropped quietly: nothing new for Bob to look at.
+    carol.s.send("Bob", "hello?").await.unwrap();
+    let got = bob.s.sync(IDLE).await.unwrap();
+    assert_eq!((got.received, got.message_requests), (0, 0));
+    assert_eq!(bob.s.overview().unwrap().requests, 0);
+
+    bob.s.unblock(&blocked[0].owner).unwrap();
+    assert!(bob.s.blocked().unwrap().is_empty());
+    assert!(bob.s.unblock(&blocked[0].owner).is_err());
+
+    // Declining another stranger is not blocking.
+    let dave = dev("dave", &url);
+    dave.s.sync(IDLE).await.unwrap();
+    dave.s.add_contact("Bob", &card(&bob)).unwrap();
+    dave.s.send("Bob", "hi").await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    let id = bob.s.message_requests().unwrap()[0].id.clone();
+    bob.s.decline_request(&id).unwrap();
+    assert!(bob.s.blocked().unwrap().is_empty());
+    assert!(bob.s.decline_request(&id).is_err());
+}

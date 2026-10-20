@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"What the app window may ask Tauri to do. Only listening for the backend's own events: every other call goes through the app's own commands, which need no permission.","local":true,"windows":["main"],"permissions":["core:event:allow-listen","core:event:allow-unlisten"]}}

@@ -560,8 +560,8 @@ function addScreen() {
 
 /* ---------- message requests ---------- */
 function requestsScreen() {
-  const E = { accept: ["Evan added as a contact (not verified). Your chat is open.", "good"], decline: ["Declined. Evan is not told; his messages are deleted.", "plain"], block: ["Blocked. Your relay will drop anything from Evan.", "bad"] };
-  const S = { show: ["“Your parcel is held. Pay the fee at this link.” Looks like a scam: links stay disabled.", "warn"], decline: ["Declined and deleted.", "plain"], block: ["Blocked. Your relay will drop anything from this key.", "bad"] };
+  const E = { accept: ["Evan added as a contact (not verified). Your chat is open.", "good"], decline: ["Declined. Evan is not told; his messages are deleted.", "plain"], block: ["Blocked. Your devices will drop anything from Evan.", "bad"] };
+  const S = { show: ["“Your parcel is held. Pay the fee at this link.” Looks like a scam: links stay disabled.", "warn"], decline: ["Declined and deleted.", "plain"], block: ["Blocked. Your devices will drop anything from this key.", "bad"] };
   const acts = (key, map, labels) => h("div", { style: "display:flex;gap:8px" }, labels.map(([k, l, cls]) => h("button", { class: "btn " + (cls || ""), type: "button", onclick: () => {
     st[key] = k;
     if (key === "evan" && k === "accept" && !contacts.find((c) => c.id === "evan")) { contacts.splice(4, 0, { id: "evan", name: "Evan Brooks", ini: "EB", tile: "c-green", verified: false, devices: 1, tag: ["bad", "Not verified"], preview: "Sharing the measurements here.", time: "now" }); threads.evan = [{ day: "Today" }, { in: "Hi Alice, it's Evan from the site visit. Sharing the measurements here." }]; }
@@ -572,7 +572,7 @@ function requestsScreen() {
       st.evan ? h("div", { class: "status " + E[st.evan][1], role: "status" }, E[st.evan][0]) : [h("p", { style: "margin:0" }, "Hi Alice, it's Evan from the site visit. Sharing the measurements here."), acts("evan", E, [["block", "Block", "danger"], ["decline", "Decline"], ["accept", "Accept", "primary"]])]),
     h("section", { class: "card" }, h("div", { style: "display:flex;gap:12px;align-items:center" }, h("span", { class: "tile sm sq c-neutral" }, "?"), h("span", { style: "flex:1" }, h("b", { style: "font-weight:600" }, "“Delivery Support”"), h("div", { class: "note" }, "No invite. Not a verified business agent."))),
       st.spam ? h("div", { class: "status " + S[st.spam][1], role: "status" }, S[st.spam][0]) : [h("p", { class: "note", style: "margin:0" }, "Message hidden. Links and attachments stay blocked until you accept."), acts("spam", S, [["block", "Block", "danger"], ["decline", "Decline"], ["show", "Show"]])]),
-    h("p", { class: "note" }, "Requests are end-to-end encrypted like any message. Accepting adds the person as not verified; compare safety numbers when you can. Blocking stops their messages at your relay.")))];
+    h("p", { class: "note" }, "Requests are end-to-end encrypted like any message. Accepting adds the person as not verified; compare safety numbers when you can. Blocking drops their messages on your devices as they arrive; the relay cannot tell who sent a message, so it still carries them until then.")))];
 }
 
 /* ---------- agents ---------- */

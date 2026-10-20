@@ -14,6 +14,7 @@ use spike_cli::agent::{self, Status};
 use spike_cli::client::Relay;
 use spike_cli::link;
 use spike_cli::messages::Direction;
+use spike_cli::requests;
 use spike_cli::state::{Added, Home};
 use spike_cli::transport::{validate_ca_pem, Target, TransportOpts};
 use spike_cli::{ops, Outcome};
@@ -141,8 +142,34 @@ pub struct Overview {
     pub me: Me,
     pub contacts: Vec<ContactDto>,
     pub waiting: usize,
+    /// Message requests from strangers, waiting for your decision (ADR 0021).
+    pub requests: usize,
     pub relay: String,
     pub relay_trust: RelayTrustDto,
+}
+
+/// One text message held for a message request. Shown only when you ask to see it.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct HeldDto {
+    pub ts: u64,
+    pub body: String,
+    /// The name of a file that came with it and was not kept.
+    pub file: Option<String>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct MessageRequestDto {
+    pub id: String,
+    pub fingerprint: String,
+    pub received: u64,
+    pub held: Vec<HeldDto>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct BlockedDto {
+    pub owner: String,
+    pub fingerprint: String,
+    pub at: u64,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -173,6 +200,8 @@ pub struct MessageDto {
 pub struct SyncDto {
     pub received: usize,
     pub agent_requests: usize,
+    /// New message requests from strangers.
+    pub message_requests: usize,
     pub notes: Vec<String>,
 }
 
@@ -340,16 +369,21 @@ impl Session {
         let target = self.target();
         let url = target.url.clone();
         let _net = self.net.lock().await;
-        match tokio::time::timeout(Duration::from_secs(15), Relay::connect(target, &me)).await {
+        let probe = async {
+            let mut relay = Relay::connect(target, &me).await?;
+            relay.ping().await
+        };
+        match tokio::time::timeout(Duration::from_secs(15), probe).await {
             Err(_) => bail!("no answer from {url} within 15 seconds"),
             Ok(Err(e)) => Err(e.context(format!("could not connect to {url}"))),
-            Ok(Ok(_)) => Ok(format!(
-                "Connected to {url}{}.",
+            Ok(Ok(rtt)) => Ok(format!(
+                "Connected to {url}{}. The relay answered in {} ms.",
                 if url.starts_with("wss://") {
                     " (certificate verified)"
                 } else {
                     ""
-                }
+                },
+                rtt.as_millis().max(1)
             )),
         }
     }
@@ -385,7 +419,7 @@ impl Session {
             .iter()
             .filter(|r| r.status == "waiting")
             .count();
-        Ok(unread + waiting)
+        Ok(unread + waiting + requests::list(&self.home)?.len())
     }
 
     // ------------------------------------------------------------ read side
@@ -465,6 +499,7 @@ impl Session {
             },
             contacts,
             waiting,
+            requests: requests::list(&self.home)?.len(),
             relay: self.relay(),
             relay_trust: RelayTrustDto {
                 ca_certs: match self.settings().ca_pem {
@@ -578,6 +613,7 @@ impl Session {
         let mut out = SyncDto {
             received: 0,
             agent_requests: 0,
+            message_requests: 0,
             notes: vec![],
         };
         ops::recv(&self.home, self.target(), Some(idle), |o| match o {
@@ -586,9 +622,11 @@ impl Session {
                 out.agent_requests += 1
             }
             Outcome::AgentRemotePending { .. } => out.agent_requests += 1,
-            Outcome::UnknownSender { .. } => out
-                .notes
-                .push("A message from someone who is not in your contacts was dropped.".into()),
+            Outcome::MessageRequest { new: true, .. } => out.message_requests += 1,
+            Outcome::UnknownSender { .. } => out.notes.push(
+                "A message from someone who is not in your contacts and did not introduce themselves was dropped."
+                    .into(),
+            ),
             Outcome::Rejected { reason } => out.notes.push(format!("Ignored a change: {reason}")),
             _ => {}
         })
@@ -617,6 +655,57 @@ impl Session {
             self.home.advance_read_marker(&key, upto)?;
         }
         Ok(())
+    }
+
+    // ---------------------------------------------------- message requests
+
+    /// Strangers who introduced themselves and wrote to you, newest first (ADR 0021).
+    pub fn message_requests(&self) -> Result<Vec<MessageRequestDto>> {
+        Ok(requests::list(&self.home)?
+            .into_iter()
+            .map(|r| MessageRequestDto {
+                id: r.key,
+                fingerprint: r.fingerprint,
+                received: r.received,
+                held: r
+                    .held
+                    .into_iter()
+                    .map(|h| HeldDto {
+                        ts: h.ts,
+                        body: h.body,
+                        file: h.file,
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    /// Accept: they become a contact (not verified) called `name`, and what they sent joins the chat.
+    pub fn accept_request(&self, id: &str, name: &str) -> Result<usize> {
+        requests::accept(&self.home, id, name)
+    }
+
+    pub fn decline_request(&self, id: &str) -> Result<()> {
+        requests::decline(&self.home, id)
+    }
+
+    pub fn block_request(&self, id: &str) -> Result<()> {
+        requests::block(&self.home, id)
+    }
+
+    pub fn blocked(&self) -> Result<Vec<BlockedDto>> {
+        Ok(requests::blocked(&self.home)?
+            .into_iter()
+            .map(|b| BlockedDto {
+                owner: b.owner,
+                fingerprint: b.fingerprint,
+                at: b.at,
+            })
+            .collect())
+    }
+
+    pub fn unblock(&self, owner: &str) -> Result<()> {
+        requests::unblock(&self.home, owner)
     }
 
     // ----------------------------------------------------- edit and delete

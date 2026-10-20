@@ -154,7 +154,10 @@ async fn cannot_start_session_without_published_prekeys() {
 }
 
 #[tokio::test]
-async fn unknown_sender_is_dropped() {
+async fn a_stranger_is_held_as_a_request_not_delivered() {
+    // Someone Bob never added writes first. Their message carries a signed introduction, so it
+    // waits as a message request (ADR 0021): not shown as a conversation, no contact created.
+    // (Strangers with no valid introduction are dropped: see cli/tests/requests.rs.)
     let url = start_relay(Config::default()).await;
     let (alice, bob) = (Device::new("alice"), Device::new("bob"));
     alice.add("bob", &bob, true);
@@ -165,9 +168,17 @@ async fn unknown_sender_is_dropped() {
 
     let got = bob.recv(&url).await;
     assert!(
-        matches!(got.as_slice(), [Outcome::UnknownSender { .. }]),
+        matches!(
+            got.as_slice(),
+            [Outcome::MessageRequest {
+                new: true,
+                held: 1,
+                ..
+            }]
+        ),
         "{got:?}"
     );
+    assert!(bob.home.load_contacts().unwrap().is_empty());
 }
 
 #[tokio::test]

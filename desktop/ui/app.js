@@ -27,6 +27,7 @@ const PATHS = {
   addperson: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M19 8v6M16 11h6"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
+  chev: '<path d="M9 5l7 7-7 7"/>',
   shield: '<path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
   send: '<path d="M4 12l16-8-6 16-2-7z"/>',
   file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
@@ -44,7 +45,7 @@ const ini = (n) => (n.trim()[0] || "?").toUpperCase();
 async function call(cmd, args) { try { return await invoke(cmd, args); } catch (e) { if (e === "locked") { gate("unlock"); } else toast(String(e)); throw e; } }
 
 /* ---------- state ---------- */
-const st = { editing: null, confirmDelete: null, linkNew: false, linking: false, linkStep: 0, linkCode: "", linkSafety: "", linkMode: "all", linkErr: "", grantForm: null, section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
+const st = { reqs: [], blocked: [], showReq: {}, naming: null, editing: null, confirmDelete: null, linkNew: false, linking: false, linkStep: 0, linkCode: "", linkSafety: "", linkMode: "all", linkErr: "", grantForm: null, section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
 
 /* ---------- gate ---------- */
 async function gate(mode) {
@@ -101,10 +102,11 @@ async function refresh() {
   try {
     st.ov = await invoke("overview");
     st.agents = await invoke("agents");
+    if (st.ov.requests) st.reqs = await invoke("message_requests"); else st.reqs = [];
     if (st.chat) st.msgs = await invoke("conversation", { name: st.chat });
   } catch (e) { if (e === "locked") return gate("unlock"); toast(String(e)); }
   render();
-  if (st.ov) invoke("set_attention", { count: st.ov.contacts.reduce((a, c) => a + c.unread, 0) + st.ov.waiting }).catch(() => {});
+  if (st.ov) invoke("set_attention", { count: st.ov.contacts.reduce((a, c) => a + c.unread, 0) + st.ov.waiting + st.ov.requests }).catch(() => {});
 }
 async function syncNow() {
   if (st.busy || st.linking) return; st.busy = true;
@@ -154,6 +156,8 @@ function chatsList() {
   const cs = st.ov.contacts;
   return [h("div", { class: "listhead" }, h("div", { class: "title" }, h("h1", {}, "Chats"), h("button", { class: "iconbtn", type: "button", "aria-label": "Add a contact", title: "Add a contact", onclick: () => { st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson")))),
     h("nav", { class: "rows", "aria-label": "Conversations" },
+      st.ov.requests ? h("button", { class: "reqrow", type: "button", onclick: () => { st.screen = "requests"; st.naming = null; render(); } }, icon("addperson"),
+        h("span", { style: "flex:1;font-size:14px;text-align:left" }, h("b", { style: "font-weight:600" }, `${st.ov.requests} message request${st.ov.requests > 1 ? "s" : ""}`), " ", h("span", { class: "muted" }, "from people not in your contacts")), icon("chev")) : null,
       cs.length ? cs.map((c) => h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.chat === c.name), onclick: () => openChat(c.name) }, tile(c),
         h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.agent ? h("span", { class: "tag plain" }, "agent") : null, c.verified ? null : h("span", { class: "tag bad" }, "Not verified")), h("span", { class: "preview" }, c.last || "No messages yet")),
         h("span", { class: "meta" }, c.last_ts ? clock(c.last_ts) : "", c.unread ? h("span", { class: "count" }, c.unread) : null)))
@@ -390,7 +394,9 @@ function linkOldScreen() {
 }
 
 /* ---------- settings ---------- */
+async function refreshBlocked() { try { st.blocked = await invoke("blocked"); } catch (_) { st.blocked = []; } render(); }
 function settingsMain() {
+  if (!st.blockedLoaded) { st.blockedLoaded = true; refreshBlocked(); }
   const me = st.ov.me, relay = h("input", { "aria-label": "Relay address", value: st.ov.relay, class: "mono" });
   const caPicker = h("input", { type: "file", accept: ".crt,.pem,.cer", hidden: true, onchange: async (e) => {
     const f = e.target.files[0]; e.target.value = ""; if (!f) return;
@@ -414,16 +420,47 @@ function settingsMain() {
       h("label", { class: "toggle", style: "margin-top:6px" }, h("input", { type: "checkbox", checked: st.ov.relay_trust.allow_insecure || null, onchange: async (e) => { try { await invoke("set_allow_insecure", { allow: e.target.checked }); await refresh(); } catch (x) { toast(String(x)); await refresh(); } } }),
         h("span", {}, h("b", { style: "font-weight:600" }, "Allow plain ws:// on a network I trust"), h("div", { class: "note" }, "Messages stay end-to-end encrypted, but anyone on the network can see which devices talk, when, and how much. Use it only on a private network you control; never over the internet."))),
       st.ov.relay_trust.allow_insecure ? h("div", { class: "status warn", role: "alert" }, h("b", {}, "Plain connections are allowed."), h("span", {}, "Turn this off unless you are on a network you control.")) : null),
+    st.blocked.length ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Blocked people"),
+      h("span", { class: "note" }, "Their messages are dropped when they arrive. (The relay still carries them until then: it cannot tell who sent a message.)"),
+      st.blocked.map((b) => h("div", { class: "devrow" }, h("span", { style: "flex:1;min-width:0" }, h("span", { class: "mono", style: "overflow-wrap:anywhere" }, b.fingerprint), h("div", { class: "note" }, "blocked " + new Date(b.at).toLocaleDateString())),
+        h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("unblock", { owner: b.owner }); toast("Unblocked. Only a new conversation from them will be seen."); await refreshBlocked(); } catch (e) { toast(String(e)); } } }, "Unblock")))) : null,
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Privacy and security"),
       h("label", { style: "display:flex;flex-direction:column;gap:4px" }, h("b", { style: "font-weight:600" }, "Lock after no use for"), h("div", { class: "field" }, h("select", { "aria-label": "Auto-lock", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { try { localStorage.setItem("autolock", e.target.value); } catch (_) {} armAutoLock(); toast(Number(e.target.value) ? `Locks after ${e.target.selectedOptions[0].text} without use.` : "Auto-lock is off."); } }, AUTOLOCK_CHOICES.map(([v, l]) => h("option", { value: String(v), selected: v === autoLockMinutes() || null }, l)))),
         h("span", { class: "note" }, "Locking wipes your keys from memory. While locked, this computer does not receive messages.")),
       h("span", { class: "note" }, "The window title and taskbar show how many messages and requests are waiting.")),
-    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "message requests, groups and calls (designed, not built), an installer with auto-update, and desktop notification banners (the taskbar flashes instead). This is an unreviewed prototype.")),
+    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "groups and calls (designed, not built), an installer with auto-update, and desktop notification banners (the taskbar flashes instead). This is an unreviewed prototype.")),
     h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: lockNow }, icon("lock"), "Lock now")))];
 }
 
+/* ---------- message requests (ADR 0021) ---------- */
+function requestsScreen() {
+  const back = () => { st.screen = null; render(); };
+  const card = (r) => {
+    const shown = !!st.showReq[r.id], naming = st.naming === r.id;
+    const input = h("input", { "aria-label": "Name for this person", placeholder: "A name for them", value: "", maxlength: "64" });
+    const accept = async () => { try { const n = await invoke("accept_request", { id: r.id, name: input.value }); toast(`Added. ${n} message${n === 1 ? "" : "s"} joined the conversation. They are not verified yet.`); const name = input.value.trim(); st.naming = null; st.screen = null; await refresh(); st.section = "chats"; await openChat(name); } catch (e) { toast(String(e)); } };
+    return h("section", { class: "card", "aria-label": "Message request" },
+      h("div", { style: "display:flex;gap:12px;align-items:center" }, h("span", { class: "tile sm sq c-neutral", "aria-hidden": "true" }, "?"),
+        h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, "Someone new wants to message you"), h("div", { class: "note" }, `Their code: `, h("span", { class: "mono" }, r.fingerprint)), h("div", { class: "note" }, new Date(r.received).toLocaleString()))),
+      shown ? [h("div", { class: "status soft", style: "gap:8px" }, r.held.map((m) => h("div", {}, h("span", { style: "white-space:pre-wrap;overflow-wrap:anywhere" }, m.body), m.file ? h("div", { class: "note" }, `A file named “${m.file}” came with it. Files from people you have not accepted are not kept.`) : null))),
+          h("span", { class: "note" }, "Shown as plain text: links are not clickable.")]
+        : h("div", { class: "status soft" }, h("span", {}, `${r.held.length} message${r.held.length === 1 ? "" : "s"} hidden until you choose to look. Links and files stay blocked until you accept.`), h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => { st.showReq[r.id] = true; render(); } }, "Show the message")),
+      naming ? h("div", { style: "display:flex;flex-direction:column;gap:8px" }, h("label", { style: "font-weight:600" }, "What should you call them?"), h("div", { class: "field" }, input),
+          h("div", { style: "display:flex;gap:8px" }, h("button", { class: "btn primary", type: "button", onclick: accept }, "Add contact"), h("button", { class: "btn", type: "button", onclick: () => { st.naming = null; render(); } }, "Cancel")),
+          h("span", { class: "note" }, "They will be added as not verified. Compare their safety number with them before you trust it is really them."))
+        : h("div", { style: "display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px" },
+            h("button", { class: "btn danger", type: "button", onclick: async () => { if (!confirm("Block this person? Their messages will be dropped when they arrive.")) return; try { await invoke("block_request", { id: r.id }); toast("Blocked."); await refresh(); if (!st.reqs.length) back(); } catch (e) { toast(String(e)); } } }, "Block"),
+            h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("decline_request", { id: r.id }); toast("Declined. They are not told."); await refresh(); if (!st.reqs.length) back(); } catch (e) { toast(String(e)); } } }, "Decline"),
+            h("button", { class: "btn primary", type: "button", onclick: () => { st.naming = r.id; render(); $("main").querySelector(".field input")?.focus(); } }, "Accept")));
+  };
+  return [header("Message requests", back), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
+    h("p", { class: "lead" }, "People who are not in your contacts and wrote to you. They cannot see whether you have read anything until you accept."),
+    st.reqs.length ? st.reqs.map(card) : h("div", { class: "status plain" }, "No message requests."),
+    h("p", { class: "note" }, "Requests are end-to-end encrypted like any message. Declining or blocking deletes the conversation attempt for good: you are not shown anything more from that session, and they are not told. Undecided requests are removed after 30 days.")))];
+}
+
 const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { main: agentsMain }, devices: { main: devicesMain }, settings: { main: settingsMain } };
-const SCREENS = { verify: verifyScreen, add: addScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
+const SCREENS = { requests: requestsScreen, verify: verifyScreen, add: addScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
 
 document.addEventListener("keydown", (e) => {
   if (!e.ctrlKey || e.altKey || $("app").hidden) return;

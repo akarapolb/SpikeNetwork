@@ -3,6 +3,7 @@ pub mod client;
 pub mod link;
 pub mod messages;
 pub mod ops;
+pub mod requests;
 pub mod state;
 pub mod sync;
 pub mod transport;
@@ -45,8 +46,22 @@ pub enum Outcome {
     Ignored,
     /// An edit or delete from someone who is not the message's author. Not applied.
     Rejected { reason: String },
-    /// A first message from a key that is not a contact. Dropped; no session is created.
-    UnknownSender { fingerprint_hint: String },
+    /// A first message from a key that is not a contact, and not a valid introduced request
+    /// either. Dropped.
+    UnknownSender {
+        fingerprint_hint: String,
+        identity_key: [u8; 32],
+    },
+    /// A stranger introduced themselves and wrote to you. Held until you decide (ADR 0021).
+    MessageRequest {
+        /// The request's id (the sender's device key, hex).
+        id: String,
+        fingerprint: String,
+        /// Messages held so far for this request.
+        held: usize,
+        /// The first message of a new request, not a follow-up.
+        new: bool,
+    },
     /// Another of your devices marked a conversation read (merged by max).
     ReadSynced { peer: String },
     /// A catch-up answer from another of your devices was merged; `changed`
@@ -336,6 +351,7 @@ pub fn process(
         }
         Ok(Opened::UnknownSender { identity_key }) => Ok(Outcome::UnknownSender {
             fingerprint_hint: hex::encode(&identity_key[..6]),
+            identity_key,
         }),
         Err(_) => Ok(Outcome::Invalid),
     }

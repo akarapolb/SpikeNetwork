@@ -17,7 +17,7 @@ It is its own Cargo workspace, so the main `cargo test --all` does not build it.
 ```sh
 cd desktop/src-tauri
 cargo run                      # first build compiles Tauri: about 10 minutes
-cargo test                     # 17 tests (15 API against a real relay, 2 unit), a few seconds
+cargo test                     # 19 tests (17 API against a real relay, 2 unit), a few seconds
 ```
 You need a relay and the WebView2 runtime (built into Windows 11). A relay on this computer is fine for a trial:
 ```sh
@@ -37,12 +37,13 @@ cargo tauri build --bundles nsis
 The installer lands in `target/release/bundle/nsis/` (per-user, no administrator rights). It is **unsigned**: Windows SmartScreen will warn, and there is no auto-update. A signing certificate and an update channel come before any release to other people.
 
 ## Built
-Create and unlock an identity; chats; send and receive; add contacts by pasted card; verify; relay setting; **instant delivery** (a background listener; ADR 0020), **edit and delete** your own messages, **removing a device**, **relay trust** (custom certificate, test button, opt-in plain `ws://`), **idle auto-lock** and **attention** (window title count, taskbar flash), **attachments** (attach button, files up to 100 MB encrypted before upload, Save writes to Downloads and never overwrites); **agent grants** (create, change, revoke, typed-only, limits) and approvals; **devices and linking** (a Devices screen, "link this computer" at first start, and "Link a new device" on your main device, with the safety-code comparison and history choice).
+Create and unlock an identity; chats; send and receive; add contacts by pasted card; verify; relay setting; **instant delivery** (a background listener with keepalive; ADR 0020), **message requests** (strangers who introduce themselves wait for your decision; ADR 0021) and a block list, **edit and delete** your own messages, **removing a device**, **relay trust** (custom certificate, test button, opt-in plain `ws://`), **idle auto-lock** and **attention** (window title count, taskbar flash), **attachments** (attach button, files up to 100 MB encrypted before upload, Save writes to Downloads and never overwrites); **agent grants** (create, change, revoke, typed-only, limits) and approvals; **devices and linking** (a Devices screen, "link this computer" at first start, and "Link a new device" on your main device, with the safety-code comparison and history choice).
 
 ## Not built yet
-Message requests, groups, calls, search, Windows Hello, a tray icon and desktop notification banners (the taskbar flashes and the title shows a count instead), auto-update, signed builds, a keepalive for silently dropped connections. The listener and the polling pause while this computer is waiting to be linked, because a sync would consume the link frames.
+Groups, calls, search, Windows Hello, a tray icon and desktop notification banners (the taskbar flashes and the title shows a count instead), auto-update, signed builds, a QR code for linking. The listener and the polling pause while this computer is waiting to be linked, because a sync would consume the link frames.
 
 ## Developer notes
+- `src-tauri/capabilities/default.json` is what the window may ask Tauri to do: listening for the backend's events and nothing else. Without it the page cannot listen and the screen only refreshes on the 60-second poll (ADR 0020).
 - Raw file bytes go over Tauri's binary IPC as the request body, with the contact, file name and caption as percent-encoded headers (`x-contact`, `x-filename`, `x-caption`). The UI's `invoke` wrapper must pass the third `options` argument through.
 - `SPIKE_DESKTOP_DOWNLOADS` overrides where Save writes (default: the Downloads folder).
 - Debug builds print what the listener does to stderr (`[listener] connecting`, `woken by the relay`); release builds are silent.

@@ -56,7 +56,15 @@ pub struct Envelope {
     /// A file sent with this message (the body is its caption, possibly empty).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<crate::attachment::Attachment>,
+    /// The sender's identity card, attached when a new session is started so a
+    /// recipient who has never heard of them can tell who is writing (ADR 0021).
+    /// Only trusted after it is checked against the device that sent the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intro: Option<String>,
 }
+
+/// Longest introduction accepted: a card with a generous number of devices.
+pub const MAX_INTRO: usize = 16 * 1024;
 
 impl Envelope {
     pub fn text(body: &str) -> Result<Self> {
@@ -79,6 +87,7 @@ impl Envelope {
             body: body.to_string(),
             to: None,
             attachment: None,
+            intro: None,
         })
     }
 
@@ -131,6 +140,10 @@ impl Envelope {
                     .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
         });
         let att_ok = e.attachment.as_ref().is_none_or(|a| a.validate().is_ok());
+        // Only a text message introduces its sender, and the card must be a sane size.
+        let intro_ok = e.intro.as_ref().is_none_or(|c| {
+            c.len() <= MAX_INTRO && e.kind == Kind::Text && !c.chars().any(char::is_control)
+        });
         let target_ok = match e.kind {
             Kind::Text | Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => e.target.is_none(),
             Kind::Edit | Kind::Delete => e.target.as_ref().is_some_and(|t| {
@@ -152,6 +165,7 @@ impl Envelope {
             || !id_ok
             || !to_ok
             || !att_ok
+            || !intro_ok
             || !target_ok
             || !shape_ok
             || e.body.len() > MAX_TEXT
@@ -165,6 +179,37 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_introduction_is_text_only_and_bounded() {
+        let mut e = Envelope::text("hi, I am new").unwrap();
+        assert!(
+            !String::from_utf8(e.to_bytes()).unwrap().contains("intro"),
+            "absent unless set"
+        );
+        e.intro = Some("spike2:abcd".into());
+        assert_eq!(
+            Envelope::from_bytes(&e.to_bytes())
+                .unwrap()
+                .intro
+                .as_deref(),
+            Some("spike2:abcd")
+        );
+        let mut big = e.clone();
+        big.intro = Some("a".repeat(MAX_INTRO + 1));
+        assert!(Envelope::from_bytes(&big.to_bytes()).is_err());
+        let mut ctrl = e.clone();
+        ctrl.intro = Some(
+            "spike2:ab
+cd"
+            .into(),
+        );
+        assert!(Envelope::from_bytes(&ctrl.to_bytes()).is_err());
+        // Edits, deletes and sync messages never carry one.
+        let mut edit = Envelope::edit(&e.id, "x").unwrap();
+        edit.intro = Some("spike2:abcd".into());
+        assert!(Envelope::from_bytes(&edit.to_bytes()).is_err());
+    }
 
     #[test]
     fn roundtrip_and_unique_ids() {

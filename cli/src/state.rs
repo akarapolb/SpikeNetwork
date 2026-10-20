@@ -23,6 +23,7 @@ const LAMPORT: &str = "lamport.enc";
 const READ: &str = "read.enc";
 const LAST_SYNC: &str = "lastsync.enc";
 const DEVICE_LIST: &str = "devicelist.enc";
+const QUARANTINE: &str = "requests-sessions.enc";
 
 /// An unlocked state directory.
 pub struct Home {
@@ -155,6 +156,19 @@ impl Home {
 
     pub fn save_sessions(&self, s: &Sessions) -> Result<()> {
         self.write(SESSIONS, s.to_json()?.as_bytes())
+    }
+
+    /// Sessions with strangers whose first messages wait as message requests (ADR 0021).
+    /// Kept apart from `sessions.enc` so a stranger can never touch a contact's ratchet.
+    pub fn load_quarantine(&self) -> Result<Sessions> {
+        match self.read_opt(QUARANTINE)? {
+            Some(b) => Ok(Sessions::from_json(std::str::from_utf8(&b)?)?),
+            None => Ok(Sessions::default()),
+        }
+    }
+
+    pub fn save_quarantine(&self, s: &Sessions) -> Result<()> {
+        self.write(QUARANTINE, s.to_json()?.as_bytes())
     }
 
     pub fn load_owner(&self) -> Result<OwnerKey> {

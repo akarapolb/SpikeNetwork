@@ -61,6 +61,81 @@ impl Sessions {
         })
     }
 
+    /// Used for the *quarantine* store (ADR 0021), which holds sessions with people who are not
+    /// contacts yet. Decrypt a message from whoever sent it, creating the inbound session for
+    /// a first (pre-key) message. Returns the sender's device key and the plaintext. A pre-key
+    /// message consumes one of our one-time prekeys, so persist `me` afterwards.
+    pub fn decrypt_any(&mut self, me: &mut Identity, blob: &[u8]) -> Result<([u8; 32], Vec<u8>)> {
+        let (&kind, bytes) = blob.split_first().ok_or(Error::Malformed)?;
+        let msg = OlmMessage::from_parts(kind as usize, bytes).map_err(|_| Error::Malformed)?;
+        match &msg {
+            OlmMessage::PreKey(pk) => {
+                let sender = pk.identity_key().to_bytes();
+                let key = peer_key(&sender);
+                if let Some(list) = self.by_peer.get_mut(&key) {
+                    if let Some(pos) = list.iter().position(|s| s.session_id() == pk.session_id()) {
+                        let body = list[pos].decrypt(&msg).map_err(session_err)?;
+                        list[..=pos].rotate_right(1);
+                        return Ok((sender, body));
+                    }
+                }
+                let r = me
+                    .account_mut()
+                    .create_inbound_session(SessionConfig::default(), pk.identity_key(), pk)
+                    .map_err(session_err)?;
+                self.insert(key, r.session);
+                Ok((sender, r.plaintext))
+            }
+            OlmMessage::Normal(_) => {
+                for (key, list) in self.by_peer.iter_mut() {
+                    for pos in 0..list.len() {
+                        if let Ok(body) = list[pos].decrypt(&msg) {
+                            list[..=pos].rotate_right(1);
+                            let mut sender = [0u8; 32];
+                            hex::decode_to_slice(key, &mut sender).map_err(|_| Error::Corrupted)?;
+                            return Ok((sender, body));
+                        }
+                    }
+                }
+                Err(Error::Session(
+                    "no session could decrypt this message".into(),
+                ))
+            }
+        }
+    }
+
+    /// The device keys this store holds sessions for.
+    pub fn peers(&self) -> Vec<[u8; 32]> {
+        self.by_peer
+            .keys()
+            .filter_map(|k| {
+                let mut out = [0u8; 32];
+                hex::decode_to_slice(k, &mut out).ok().map(|()| out)
+            })
+            .collect()
+    }
+
+    pub fn has_peer(&self, device_key: &[u8; 32]) -> bool {
+        self.by_peer
+            .get(&peer_key(device_key))
+            .is_some_and(|v| !v.is_empty())
+    }
+
+    /// Move every session with `device_key` out of `from` into this store (a request was accepted).
+    pub fn adopt(&mut self, from: &mut Sessions, device_key: &[u8; 32]) {
+        let key = peer_key(device_key);
+        if let Some(list) = from.by_peer.remove(&key) {
+            for s in list.into_iter().rev() {
+                self.insert(key.clone(), s);
+            }
+        }
+    }
+
+    /// Drop every session with `device_key` (a request was declined or refused).
+    pub fn forget(&mut self, device_key: &[u8; 32]) {
+        self.by_peer.remove(&peer_key(device_key));
+    }
+
     pub fn has_session(&self, peer: &DeviceCard) -> bool {
         self.by_peer
             .get(&peer_key(&peer.x25519))
@@ -185,6 +260,65 @@ mod tests {
             id: Identity::generate().unwrap(),
             sessions: Sessions::default(),
         }
+    }
+
+    #[test]
+    fn a_strangers_messages_live_in_quarantine_until_adopted() {
+        let (mut alice, mut bob) = (dev(), dev());
+        connect(&mut alice, &mut bob);
+        let first = alice
+            .sessions
+            .encrypt(&bob.id.card(), b"hello, I am new")
+            .unwrap();
+
+        // Bob has never heard of Alice: the normal path refuses to create a session.
+        let a_key = alice.id.card().x25519;
+        assert!(matches!(
+            bob.sessions.decrypt(&mut bob.id, &[], &first).unwrap(),
+            Opened::UnknownSender { identity_key } if identity_key == a_key
+        ));
+        assert!(
+            !bob.sessions.has_peer(&a_key),
+            "and nothing was created in the main store"
+        );
+
+        // The quarantine store creates the session and reads the message.
+        let mut quarantine = Sessions::default();
+        let (who, body) = quarantine.decrypt_any(&mut bob.id, &first).unwrap();
+        assert_eq!((who, body.as_slice()), (a_key, &b"hello, I am new"[..]));
+        assert_eq!(quarantine.peers(), vec![a_key]);
+        // A replay of the same pre-key message is refused, not delivered twice.
+        assert!(quarantine.decrypt_any(&mut bob.id, &first).is_err());
+        // A pre-key message again (Alice has not yet heard back, so every message is pre-key).
+        let third = alice
+            .sessions
+            .encrypt(&bob.id.card(), b"and another")
+            .unwrap();
+        let (_, body) = quarantine.decrypt_any(&mut bob.id, &third).unwrap();
+        assert_eq!(body, b"and another");
+        // Garbage is refused.
+        assert!(quarantine.decrypt_any(&mut bob.id, &[1, 2, 3]).is_err());
+
+        // Accepting moves the sessions: now Bob reads Alice as a contact, and the quarantine is empty.
+        bob.sessions.adopt(&mut quarantine, &a_key);
+        assert!(quarantine.peers().is_empty() && bob.sessions.has_peer(&a_key));
+        let reply = alice
+            .sessions
+            .encrypt(&bob.id.card(), b"now a contact")
+            .unwrap();
+        assert_eq!(
+            open(&mut bob, &alice.id.card(), &reply).unwrap(),
+            b"now a contact"
+        );
+
+        // Declining drops them.
+        let mut q2 = Sessions::default();
+        let (mut carol, mut dave) = (dev(), dev());
+        connect(&mut carol, &mut dave);
+        let m = carol.sessions.encrypt(&dave.id.card(), b"hi").unwrap();
+        q2.decrypt_any(&mut dave.id, &m).unwrap();
+        q2.forget(&carol.id.card().x25519);
+        assert!(q2.peers().is_empty());
     }
 
     /// Alice starts a session with Bob using one of Bob's prekeys.

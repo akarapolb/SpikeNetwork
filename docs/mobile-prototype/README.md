@@ -25,6 +25,9 @@ The files here now follow the same quieter colour rule as `../desktop-prototype/
 
 The live canvas linked above was updated with these files on 2026-10-19 (version 14).
 
+## Message requests and blocking (2026-10-20)
+The message-requests screen is now implemented in the desktop app (ADR 0021). One claim in the first version of this design was wrong and has been corrected: **blocking cannot happen at the relay**, because a relay only sees the recipient of a message, not who sent it. Blocking drops a sender's messages on your devices as they arrive. Declining or blocking also deletes that conversation attempt's session, so the sender's later messages in it cannot be read. The live canvas still carries the old wording until the next republish.
+
 ## Format
 The `.dc.html` files are Design Component pages for the claude.ai Design canvas; `canvas.json` lays them out. They need the canvas runtime (`support.js`), so they do not render correctly when opened directly in a browser. To view or edit, use the canvas link above. To change the design, edit the canvas there (or edit these files and republish them to the canvas), then copy the updated files back here.
 
