@@ -31,6 +31,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 
 [dev-dependencies]
 spike-relay = { path = "../../relay" }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 
 [profile.release]
 overflow-checks = true

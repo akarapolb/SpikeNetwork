@@ -129,6 +129,24 @@ fn client_config(opts: &TransportOpts) -> Result<Arc<ClientConfig>> {
     Ok(Arc::new(cfg))
 }
 
+/// How many CA certificates `pem` holds. Errors if there are none, or if any
+/// is not a valid certificate. For UIs that accept a pasted or chosen file.
+pub fn validate_ca_pem(pem: &str) -> Result<usize> {
+    let mut roots = RootCertStore::empty();
+    let mut n = 0;
+    for cert in CertificateDer::pem_slice_iter(pem.as_bytes()) {
+        let cert = cert.map_err(|e| anyhow!("that is not a PEM certificate: {e}"))?;
+        roots.add(cert).context("invalid CA certificate")?;
+        n += 1;
+    }
+    if n == 0 {
+        bail!(
+            "no certificate found: expected a PEM file starting with -----BEGIN CERTIFICATE-----"
+        );
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +166,26 @@ mod tests {
         ] {
             assert!(!is_loopback_host(h), "{h}");
         }
+    }
+
+    #[test]
+    fn ca_files_are_validated_before_use() {
+        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let pem = ck.cert.pem();
+        assert_eq!(validate_ca_pem(&pem).unwrap(), 1);
+        assert_eq!(
+            validate_ca_pem(&format!(
+                "{pem}
+{pem}"
+            ))
+            .unwrap(),
+            2
+        );
+        assert!(validate_ca_pem("").is_err());
+        assert!(validate_ca_pem("not a certificate").is_err());
+        // A private key is not a certificate.
+        assert!(validate_ca_pem(&ck.key_pair.serialize_pem()).is_err());
+        let broken = pem.replace("MII", "XXX");
+        assert!(validate_ca_pem(&broken).is_err());
     }
 }

@@ -11,10 +11,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde::Serialize;
 use spike_cli::agent::{self, Status};
+use spike_cli::client::Relay;
 use spike_cli::link;
 use spike_cli::messages::Direction;
 use spike_cli::state::{Added, Home};
-use spike_cli::transport::Target;
+use spike_cli::transport::{validate_ca_pem, Target, TransportOpts};
 use spike_cli::{ops, Outcome};
 use spike_core::action;
 use spike_core::agent::{DecidedBy, Decision};
@@ -23,6 +24,7 @@ use spike_core::owner::IdentityCard;
 use spike_core::vault::KdfParams;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use zeroize::Zeroizing;
@@ -30,14 +32,31 @@ use zeroize::Zeroizing;
 pub const MIN_PASSPHRASE_CHARS: usize = 10;
 pub const DEFAULT_RELAY: &str = "ws://127.0.0.1:8787";
 const RELAY_FILE: &str = "desktop-relay.enc";
+const RELAY_SETTINGS: &str = "desktop-relay2.enc";
+/// The trusted certificate, written from the sealed settings each time the home is opened.
+const CA_FILE: &str = "relay-ca.pem";
+const MAX_CA_PEM: usize = 64 * 1024;
 const MAX_NAME: usize = 64;
 const MAX_MESSAGE: usize = 16 * 1024;
+
+/// Which relay to use and how far to trust it. Sealed in the home with everything else.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+struct RelaySettings {
+    url: String,
+    /// An extra trusted CA certificate (PEM) for a self-hosted relay.
+    ca_pem: Option<String>,
+    /// Allow plain `ws://` to a non-loopback address. Content stays end-to-end
+    /// encrypted; the connection and metadata are exposed.
+    allow_insecure: bool,
+}
 
 /// An unlocked state directory plus the relay it talks to.
 pub struct Session {
     home: Home,
-    relay: Mutex<String>,
+    relay: Mutex<RelaySettings>,
     net: tokio::sync::Mutex<()>,
+    /// Set while this device waits to be linked: nothing else may read the relay mailbox.
+    paused: AtomicBool,
     /// This (new) device is waiting to be linked: its code and, once the
     /// existing device answered, the safety code to compare.
     link_new: Mutex<Option<(link::Waiting, Option<LinkSession>)>>,
@@ -65,6 +84,8 @@ pub struct Me {
     pub device_list: Vec<DeviceDto>,
     pub list_version: u64,
     pub approver: bool,
+    /// This device was removed from your identity by another device.
+    pub removed: bool,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -121,6 +142,14 @@ pub struct Overview {
     pub contacts: Vec<ContactDto>,
     pub waiting: usize,
     pub relay: String,
+    pub relay_trust: RelayTrustDto,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct RelayTrustDto {
+    /// How many extra CA certificates are trusted (0 = only the built-in roots).
+    pub ca_certs: usize,
+    pub allow_insecure: bool,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -217,23 +246,40 @@ impl Session {
     }
 
     fn wrap(home: Home) -> Result<Self> {
-        let saved: String = home.load_json(RELAY_FILE)?;
-        let relay = if saved.is_empty() {
-            DEFAULT_RELAY.to_string()
-        } else {
-            saved
-        };
+        let mut settings: RelaySettings = home.load_json(RELAY_SETTINGS)?;
+        if settings.url.is_empty() {
+            // Homes made before trust settings existed kept only the address.
+            let old: String = home.load_json(RELAY_FILE)?;
+            settings.url = if old.is_empty() {
+                DEFAULT_RELAY.to_string()
+            } else {
+                old
+            };
+        }
+        write_ca(&home, &settings)?;
         Ok(Self {
             home,
-            relay: Mutex::new(relay),
+            relay: Mutex::new(settings),
             net: tokio::sync::Mutex::new(()),
+            paused: AtomicBool::new(false),
             link_new: Mutex::new(None),
             link_old: Mutex::new(None),
         })
     }
 
     pub fn relay(&self) -> String {
+        self.relay.lock().expect("relay lock").url.clone()
+    }
+
+    fn settings(&self) -> RelaySettings {
         self.relay.lock().expect("relay lock").clone()
+    }
+
+    fn save_settings(&self, rs: RelaySettings) -> Result<()> {
+        self.home.save_json(RELAY_SETTINGS, &rs)?;
+        write_ca(&self.home, &rs)?;
+        *self.relay.lock().expect("relay lock") = rs;
+        Ok(())
     }
 
     pub fn set_relay(&self, url: &str) -> Result<()> {
@@ -244,13 +290,102 @@ impl Session {
         {
             bail!("the relay address must look like wss://relay.example or ws://127.0.0.1:8787");
         }
-        self.home.save_json(RELAY_FILE, &url.to_string())?;
-        *self.relay.lock().expect("relay lock") = url.into();
-        Ok(())
+        let mut rs = self.settings();
+        rs.url = url.into();
+        self.save_settings(rs)
+    }
+
+    /// Trust one more certificate authority (PEM text), or `None` to go back to the built-in
+    /// roots only. Leaves the plain-ws setting alone. Returns how many certificates were trusted.
+    pub fn set_relay_ca(&self, ca_pem: Option<String>) -> Result<usize> {
+        let ca_pem = ca_pem
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty());
+        let certs = match &ca_pem {
+            Some(p) => {
+                if p.len() > MAX_CA_PEM {
+                    bail!("that certificate file is too large");
+                }
+                validate_ca_pem(p)?
+            }
+            None => 0,
+        };
+        let mut rs = self.settings();
+        rs.ca_pem = ca_pem;
+        self.save_settings(rs)?;
+        Ok(certs)
+    }
+
+    /// Allow (or stop allowing) plain `ws://` to a non-loopback address. Leaves the certificate alone.
+    pub fn set_allow_insecure(&self, allow: bool) -> Result<()> {
+        let mut rs = self.settings();
+        rs.allow_insecure = allow;
+        self.save_settings(rs)
     }
 
     fn target(&self) -> Target {
-        Target::from(self.relay().as_str())
+        let rs = self.settings();
+        Target {
+            url: rs.url,
+            opts: TransportOpts {
+                ca_file: rs.ca_pem.is_some().then(|| self.home.path().join(CA_FILE)),
+                allow_insecure: rs.allow_insecure,
+            },
+        }
+    }
+
+    /// Connect and sign in to the relay, to show the person whether it works.
+    pub async fn test_relay(&self) -> Result<String> {
+        let me = self.home.load_identity()?;
+        let target = self.target();
+        let url = target.url.clone();
+        let _net = self.net.lock().await;
+        match tokio::time::timeout(Duration::from_secs(15), Relay::connect(target, &me)).await {
+            Err(_) => bail!("no answer from {url} within 15 seconds"),
+            Ok(Err(e)) => Err(e.context(format!("could not connect to {url}"))),
+            Ok(Ok(_)) => Ok(format!(
+                "Connected to {url}{}.",
+                if url.starts_with("wss://") {
+                    " (certificate verified)"
+                } else {
+                    ""
+                }
+            )),
+        }
+    }
+
+    // ------------------------------------------------------ live connection
+
+    /// Open the connection the listener waits on. It takes the network lock only
+    /// while connecting: any operation that runs later connects too, which makes
+    /// the relay drop this one (one live connection per device), and the listener
+    /// then waits for the lock before reconnecting.
+    pub async fn listener_connect(&self) -> Result<Relay> {
+        let me = self.home.load_identity()?;
+        let target = self.target();
+        let _net = self.net.lock().await;
+        Relay::connect(target, &me).await
+    }
+
+    /// True while something (linking) needs the relay mailbox to itself.
+    pub fn paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    fn set_paused(&self, on: bool) {
+        self.paused.store(on, Ordering::SeqCst);
+    }
+
+    /// Unread messages plus requests waiting for you: what the window title shows.
+    pub fn attention(&self) -> Result<usize> {
+        let unread: usize = ops::unread_counts(&self.home)?.iter().map(|(_, n)| n).sum();
+        let waiting = self
+            .agents()?
+            .requests
+            .iter()
+            .filter(|r| r.status == "waiting")
+            .count();
+        Ok(unread + waiting)
     }
 
     // ------------------------------------------------------------ read side
@@ -326,10 +461,18 @@ impl Session {
                 device_list,
                 list_version: me.version(),
                 approver,
+                removed: !self.home.this_device_is_listed()?,
             },
             contacts,
             waiting,
             relay: self.relay(),
+            relay_trust: RelayTrustDto {
+                ca_certs: match self.settings().ca_pem {
+                    Some(p) => validate_ca_pem(&p).unwrap_or(0),
+                    None => 0,
+                },
+                allow_insecure: self.settings().allow_insecure,
+            },
         })
     }
 
@@ -473,6 +616,65 @@ impl Session {
                 .unwrap_or(0);
             self.home.advance_read_marker(&key, upto)?;
         }
+        Ok(())
+    }
+
+    // ----------------------------------------------------- edit and delete
+
+    /// Replace the text of a message you sent, on every device that has it.
+    pub async fn edit(&self, id: &str, text: &str) -> Result<()> {
+        let text = text.trim_end();
+        if text.trim().is_empty() {
+            bail!("a message cannot be empty; delete it instead");
+        }
+        if text.len() > MAX_MESSAGE {
+            bail!("messages are limited to {} KiB", MAX_MESSAGE / 1024);
+        }
+        let _net = self.net.lock().await;
+        ops::edit(&self.home, self.target(), id, text).await?;
+        Ok(())
+    }
+
+    /// Delete a message you sent, everywhere. The row stays as a tombstone so a late copy cannot bring it back.
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        let _net = self.net.lock().await;
+        ops::delete(&self.home, self.target(), id).await?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ devices
+
+    /// Remove another of your devices: sign a new device list without it and publish it.
+    /// The removed device keeps what it already has but receives nothing new.
+    pub async fn remove_device(&self, id_prefix: &str) -> Result<()> {
+        if !agent::is_approver(&self.home, &self.device_id()?)? {
+            bail!("remove devices from your main device (the first one you set up)");
+        }
+        let prefix = id_prefix.trim().to_lowercase();
+        if prefix.len() < 8 {
+            bail!("give at least 8 characters of the device id");
+        }
+        let owner = self.home.load_owner()?;
+        let list = self.home.load_device_list()?;
+        let mine = self.device_id()?;
+        let hits: Vec<String> = list
+            .verify()?
+            .iter()
+            .map(|d| d.device_id())
+            .filter(|id| id.starts_with(&prefix))
+            .collect();
+        let target = match hits.as_slice() {
+            [id] if *id == mine => {
+                bail!("this is the device you are using; remove it from another one")
+            }
+            [id] => id.clone(),
+            [] => bail!("no device of yours has an id starting with '{prefix}'"),
+            _ => bail!("'{prefix}' matches several devices; type more characters"),
+        };
+        let updated = list.without_device(&owner, &target)?;
+        let _net = self.net.lock().await;
+        self.home.save_device_list(&updated)?;
+        ops::publish_keys(&self.home, self.target()).await?;
         Ok(())
     }
 
@@ -667,6 +869,8 @@ impl Session {
     pub fn link_offer(&self) -> Result<String> {
         let w = link::offer(&self.home, self.target())?;
         let code = w.code.clone();
+        // A normal receive would take the link frames off the relay and acknowledge them.
+        self.set_paused(true);
         *self.link_new.lock().expect("link lock") = Some((w, None));
         Ok(code)
     }
@@ -709,7 +913,9 @@ impl Session {
             *self.link_new.lock().expect("link lock") = Some((w, None));
             bail!("compare the safety codes first");
         };
-        let r = link::receive(&self.home, &w, &session, timeout).await?;
+        let r = link::receive(&self.home, &w, &session, timeout).await;
+        self.set_paused(false);
+        let r = r?;
         Ok(InstalledDto {
             version: r.version,
             contacts: r.contacts,
@@ -719,6 +925,7 @@ impl Session {
 
     /// Either side: give up. Nothing was installed or shared.
     pub fn link_cancel(&self) {
+        self.set_paused(false);
         *self.link_new.lock().expect("link lock") = None;
         *self.link_old.lock().expect("link lock") = None;
     }
@@ -761,6 +968,18 @@ impl Session {
             files: r.files,
         })
     }
+}
+
+/// Put the sealed CA certificate where the transport reads it (or remove a stale file).
+fn write_ca(home: &Home, rs: &RelaySettings) -> Result<()> {
+    let path = home.path().join(CA_FILE);
+    match &rs.ca_pem {
+        Some(pem) => std::fs::write(&path, pem).context("saving the trusted certificate")?,
+        None => {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
 }
 
 fn dto(

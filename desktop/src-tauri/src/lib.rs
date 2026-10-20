@@ -12,13 +12,15 @@ use api::{
 };
 use spike_core::vault::KdfParams;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 pub struct AppState {
     dir: PathBuf,
     session: Mutex<Option<Arc<Session>>>,
+    /// The task that waits on the relay and wakes a sync. Aborted on lock, so nothing keeps the keys alive.
+    listener: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 #[derive(serde::Serialize)]
@@ -53,7 +55,11 @@ fn app_status(state: State<'_, AppState>) -> Status {
 }
 
 #[tauri::command]
-async fn create_identity(state: State<'_, AppState>, passphrase: String) -> Result<(), String> {
+async fn create_identity(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    passphrase: String,
+) -> Result<(), String> {
     let dir = state.dir.clone();
     // Argon2 takes a moment: keep it off the UI thread.
     let s = tokio::task::spawn_blocking(move || {
@@ -63,23 +69,149 @@ async fn create_identity(state: State<'_, AppState>, passphrase: String) -> Resu
     .map_err(|e| e.to_string())?
     .map_err(err)?;
     set(&state, Some(s));
+    start_listener(&app, &state);
     Ok(())
 }
 
 #[tauri::command]
-async fn unlock(state: State<'_, AppState>, passphrase: String) -> Result<(), String> {
+async fn unlock(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    passphrase: String,
+) -> Result<(), String> {
     let dir = state.dir.clone();
     let s = tokio::task::spawn_blocking(move || Session::unlock(&dir, passphrase))
         .await
         .map_err(|e| e.to_string())?
         .map_err(err)?;
     set(&state, Some(s));
+    start_listener(&app, &state);
     Ok(())
 }
 
 #[tauri::command]
-fn lock(state: State<'_, AppState>) {
+fn lock(app: tauri::AppHandle, state: State<'_, AppState>) {
+    stop_listener(&state);
     set(&state, None);
+    set_title(&app, 0);
+}
+
+fn set_title(app: &tauri::AppHandle, attention: usize) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_title(&if attention > 0 {
+            format!("({attention}) Spike Connect")
+        } else {
+            "Spike Connect".to_string()
+        });
+    }
+}
+
+/// The window title and taskbar show what needs you: unread messages and waiting requests.
+#[tauri::command]
+fn set_attention(app: tauri::AppHandle, count: usize) {
+    set_title(&app, count);
+}
+
+fn stop_listener(state: &State<'_, AppState>) {
+    if let Some(h) = state.listener.lock().expect("listener lock").take() {
+        h.abort();
+    }
+}
+
+fn start_listener(app: &tauri::AppHandle, state: &State<'_, AppState>) {
+    stop_listener(state);
+    let Some(session) = state.session.lock().expect("session lock").clone() else {
+        return;
+    };
+    let handle = tauri::async_runtime::spawn(listen(app.clone(), Arc::downgrade(&session)));
+    *state.listener.lock().expect("listener lock") = Some(handle);
+}
+
+/// Instant delivery. Holds one relay connection and waits for the relay to push something. It never
+/// acknowledges: it only wakes a normal sync (which does the decrypting and acknowledging), so the
+/// ratchet state is never touched from two places. Holds no strong reference while waiting.
+/// Debug builds log what the listener does (never content); release builds are silent.
+macro_rules! dbg_log {
+    ($($t:tt)*) => { #[cfg(debug_assertions)] eprintln!("[listener] {}", format!($($t)*)); };
+}
+
+async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
+    use serde_json::json;
+    dbg_log!("started");
+    let mut retry = Duration::from_millis(200);
+    let mut online = None;
+    loop {
+        let Some(s) = weak.upgrade() else { return };
+        if s.paused() {
+            drop(s);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            continue;
+        }
+        dbg_log!("connecting");
+        let connected = s.listener_connect().await;
+        drop(s);
+        let mut relay = match connected {
+            Ok(r) => r,
+            Err(e) => {
+                dbg_log!("connect failed: {e:#}");
+                if online != Some(false) {
+                    online = Some(false);
+                    let _ = app.emit(
+                        "relay-status",
+                        json!({ "online": false, "error": format!("{e:#}") }),
+                    );
+                }
+                tokio::time::sleep(retry).await;
+                retry = (retry * 2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+        dbg_log!("connected, waiting");
+        if online != Some(true) {
+            online = Some(true);
+            let _ = app.emit("relay-status", json!({ "online": true }));
+        }
+        // Wait on this connection. The idle window is only a heartbeat: nothing arrived, keep waiting.
+        let woke = loop {
+            if weak.strong_count() == 0 {
+                return;
+            }
+            match relay.next_delivery(Some(Duration::from_secs(50))).await {
+                Ok(Some(_)) => break true,
+                Ok(None) => continue,
+                // Displaced by an operation that connected, or the connection dropped.
+                Err(e) => {
+                    dbg_log!("wait ended: {e:#}");
+                    break false;
+                }
+            }
+        };
+        drop(relay);
+        if !woke {
+            tokio::time::sleep(retry).await;
+            retry = (retry * 2).min(Duration::from_secs(30));
+            continue;
+        }
+        retry = Duration::from_millis(200);
+        dbg_log!("woken by the relay; syncing");
+        let Some(s) = weak.upgrade() else { return };
+        if s.paused() {
+            continue;
+        }
+        if let Ok(r) = s.sync(Duration::from_millis(700)).await {
+            let attention = s.attention().unwrap_or(0);
+            drop(s);
+            if let Some(w) = app.get_webview_window("main") {
+                if (r.received > 0 || r.agent_requests > 0) && !w.is_focused().unwrap_or(true) {
+                    let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
+                }
+            }
+            set_title(&app, attention);
+            let _ = app.emit("synced", r);
+        }
+        // The sync's own connection replaced ours: pause briefly so two connections do not trade places in a loop.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
 }
 
 #[tauri::command]
@@ -139,6 +271,36 @@ async fn decide(state: State<'_, AppState>, id: String, approve: bool) -> Result
 #[tauri::command]
 fn set_relay(state: State<'_, AppState>, url: String) -> Result<(), String> {
     session(&state)?.set_relay(&url).map_err(err)
+}
+
+#[tauri::command]
+fn set_relay_ca(state: State<'_, AppState>, pem: Option<String>) -> Result<usize, String> {
+    session(&state)?.set_relay_ca(pem).map_err(err)
+}
+
+#[tauri::command]
+fn set_allow_insecure(state: State<'_, AppState>, allow: bool) -> Result<(), String> {
+    session(&state)?.set_allow_insecure(allow).map_err(err)
+}
+
+#[tauri::command]
+async fn test_relay(state: State<'_, AppState>) -> Result<String, String> {
+    session(&state)?.test_relay().await.map_err(err)
+}
+
+#[tauri::command]
+async fn edit_message(state: State<'_, AppState>, id: String, text: String) -> Result<(), String> {
+    session(&state)?.edit(&id, &text).await.map_err(err)
+}
+
+#[tauri::command]
+async fn delete_message(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.delete(&id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn remove_device(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.remove_device(&id).await.map_err(err)
 }
 
 #[tauri::command]
@@ -319,6 +481,7 @@ pub fn run() {
             app.manage(AppState {
                 dir,
                 session: Mutex::new(None),
+                listener: Mutex::new(None),
             });
             Ok(())
         })
@@ -338,6 +501,13 @@ pub fn run() {
             decide,
             set_relay,
             action_types,
+            set_relay_ca,
+            set_allow_insecure,
+            test_relay,
+            edit_message,
+            delete_message,
+            remove_device,
+            set_attention,
             grant,
             revoke,
             send_file,

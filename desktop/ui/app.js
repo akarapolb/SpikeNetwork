@@ -44,7 +44,7 @@ const ini = (n) => (n.trim()[0] || "?").toUpperCase();
 async function call(cmd, args) { try { return await invoke(cmd, args); } catch (e) { if (e === "locked") { gate("unlock"); } else toast(String(e)); throw e; } }
 
 /* ---------- state ---------- */
-const st = { linkNew: false, linking: false, linkStep: 0, linkCode: "", linkSafety: "", linkMode: "all", linkErr: "", grantForm: null, section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
+const st = { editing: null, confirmDelete: null, linkNew: false, linking: false, linkStep: 0, linkCode: "", linkSafety: "", linkMode: "all", linkErr: "", grantForm: null, section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
 
 /* ---------- gate ---------- */
 async function gate(mode) {
@@ -74,8 +74,27 @@ async function gate(mode) {
     h("p", { class: "note" }, "Unreviewed prototype software: do not use it for real secrets yet.")));
   pass.focus();
 }
-async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.screen = null; await refresh(); if (st.linkNew) { st.linkNew = false; st.section = "devices"; st.screen = "linknew"; render(); startLinkNew(); } else syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 15000); }
-function stop() { clearInterval(st.polling); st.polling = null; st.ov = st.agents = null; st.msgs = []; }
+async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.screen = null; await refresh(); if (st.linkNew) { st.linkNew = false; st.section = "devices"; st.screen = "linknew"; render(); startLinkNew(); } else syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 60000); armAutoLock(); }
+function stop() { clearInterval(st.polling); st.polling = null; clearTimeout(st.idleTimer); st.ov = st.agents = null; st.msgs = []; st.editing = st.confirmDelete = null; }
+
+/* The backend holds one connection to the relay and tells us the moment something arrives; the slow poll above is only a safety net. */
+function listenToBackend() {
+  const ev = window.__TAURI__ && window.__TAURI__.event;
+  if (!ev) return;
+  ev.listen("synced", async () => { if (!st.ov) return; st.offline = false; await refresh(); await markOpenRead(); scrollEnd(); });
+  ev.listen("relay-status", (e) => { if (!st.ov) return; const off = !e.payload.online; if (off !== st.offline) { st.offline = off; render(); } });
+}
+
+/* Auto-lock after a period without use. The setting lives in this window's storage; it is not a secret. */
+const AUTOLOCK_CHOICES = [[5, "5 minutes"], [15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [0, "Never"]];
+function autoLockMinutes() { try { const v = localStorage.getItem("autolock"); return v === null ? 15 : Number(v); } catch (_) { return 15; } }
+function armAutoLock() {
+  clearTimeout(st.idleTimer);
+  const m = autoLockMinutes();
+  if (!m || $("app").hidden) return;
+  st.idleTimer = setTimeout(() => { if (!$("app").hidden && !st.linking) lockNow(); else armAutoLock(); }, m * 60000);
+}
+["pointerdown", "keydown", "wheel", "touchstart"].forEach((t) => document.addEventListener(t, () => { if (!$("app").hidden) armAutoLock(); }, { passive: true }));
 
 /* ---------- data ---------- */
 async function refresh() {
@@ -85,6 +104,7 @@ async function refresh() {
     if (st.chat) st.msgs = await invoke("conversation", { name: st.chat });
   } catch (e) { if (e === "locked") return gate("unlock"); toast(String(e)); }
   render();
+  if (st.ov) invoke("set_attention", { count: st.ov.contacts.reduce((a, c) => a + c.unread, 0) + st.ov.waiting }).catch(() => {});
 }
 async function syncNow() {
   if (st.busy || st.linking) return; st.busy = true;
@@ -121,7 +141,10 @@ function render() {
   $("list").replaceChildren(...items);
   $("shell").classList.toggle("nolist", !items.length);
   const main = st.screen ? SCREENS[st.screen]() : S.main();
-  $("main").replaceChildren(...(st.offline ? [h("div", { class: "err-banner", role: "status" }, "Cannot reach the relay at ", h("b", {}, st.ov.relay), ". Messages are kept and sent when it is back. Check Settings.")] : []), ...main);
+  const banners = [];
+  if (st.ov.me.removed) banners.push(h("div", { class: "err-banner", role: "alert" }, h("b", {}, "This device was removed from your identity."), " It keeps what it already has but receives nothing new. Create a new identity here, or link it again from your main device."));
+  if (st.offline) banners.push(h("div", { class: "err-banner", role: "status" }, "Cannot reach the relay at ", h("b", {}, st.ov.relay), ". Messages are kept and sent when it is back. Check Settings."));
+  $("main").replaceChildren(...banners, ...main);
 }
 function header(title, back) { return h("div", { class: "head" }, back ? h("button", { class: "iconbtn", type: "button", "aria-label": "Back", onclick: back }, icon("back")) : null, h("h1", {}, title)); }
 function tile(c, sm) { return h("span", { class: `tile${sm ? " sm" : ""}${c.agent ? " sq" : ""} c-neutral`, "aria-hidden": "true" }, ini(c.name)); }
@@ -136,6 +159,17 @@ function chatsList() {
         h("span", { class: "meta" }, c.last_ts ? clock(c.last_ts) : "", c.unread ? h("span", { class: "count" }, c.unread) : null)))
         : h("p", { class: "empty" }, "No contacts yet. Add one with the button above: paste their identity card.")),
   ];
+}
+function ownActions(m) {
+  const link = (label, fn) => h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0 0 0 8px;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: fn }, label);
+  if (st.confirmDelete === m.id) return [" · Delete for everyone? ", link("Yes, delete", async () => { st.confirmDelete = null; try { await invoke("delete_message", { id: m.id }); await refresh(); } catch (e) { toast(String(e)); render(); } }), link("Cancel", () => { st.confirmDelete = null; render(); })];
+  return [m.body ? link("Edit", () => { st.editing = m.id; st.confirmDelete = null; render(); $("main").querySelector(".editbox textarea")?.focus(); }) : null, link("Delete", () => { st.confirmDelete = m.id; render(); })];
+}
+function editBox(m) {
+  const ta = h("textarea", { "aria-label": "Edit message", rows: "2", style: "width:100%;min-width:280px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--panel);color:var(--text)" }, m.body);
+  const save = async () => { const text = ta.value; if (!text.trim()) return toast("A message cannot be empty. Delete it instead."); try { await invoke("edit_message", { id: m.id, text }); st.editing = null; await refresh(); } catch (e) { toast(String(e)); } };
+  ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); } else if (e.key === "Escape") { st.editing = null; render(); } });
+  return h("div", { class: "editbox", style: "display:flex;flex-direction:column;gap:6px;align-items:flex-end" }, ta, h("span", { style: "display:flex;gap:8px" }, h("button", { class: "btn", type: "button", onclick: () => { st.editing = null; render(); } }, "Cancel"), h("button", { class: "btn primary", type: "button", onclick: save }, "Save")));
 }
 const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 const MAX_FILE = 100 * 1024 * 1024;
@@ -180,9 +214,9 @@ function chatMain() {
   for (const m of st.msgs) {
     const d = dayOf(m.ts); if (d !== day) { day = d; items.push(h("div", { class: "day" }, d)); }
     items.push(h("div", { class: "msg" + (m.out ? " out" : "") },
-      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : (m.body ? h("div", { class: "bubble" }, m.body) : null),
+      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, m.body) : null),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
-      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "")));
+      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
   }
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
   const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: "Message", rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } } });
@@ -298,9 +332,13 @@ function devicesMain() {
       h("p", { class: "lead" }, "Contacts encrypt every message separately for each of these. Signed device list ", h("b", {}, "v" + me.list_version), "."),
       h("section", { class: "card", style: "gap:0;padding-top:4px;padding-bottom:4px" }, me.device_list.map((d) => h("div", { class: "devrow" }, h("span", { class: "tile sm sq c-neutral" }, icon("devices")),
         h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, d.this ? "This computer" : "Another device"), h("div", { class: "note mono" }, d.id + (d.relay ? " · " + d.relay : "")), d.approver ? h("div", { class: "note" }, "Main device: decides agent requests and links new devices") : null),
-        d.this ? h("span", { class: "pill neutral" }, "You are here") : null))),
+        d.this ? h("span", { class: "pill neutral" }, "You are here") : (me.approver ? h("button", { class: "btn danger", type: "button", onclick: () => removeDevice(d) }, "Remove") : null)))),
       h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Your identity"), h("span", { class: "mono", style: "font-size:16px;overflow-wrap:anywhere" }, me.fingerprint), h("span", { class: "note" }, "Contacts compare this when they verify you. It signs your device list; it never signs messages.")),
-      h("div", { class: "status soft" }, h("b", {}, "Encrypted backup is not available yet."), h("span", {}, "Keep at least one other device linked: if you lose every device and the passphrase, the identity is gone. Removing a device is not in the app yet.")))) ];
+      h("div", { class: "status soft" }, h("b", {}, "Encrypted backup is not available yet."), h("span", {}, "Keep at least one other device linked: if you lose every device and the passphrase, the identity is gone.")))) ];
+}
+async function removeDevice(d) {
+  if (!confirm("Remove this device from your identity?\n\nIt keeps what it already has but will receive nothing new, and your contacts stop sending to it. Link it again later if you change your mind.")) return;
+  try { await invoke("remove_device", { id: d.id }); toast("Device removed. Your contacts learn the new list automatically."); await refresh(); } catch (e) { toast(String(e)); }
 }
 // NEW device: show a code, wait for the other device, compare, receive.
 async function startLinkNew() {
@@ -354,15 +392,33 @@ function linkOldScreen() {
 /* ---------- settings ---------- */
 function settingsMain() {
   const me = st.ov.me, relay = h("input", { "aria-label": "Relay address", value: st.ov.relay, class: "mono" });
+  const caPicker = h("input", { type: "file", accept: ".crt,.pem,.cer", hidden: true, onchange: async (e) => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    if (f.size > 65536) return toast("That file is too large to be a certificate.");
+    try { const n = await invoke("set_relay_ca", { pem: await f.text() }); toast(`Trusting ${n} certificate${n > 1 ? "s" : ""} from ${f.name}.`); await refresh(); syncNow(); } catch (x) { toast(String(x)); } } });
   return [h("div", { class: "head" }, h("h1", {}, "Settings")), h("div", { class: "scroll" }, h("div", { class: "page" },
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Your identity"), h("span", { class: "mono", style: "font-size:16px;overflow-wrap:anywhere" }, me.fingerprint),
       h("span", { class: "note" }, `${me.devices} device${me.devices > 1 ? "s" : ""}${me.approver ? " · this device approves agent requests" : ""}. Contacts compare this when they verify you.`),
       h("h2", { class: "eyebrow", style: "margin-top:8px" }, "Your identity card"), h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Your identity card", onfocus: (e) => e.target.select() }, me.card),
       h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(me.card); toast("Card copied. Send it to your contact."); } catch (_) { toast("Select the text above and copy it."); } } }, "Copy card")),
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Home relay"), h("div", { class: "field" }, relay),
-      h("span", { class: "note" }, "wss:// for a real relay; ws:// only for one on this computer. A relay sees which devices connect and message sizes, never text or files."),
-      h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Relay saved."); await refresh(); syncNow(); } catch (e) { toast(String(e)); } } }, "Save relay")),
-    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "edit and delete, removing a device, groups and calls, message requests (some are in the CLI, some only planned). This is an unreviewed prototype.")),
+      h("span", { class: "note" }, "Use wss:// for a relay on another computer. Plain ws:// is only accepted for this computer unless you allow it below. A relay sees which devices connect and message sizes, never text or files."),
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
+        h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Relay saved."); await refresh(); syncNow(); } catch (e) { toast(String(e)); } } }, "Save relay"),
+        h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Connecting…"); toast(await invoke("test_relay")); } catch (e) { toast(String(e)); } } }, "Test connection"))),
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Trust for a relay you run yourself"),
+      h("span", {}, st.ov.relay_trust.ca_certs ? `${st.ov.relay_trust.ca_certs} extra certificate${st.ov.relay_trust.ca_certs > 1 ? "s are" : " is"} trusted, as well as the usual public ones.` : "Only the usual public certificate authorities are trusted."),
+      h("span", { class: "note" }, "A relay with a self-signed or private certificate needs that certificate trusted here: choose its .crt or .pem file (the certificate, never the private key)."),
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, caPicker, h("button", { class: "btn", type: "button", onclick: () => caPicker.click() }, "Choose certificate file…"),
+        st.ov.relay_trust.ca_certs ? h("button", { class: "btn danger", type: "button", onclick: async () => { try { await invoke("set_relay_ca", { pem: null }); toast("Certificate removed."); await refresh(); } catch (e) { toast(String(e)); } } }, "Stop trusting it") : null),
+      h("label", { class: "toggle", style: "margin-top:6px" }, h("input", { type: "checkbox", checked: st.ov.relay_trust.allow_insecure || null, onchange: async (e) => { try { await invoke("set_allow_insecure", { allow: e.target.checked }); await refresh(); } catch (x) { toast(String(x)); await refresh(); } } }),
+        h("span", {}, h("b", { style: "font-weight:600" }, "Allow plain ws:// on a network I trust"), h("div", { class: "note" }, "Messages stay end-to-end encrypted, but anyone on the network can see which devices talk, when, and how much. Use it only on a private network you control; never over the internet."))),
+      st.ov.relay_trust.allow_insecure ? h("div", { class: "status warn", role: "alert" }, h("b", {}, "Plain connections are allowed."), h("span", {}, "Turn this off unless you are on a network you control.")) : null),
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Privacy and security"),
+      h("label", { style: "display:flex;flex-direction:column;gap:4px" }, h("b", { style: "font-weight:600" }, "Lock after no use for"), h("div", { class: "field" }, h("select", { "aria-label": "Auto-lock", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { try { localStorage.setItem("autolock", e.target.value); } catch (_) {} armAutoLock(); toast(Number(e.target.value) ? `Locks after ${e.target.selectedOptions[0].text} without use.` : "Auto-lock is off."); } }, AUTOLOCK_CHOICES.map(([v, l]) => h("option", { value: String(v), selected: v === autoLockMinutes() || null }, l)))),
+        h("span", { class: "note" }, "Locking wipes your keys from memory. While locked, this computer does not receive messages.")),
+      h("span", { class: "note" }, "The window title and taskbar show how many messages and requests are waiting.")),
+    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "message requests, groups and calls (designed, not built), an installer with auto-update, and desktop notification banners (the taskbar flashes instead). This is an unreviewed prototype.")),
     h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: lockNow }, icon("lock"), "Lock now")))];
 }
 
@@ -374,4 +430,4 @@ document.addEventListener("keydown", (e) => {
   const k = { "1": "chats", "2": "agents", "3": "devices", "4": "settings" }[e.key];
   if (k) { e.preventDefault(); go(k); } else if (e.key.toLowerCase() === "l") { e.preventDefault(); lockNow(); }
 });
-window.addEventListener("DOMContentLoaded", () => gate());
+window.addEventListener("DOMContentLoaded", () => { listenToBackend(); gate(); });

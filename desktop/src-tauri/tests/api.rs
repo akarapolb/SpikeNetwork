@@ -488,3 +488,306 @@ async fn a_new_device_links_to_your_identity_and_receives_history() {
     assert_eq!(alice.s.sync(IDLE).await.unwrap().received, 1);
     assert_eq!(phone.s.sync(IDLE).await.unwrap().received, 1);
 }
+
+// ------------------------------------------------------------ relay trust
+
+async fn start_tls_relay(cert: &std::path::Path, key: &std::path::Path) -> String {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("wss://127.0.0.1:{}", l.local_addr().unwrap().port());
+    let cfg = Config {
+        tls: Some(spike_relay::tls::TlsFiles {
+            cert: cert.into(),
+            key: key.into(),
+        }),
+        ..Config::default()
+    };
+    tokio::spawn(serve(l, cfg));
+    url
+}
+
+#[tokio::test]
+async fn a_self_signed_relay_is_refused_until_its_certificate_is_trusted() {
+    let tmp = std::env::temp_dir().join(format!("spike-desktop-tls-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let ck =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .unwrap();
+    let (cert, key) = (tmp.join("r.crt"), tmp.join("r.key"));
+    std::fs::write(&cert, ck.cert.pem()).unwrap();
+    std::fs::write(&key, ck.key_pair.serialize_pem()).unwrap();
+    let url = start_tls_relay(&cert, &key).await;
+
+    let d = dev("tls", &url);
+    // Not trusted: nothing connects, and the app says why.
+    assert!(d.s.sync(IDLE).await.is_err());
+    let why = format!("{:#}", d.s.test_relay().await.unwrap_err());
+    assert!(
+        why.to_lowercase().contains("certificate") || why.to_lowercase().contains("tls"),
+        "{why}"
+    );
+
+    // Bad input is refused and changes nothing.
+    assert!(d.s.set_relay_ca(Some("not a certificate".into())).is_err());
+    assert!(
+        d.s.set_relay_ca(Some(ck.key_pair.serialize_pem())).is_err(),
+        "a private key is not a certificate"
+    );
+    assert_eq!(d.s.overview().unwrap().relay_trust.ca_certs, 0);
+
+    // Trust that one certificate: it works, and says the certificate was verified.
+    assert_eq!(d.s.set_relay_ca(Some(ck.cert.pem())).unwrap(), 1);
+    assert_eq!(d.s.overview().unwrap().relay_trust.ca_certs, 1);
+    d.s.sync(IDLE).await.unwrap();
+    assert!(d
+        .s
+        .test_relay()
+        .await
+        .unwrap()
+        .contains("certificate verified"));
+
+    // The two settings are independent: toggling plain ws never drops the trusted certificate, and vice versa.
+    d.s.set_allow_insecure(true).unwrap();
+    assert_eq!(d.s.overview().unwrap().relay_trust.ca_certs, 1);
+    d.s.set_allow_insecure(false).unwrap();
+    assert_eq!(d.s.overview().unwrap().relay_trust.ca_certs, 1);
+
+    // The choice is sealed in the home and survives a restart.
+    let again = Session::unlock(&d.dir, PASS.into()).unwrap();
+    assert_eq!(again.overview().unwrap().relay_trust.ca_certs, 1);
+    again.sync(IDLE).await.unwrap();
+
+    // Removing it goes back to refusing the self-signed relay.
+    again.set_relay_ca(None).unwrap();
+    assert!(again.sync(IDLE).await.is_err());
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
+#[tokio::test]
+async fn plain_ws_off_loopback_needs_an_explicit_opt_in() {
+    let url = relay().await;
+    let d = dev("lan", &url);
+    d.s.set_relay("ws://192.0.2.10:8787").unwrap();
+    let why = format!("{:#}", d.s.sync(IDLE).await.unwrap_err());
+    assert!(why.contains("refusing plain ws://"), "{why}");
+    assert!(!d.s.overview().unwrap().relay_trust.allow_insecure);
+    d.s.set_allow_insecure(true).unwrap();
+    assert!(d.s.overview().unwrap().relay_trust.allow_insecure);
+    d.s.set_allow_insecure(false).unwrap();
+    assert!(!d.s.overview().unwrap().relay_trust.allow_insecure);
+}
+
+// ------------------------------------------------------ edit, delete, devices
+
+#[tokio::test]
+async fn edits_and_deletes_reach_the_other_person() {
+    let url = relay().await;
+    let (alice, bob) = (dev("alice", &url), dev("bob", &url));
+    alice.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    bob.s.add_contact("Alice", &card(&alice)).unwrap();
+    alice.s.send("Bob", "see you at 3").await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    let id = alice.s.conversation("Bob", 5).unwrap()[0].id.clone();
+
+    assert!(
+        alice.s.edit(&id, "   ").await.is_err(),
+        "empty edits are refused"
+    );
+    alice.s.edit(&id, "see you at 3:30").await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    let m = &bob.s.conversation("Alice", 5).unwrap()[0];
+    assert_eq!((m.body.as_str(), m.edited), ("see you at 3:30", true));
+    assert_eq!(
+        alice.s.conversation("Bob", 5).unwrap()[0].body,
+        "see you at 3:30"
+    );
+
+    // Bob cannot edit or delete Alice's message.
+    assert!(bob.s.edit(&m.id, "gotcha").await.is_err());
+    assert!(bob.s.delete(&m.id).await.is_err());
+
+    alice.s.delete(&id).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    let m = &bob.s.conversation("Alice", 5).unwrap()[0];
+    assert!(
+        m.deleted && m.body.is_empty(),
+        "the text is gone, a tombstone stays"
+    );
+    assert!(
+        alice.s.edit(&id, "too late").await.is_err(),
+        "a deleted message cannot be edited"
+    );
+}
+
+#[tokio::test]
+async fn a_removed_device_is_told_and_stops_receiving() {
+    let url = relay().await;
+    let (alice, bob, phone) = (dev("alice", &url), dev("bob", &url), dev("phone", &url));
+    alice.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    bob.s.add_contact("Alice", &card(&alice)).unwrap();
+    // Link the phone.
+    let code = phone.s.link_offer().unwrap();
+    let t = Duration::from_secs(20);
+    let (a, b) = tokio::join!(phone.s.link_wait(t), async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        alice.s.link_begin(&code).await
+    });
+    assert_eq!(a.unwrap(), b.unwrap());
+    let (x, y) = tokio::join!(alice.s.link_finish("all", 30), async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        phone.s.link_receive(t).await
+    });
+    x.unwrap();
+    y.unwrap();
+    assert!(!phone.s.overview().unwrap().me.removed);
+
+    let phone_id = alice
+        .s
+        .overview()
+        .unwrap()
+        .me
+        .device_list
+        .iter()
+        .find(|d| !d.this)
+        .unwrap()
+        .id
+        .clone();
+    // Refusals: too short, your own device, a stranger's id, and from a device that is not the main one.
+    assert!(alice.s.remove_device(&phone_id[..4]).await.is_err());
+    let my_id = alice
+        .s
+        .overview()
+        .unwrap()
+        .me
+        .device_list
+        .iter()
+        .find(|d| d.this)
+        .unwrap()
+        .id
+        .clone();
+    assert!(alice.s.remove_device(&my_id).await.is_err());
+    assert!(alice.s.remove_device("00000000").await.is_err());
+    assert!(phone.s.remove_device(&my_id).await.is_err());
+
+    alice.s.remove_device(&phone_id).await.unwrap();
+    assert_eq!(alice.s.overview().unwrap().me.devices, 1);
+    // The phone learns on its next sync and says so.
+    phone.s.sync(IDLE).await.unwrap();
+    assert!(
+        phone.s.overview().unwrap().me.removed,
+        "the removed device is told"
+    );
+
+    // Bob's next message goes to Alice's remaining device only.
+    bob.s.sync(IDLE).await.unwrap();
+    bob.s.send("Alice", "only the laptop now").await.unwrap();
+    assert_eq!(alice.s.sync(IDLE).await.unwrap().received, 1);
+    assert_eq!(phone.s.sync(IDLE).await.unwrap().received, 0);
+}
+
+// --------------------------------------------------------- live connection
+
+#[tokio::test]
+async fn the_live_connection_wakes_on_a_message_without_consuming_it() {
+    let url = relay().await;
+    let (alice, bob) = (dev("alice", &url), dev("bob", &url));
+    alice.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    bob.s.add_contact("Alice", &card(&alice)).unwrap();
+
+    // Bob's listener waits. Nothing yet: the heartbeat window passes quietly.
+    let mut live = bob.s.listener_connect().await.unwrap();
+    assert!(live
+        .next_delivery(Some(Duration::from_millis(300)))
+        .await
+        .unwrap()
+        .is_none());
+
+    // Alice sends. Bob's connection is told straight away...
+    alice.s.send("Bob", "ping").await.unwrap();
+    let woke = tokio::time::timeout(
+        Duration::from_secs(5),
+        live.next_delivery(Some(Duration::from_secs(5))),
+    )
+    .await;
+    assert!(matches!(woke, Ok(Ok(Some(_)))), "the relay pushed it");
+    drop(live);
+
+    // ...but it was never acknowledged, so a normal sync still receives it, once.
+    assert_eq!(bob.s.sync(IDLE).await.unwrap().received, 1);
+    assert_eq!(bob.s.sync(IDLE).await.unwrap().received, 0);
+    assert_eq!(bob.s.conversation("Alice", 5).unwrap()[0].body, "ping");
+
+    // Doing something else (which opens its own connection) must not deafen the waiting one: it stays
+    // live and is still pushed to. (Before the relay allowed several connections per device, the
+    // second connection silently took over and the first waited forever without ever being told.)
+    let mut live = bob.s.listener_connect().await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    assert!(
+        matches!(
+            live.next_delivery(Some(Duration::from_millis(300))).await,
+            Ok(None)
+        ),
+        "still connected and quiet"
+    );
+    alice.s.send("Bob", "second ping").await.unwrap();
+    let woke = tokio::time::timeout(
+        Duration::from_secs(5),
+        live.next_delivery(Some(Duration::from_secs(5))),
+    )
+    .await;
+    assert!(
+        matches!(woke, Ok(Ok(Some(_)))),
+        "still woken after an operation ran"
+    );
+    drop(live);
+}
+
+#[tokio::test]
+async fn a_device_that_piles_up_connections_loses_the_oldest() {
+    let url = relay().await;
+    let bob = dev("bob", &url);
+    bob.s.sync(IDLE).await.unwrap();
+    let mut first = bob.s.listener_connect().await.unwrap();
+    let mut others = vec![];
+    for _ in 0..4 {
+        others.push(bob.s.listener_connect().await.unwrap());
+    }
+    // Five connections from one device: the relay keeps four and closes the oldest, which finds out at once.
+    let ended = tokio::time::timeout(
+        Duration::from_secs(5),
+        first.next_delivery(Some(Duration::from_secs(30))),
+    )
+    .await;
+    assert!(
+        matches!(ended, Ok(Err(_))),
+        "the oldest connection must be closed"
+    );
+    for o in &mut others {
+        assert!(
+            matches!(
+                o.next_delivery(Some(Duration::from_millis(200))).await,
+                Ok(None)
+            ),
+            "the newer ones stay open"
+        );
+    }
+}
+
+#[tokio::test]
+async fn linking_pauses_the_listener_until_it_finishes_or_is_cancelled() {
+    let url = relay().await;
+    let phone = dev("phone", &url);
+    assert!(!phone.s.paused());
+    phone.s.link_offer().unwrap();
+    assert!(
+        phone.s.paused(),
+        "a sync would take the link frames off the relay"
+    );
+    phone.s.link_cancel();
+    assert!(!phone.s.paused());
+}
