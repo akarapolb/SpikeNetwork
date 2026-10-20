@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use vodozemac::olm::{Account, AccountPickle};
 use vodozemac::{Ed25519PublicKey, Ed25519Signature};
 
-const CARD_PREFIX: &str = "spike1:";
+pub(crate) const CARD_PREFIX: &str = "spike1:";
 const CARD_CTX: &[u8] = b"spike-card-v1";
 const AUTH_CTX: &[u8] = b"spike-relay-auth-v1";
 const PREKEY_CTX: &[u8] = b"spike-prekey-v1";

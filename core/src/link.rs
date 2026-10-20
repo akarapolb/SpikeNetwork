@@ -24,6 +24,9 @@ use std::collections::BTreeMap;
 use vodozemac::{Curve25519PublicKey, Curve25519SecretKey};
 
 const CODE_PREFIX: &str = "spikelink1:";
+/// The compact code: the same four fields as raw bytes in base64url, about 40% of the length of
+/// version 1, short enough for a QR code a phone can scan. Version 1 is still accepted.
+const CODE_PREFIX_V2: &str = "spikelink2:";
 const MAGIC: &[u8; 4] = b"SPLK";
 const HELLO: u8 = 1;
 const DATA: u8 = 2;
@@ -44,20 +47,71 @@ pub struct LinkOffer {
 }
 
 impl LinkOffer {
+    /// The compact (version 2) code, or the long version 1 form if a field is not well formed
+    /// (which `decode` then refuses).
     pub fn encode(&self) -> String {
+        self.encode_compact().unwrap_or_else(|| self.encode_v1())
+    }
+
+    pub fn encode_v1(&self) -> String {
         format!(
             "{CODE_PREFIX}{}",
             hex::encode(serde_json::to_vec(self).expect("serializes"))
         )
     }
 
-    pub fn decode(s: &str) -> Result<Self> {
-        let body = s
-            .trim()
-            .strip_prefix(CODE_PREFIX)
-            .ok_or(Error::BadCard("not a link code"))?;
-        let o: LinkOffer = serde_json::from_slice(&hex::decode(body)?)
+    /// card (128) | ephemeral key (32) | secret (16) | relay URL (rest), base64url without padding.
+    fn encode_compact(&self) -> Option<String> {
+        use base64::Engine;
+        let card = hex::decode(self.card.strip_prefix(crate::identity::CARD_PREFIX)?).ok()?;
+        let eph = hex::decode(&self.eph).ok()?;
+        let secret = hex::decode(&self.secret).ok()?;
+        if card.len() != 128 || eph.len() != 32 || secret.len() != 16 {
+            return None;
+        }
+        let mut b = [card, eph, secret].concat();
+        if let Some(r) = &self.relay {
+            b.extend_from_slice(r.as_bytes());
+        }
+        Some(format!(
+            "{CODE_PREFIX_V2}{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+        ))
+    }
+
+    fn decode_compact(body: &str) -> Result<Self> {
+        use base64::Engine;
+        let b = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(body)
             .map_err(|_| Error::BadCard("not a link code"))?;
+        if b.len() < 176 {
+            return Err(Error::BadCard("not a link code"));
+        }
+        let relay = match &b[176..] {
+            [] => None,
+            r => {
+                Some(String::from_utf8(r.to_vec()).map_err(|_| Error::BadCard("not a link code"))?)
+            }
+        };
+        Ok(Self {
+            card: format!("{}{}", crate::identity::CARD_PREFIX, hex::encode(&b[..128])),
+            eph: hex::encode(&b[128..160]),
+            secret: hex::encode(&b[160..176]),
+            relay,
+        })
+    }
+
+    pub fn decode(s: &str) -> Result<Self> {
+        let s = s.trim();
+        let o = if let Some(body) = s.strip_prefix(CODE_PREFIX_V2) {
+            Self::decode_compact(body)?
+        } else {
+            let body = s
+                .strip_prefix(CODE_PREFIX)
+                .ok_or(Error::BadCard("not a link code"))?;
+            serde_json::from_slice(&hex::decode(body)?)
+                .map_err(|_| Error::BadCard("not a link code"))?
+        };
         DeviceCard::decode(&o.card)?;
         let eph: [u8; 32] = hex::decode(&o.eph)?
             .try_into()
@@ -333,5 +387,28 @@ mod tests {
         bad.secret = "00".into();
         assert!(LinkOffer::decode(&bad.encode()).is_err());
         assert!(!is_link_frame(b"SPL"));
+    }
+
+    #[test]
+    fn the_compact_code_is_short_and_the_long_one_still_works() {
+        let n = NewDevice::new(
+            &Identity::generate().unwrap().card(),
+            Some("wss://relay.example.org".into()),
+        );
+        let (short, long) = (n.offer.encode(), n.offer.encode_v1());
+        assert!(short.starts_with("spikelink2:") && long.starts_with("spikelink1:"));
+        assert!(
+            short.len() < 400 && long.len() > 800,
+            "{} {}",
+            short.len(),
+            long.len()
+        );
+        assert_eq!(LinkOffer::decode(&short).unwrap(), n.offer);
+        assert_eq!(LinkOffer::decode(&long).unwrap(), n.offer);
+        // Damage is caught: a flipped character breaks the card signature or the field sizes.
+        let mut chars: Vec<char> = short.chars().collect();
+        chars[20] = if chars[20] == 'A' { 'B' } else { 'A' };
+        assert!(LinkOffer::decode(&chars.iter().collect::<String>()).is_err());
+        assert!(LinkOffer::decode("spikelink2:AAAA").is_err());
     }
 }

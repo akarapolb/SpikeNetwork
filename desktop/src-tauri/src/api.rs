@@ -609,6 +609,17 @@ impl Session {
     /// Fetch what is waiting at the relay. `idle` is how long to wait for more
     /// before disconnecting.
     pub async fn sync(&self, idle: Duration) -> Result<SyncDto> {
+        self.sync_with(idle, |_, _| {}).await
+    }
+
+    /// [`Session::sync`], telling `progress` (with the running totals and the unread/waiting count)
+    /// as soon as each message or request has been stored, instead of after the idle wait that
+    /// ends the sync. This is what lets the screen update ~0.7 s sooner.
+    pub async fn sync_with(
+        &self,
+        idle: Duration,
+        mut progress: impl FnMut(&SyncDto, usize),
+    ) -> Result<SyncDto> {
         let _net = self.net.lock().await;
         let mut out = SyncDto {
             received: 0,
@@ -616,19 +627,27 @@ impl Session {
             message_requests: 0,
             notes: vec![],
         };
-        ops::recv(&self.home, self.target(), Some(idle), |o| match o {
-            Outcome::Message { .. } | Outcome::SentCopy { .. } => out.received += 1,
-            Outcome::AgentRequest { verdict, .. } if verdict == "pending" => {
-                out.agent_requests += 1
+        ops::recv(&self.home, self.target(), Some(idle), |o| {
+            let mut changed = true;
+            match o {
+                Outcome::Message { .. } | Outcome::SentCopy { .. } => out.received += 1,
+                Outcome::AgentRequest { verdict, .. } if verdict == "pending" => {
+                    out.agent_requests += 1
+                }
+                Outcome::AgentRemotePending { .. } => out.agent_requests += 1,
+                Outcome::MessageRequest { new: true, .. } => out.message_requests += 1,
+                Outcome::UnknownSender { .. } => out.notes.push(
+                    "A message from someone who is not in your contacts and did not introduce themselves was dropped."
+                        .into(),
+                ),
+                Outcome::Rejected { reason } => {
+                    out.notes.push(format!("Ignored a change: {reason}"))
+                }
+                _ => changed = false,
             }
-            Outcome::AgentRemotePending { .. } => out.agent_requests += 1,
-            Outcome::MessageRequest { new: true, .. } => out.message_requests += 1,
-            Outcome::UnknownSender { .. } => out.notes.push(
-                "A message from someone who is not in your contacts and did not introduce themselves was dropped."
-                    .into(),
-            ),
-            Outcome::Rejected { reason } => out.notes.push(format!("Ignored a change: {reason}")),
-            _ => {}
+            if changed {
+                progress(&out, self.attention().unwrap_or(0));
+            }
         })
         .await?;
         Ok(out)
@@ -859,6 +878,24 @@ impl Session {
 // ------------------------------------------------------------- grants
 
 /// The known typed action types, for the grant form.
+/// A QR code for `text` as an SVG image (dark modules on white, with the quiet zone scanners need).
+/// Made here so the code never leaves the app and no script has to be loaded into the page.
+pub fn qr_svg(text: &str) -> Result<String> {
+    use qrcode::render::svg;
+    use qrcode::{EcLevel, QrCode};
+    if text.len() > 1200 {
+        bail!("that is too long for a QR code");
+    }
+    let code = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::M)
+        .map_err(|e| anyhow!("could not make a QR code: {e}"))?;
+    Ok(code
+        .render::<svg::Color>()
+        .min_dimensions(240, 240)
+        .dark_color(svg::Color("#000000"))
+        .light_color(svg::Color("#ffffff"))
+        .build())
+}
+
 pub fn action_types() -> Vec<ActionTypeDto> {
     action::REGISTRY
         .iter()

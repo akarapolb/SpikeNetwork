@@ -5,6 +5,7 @@
 //! while the app is unlocked.
 
 pub mod api;
+pub mod updates;
 
 use api::{
     ActionTypeDto, AgentsDto, BlockedDto, GrantRequest, InstalledDto, LinkedDto, MessageDto,
@@ -198,16 +199,27 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
         if s.paused() {
             continue;
         }
-        if let Ok(r) = s.sync(Duration::from_millis(700)).await {
+        // Tell the screen as soon as each item is stored, not after the sync's idle wait.
+        let mut flashed = false;
+        let result = s
+            .sync_with(Duration::from_millis(700), |r, attention| {
+                if !flashed {
+                    flashed = true;
+                    if let Some(w) = app.get_webview_window("main") {
+                        if !w.is_focused().unwrap_or(true) {
+                            let _ = w.request_user_attention(Some(
+                                tauri::UserAttentionType::Informational,
+                            ));
+                        }
+                    }
+                }
+                set_title(&app, attention);
+                let _ = app.emit("synced", r.clone());
+            })
+            .await;
+        if let Ok(r) = result {
             let attention = s.attention().unwrap_or(0);
             drop(s);
-            if let Some(w) = app.get_webview_window("main") {
-                if (r.received > 0 || r.agent_requests > 0 || r.message_requests > 0)
-                    && !w.is_focused().unwrap_or(true)
-                {
-                    let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
-                }
-            }
             set_title(&app, attention);
             let _ = app.emit("synced", r);
         }
@@ -459,6 +471,21 @@ async fn save_attachment(
 }
 
 #[tauri::command]
+async fn update_check(app: tauri::AppHandle) -> Result<updates::UpdateInfo, String> {
+    updates::check(&app).await
+}
+
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
+    updates::install(&app).await
+}
+
+#[tauri::command]
+fn qr_svg(text: String) -> Result<String, String> {
+    api::qr_svg(&text).map_err(err)
+}
+
+#[tauri::command]
 fn link_offer(state: State<'_, AppState>) -> Result<String, String> {
     session(&state)?.link_offer().map_err(err)
 }
@@ -503,7 +530,10 @@ async fn link_finish(
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(feature = "updater")]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         .setup(|app| {
             // SPIKE_DESKTOP_HOME lets you run a second instance (another identity) on one machine.
             let dir = match std::env::var_os("SPIKE_DESKTOP_HOME") {
@@ -551,6 +581,9 @@ pub fn run() {
             send_file,
             save_attachment,
             link_offer,
+            qr_svg,
+            update_check,
+            update_install,
             link_wait,
             link_receive,
             link_cancel,

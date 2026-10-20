@@ -896,3 +896,58 @@ async fn blocking_a_stranger_drops_them_and_can_be_undone() {
     assert!(bob.s.blocked().unwrap().is_empty());
     assert!(bob.s.decline_request(&id).is_err());
 }
+
+#[test]
+fn a_link_code_fits_in_a_scannable_qr() {
+    // The code a new device shows is short enough for a QR code of moderate density.
+    let dir = std::env::temp_dir().join(format!("spike-qr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let id = spike_core::identity::Identity::generate().unwrap();
+    let n = spike_core::link::NewDevice::new(&id.card(), Some("wss://relay.example.org".into()));
+    let code = n.offer.encode();
+    assert!(code.len() < 400, "{}", code.len());
+    let svg = spike_desktop::api::qr_svg(&code).unwrap();
+    assert!(
+        svg.starts_with("<?xml") || svg.contains("<svg"),
+        "{}",
+        &svg[..60]
+    );
+    assert!(svg.contains("#ffffff") && svg.contains("#000000"));
+    assert!(spike_desktop::api::qr_svg(&"x".repeat(2000)).is_err());
+}
+
+#[tokio::test]
+async fn the_screen_is_told_as_soon_as_a_message_is_stored_not_after_the_idle_wait() {
+    let url = relay().await;
+    let (alice, bob) = (dev("alice", &url), dev("bob", &url));
+    alice.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    bob.s.add_contact("Alice", &card(&alice)).unwrap();
+    bob.s.send("Alice", "hello").await.unwrap();
+
+    // A long idle wait: the sync ends two seconds after the last message...
+    let started = std::time::Instant::now();
+    let mut first = None;
+    let mut unread_then = 0;
+    let r = alice
+        .s
+        .sync_with(Duration::from_secs(2), |totals, attention| {
+            if first.is_none() {
+                first = Some((started.elapsed(), totals.received));
+                unread_then = attention;
+            }
+        })
+        .await
+        .unwrap();
+    let total = started.elapsed();
+    // ...but the progress call came as soon as the message was stored, long before that.
+    let (at, received) = first.expect("progress was reported");
+    assert_eq!((r.received, received), (1, 1));
+    assert_eq!(unread_then, 1, "the unread count already includes it");
+    assert!(
+        total - at >= Duration::from_millis(1500),
+        "told after {at:?} of a {total:?} sync"
+    );
+}

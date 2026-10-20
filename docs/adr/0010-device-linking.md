@@ -24,3 +24,6 @@ Core: matching codes and keys; substituted hello gives a different code and fram
 - Both CLI sides need `--yes` in scripts; the app will show the code instead.
 - No direct LAN or peer-to-peer transfer yet; the bundle goes through the relay (encrypted).
 - Large histories are bounded at about 400 MB per bundle.
+
+## Update (2026-10-20): compact code
+The code is now `spikelink2:` plus the same four fields as raw bytes (card 128, ephemeral key 32, secret 16, relay URL) in base64url: about 330 characters instead of about 850, small enough for a QR code. `spikelink1:` (hex of JSON) is still accepted. The security properties are unchanged: the card's key-binding signature is still checked and the safety code still comes from the ephemeral exchange.

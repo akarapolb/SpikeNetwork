@@ -84,9 +84,15 @@ pub async fn dial(t: &Target) -> Result<Ws> {
         );
     }
     let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
-    let tcp = TcpStream::connect((host.trim_matches(['[', ']']), port))
-        .await
-        .with_context(|| format!("connecting to {host}:{port}"))?;
+    // A relay that silently drops packets would otherwise hang for the operating system's own
+    // timeout (about two minutes on Linux): say so after ten seconds instead.
+    let tcp = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        TcpStream::connect((host.trim_matches(['[', ']']), port)),
+    )
+    .await
+    .map_err(|_| anyhow!("connecting to {host}:{port} timed out after 10 seconds"))?
+    .with_context(|| format!("connecting to {host}:{port}"))?;
     tcp.set_nodelay(true).ok();
 
     let io: Box<dyn Io> = if tls {

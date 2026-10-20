@@ -65,3 +65,11 @@ Unreviewed prototype code (README: "Do not use it for real secrets"). The webvie
 - Tests: root workspace 184 pass on Windows and Ubuntu (WSL); `cli/tests/hardening.rs` is new. Two `ownsync` tests with 400 ms and 2 s expiries were flaky under load (also before this change); their times were widened.
 - ADR 0023 (tenants and enrollment tokens) is a proposal for your review. Nothing of it is built. Its "Decisions I need from you" section lists what to answer.
 - Still to do from the same request: desktop polish (QR for linking, signing and auto-update, Linux/macOS pass, faster on-screen delivery) and small groups (ADR first).
+
+## Update: desktop polish
+- Screen updates as soon as each message is stored (`Session::sync_with`), not after the 0.7 s idle wait. Not re-measured in the real app.
+- Link code is now `spikelink2:` (about 330 characters, old form still accepted) and the new device shows a QR (generated in the backend as SVG). Nothing scans it yet.
+- Opt-in updater (`--features updater`, Settings button, never automatic), `release.yml` (Windows/Linux/macOS, optional Windows signing) and `docs/desktop-release.md`. Needs your certificate, update key and update server; none of it has been run with real keys. macOS never run.
+- Linux: installed WebKitGTK dev libraries in WSL Ubuntu; the desktop crate builds, clippy is clean with and without `updater`, and all 19 desktop tests pass. The window itself has not been seen on Linux.
+- Found by the Linux run: a relay that silently drops packets made connecting hang for about two minutes. Connecting now times out after 10 s.
+- Shortcuts use Cmd on a Mac, Ctrl elsewhere.

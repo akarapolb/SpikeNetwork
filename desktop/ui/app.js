@@ -3,6 +3,9 @@
    Every value from the backend is inserted as text (createTextNode), never as HTML.
    Keys never reach this file: the backend only returns names, message text and request summaries. */
 
+// Shortcuts use the platform's own modifier: Cmd on a Mac, Ctrl elsewhere.
+const MAC = /Mac|iPhone|iPad/.test(navigator.platform || "");
+const MOD = MAC ? "⌘" : "Ctrl+";
 const invoke = (cmd, args, options) => window.__TAURI__.core.invoke(cmd, args, options);
 const $ = (id) => document.getElementById(id);
 function h(tag, attrs, ...kids) {
@@ -126,14 +129,14 @@ function renderRail() {
   const unread = st.ov ? st.ov.contacts.reduce((a, c) => a + c.unread, 0) : 0, w = st.ov ? st.ov.waiting : 0;
   const keys = { chats: 1, agents: 2, devices: 3, settings: 4 };
   const item = (k, label, n, warn) => h("button", { type: "button", "aria-current": st.section === k ? "page" : null, "aria-label": n ? `${label}, ${n} ${warn ? "waiting" : "unread"}` : label, onclick: () => go(k) },
-    icon(k), h("span", { class: "tip", "aria-hidden": "true" }, `${label}  Ctrl+${keys[k]}`), n ? h("span", { class: "badge" + (warn ? " warn" : ""), "aria-hidden": "true" }, n) : null);
+    icon(k), h("span", { class: "tip", "aria-hidden": "true" }, `${label}  ${MOD}${keys[k]}`), n ? h("span", { class: "badge" + (warn ? " warn" : ""), "aria-hidden": "true" }, n) : null);
   $("rail").replaceChildren(
     h("span", { class: "tile sm c-neutral me", title: "This device", "aria-hidden": "true" }, icon("shield")),
     item("chats", "Chats", unread), item("agents", "Agents", w, true), item("devices", "Devices"), item("settings", "Settings"),
     h("span", { class: "spacer" }),
     h("button", { type: "button", "aria-label": "Switch light or dark", onclick: () => { const r = document.documentElement; const dark = matchMedia("(prefers-color-scheme: dark)").matches; r.dataset.theme = (r.dataset.theme || (dark ? "dark" : "light")) === "dark" ? "light" : "dark"; } }, icon("moon"), h("span", { class: "tip", "aria-hidden": "true" }, "Light or dark")),
     h("span", { class: "sep", "aria-hidden": "true" }),
-    h("button", { type: "button", "aria-label": "Lock", onclick: lockNow }, icon("lock"), h("span", { class: "tip", "aria-hidden": "true" }, "Lock  Ctrl+L")));
+    h("button", { type: "button", "aria-label": "Lock", onclick: lockNow }, icon("lock"), h("span", { class: "tip", "aria-hidden": "true" }, `Lock  ${MOD}L`)));
 }
 async function lockNow() { try { await invoke("lock"); } catch (_) {} gate("unlock"); }
 function render() {
@@ -347,7 +350,7 @@ async function removeDevice(d) {
 // NEW device: show a code, wait for the other device, compare, receive.
 async function startLinkNew() {
   st.linking = true; st.linkStep = 1; st.linkErr = ""; st.linkSafety = "";
-  try { st.linkCode = await invoke("link_offer"); } catch (e) { st.linkErr = String(e); st.linking = false; return render(); }
+  try { st.linkCode = await invoke("link_offer"); st.linkQr = ""; try { st.linkQr = await invoke("qr_svg", { text: st.linkCode }); } catch (_) {} } catch (e) { st.linkErr = String(e); st.linking = false; return render(); }
   render();
   while (st.screen === "linknew" && !st.linkSafety) {
     try { st.linkSafety = await invoke("link_wait"); st.linkStep = 2; render(); }
@@ -363,6 +366,8 @@ function linkNewScreen() {
     st.linkErr ? h("div", { class: "status bad", role: "alert" }, h("b", {}, "Linking stopped."), h("span", {}, st.linkErr)) : null,
     st.linkStep === 1 && !st.linkErr ? [
       h("p", { class: "lead" }, "On a device that already uses your identity, open Devices, choose Link a new device, and paste this code."),
+      st.linkQr ? h("img", { class: "qrimg", alt: "QR code containing the link code", width: 240, height: 240, src: "data:image/svg+xml;utf8," + encodeURIComponent(st.linkQr) }) : null,
+      h("p", { class: "note" }, "Scan this with a phone that already has Spike, or copy the code and paste it on the other computer."),
       h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Link code", onfocus: (e) => e.target.select() }, st.linkCode),
       h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(st.linkCode); toast("Code copied."); } catch (_) { toast("Select the text and copy it."); } } }, "Copy code"),
       h("p", { class: "note", role: "status" }, "Waiting for your other device…")] : null,
@@ -427,9 +432,27 @@ function settingsMain() {
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Privacy and security"),
       h("label", { style: "display:flex;flex-direction:column;gap:4px" }, h("b", { style: "font-weight:600" }, "Lock after no use for"), h("div", { class: "field" }, h("select", { "aria-label": "Auto-lock", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { try { localStorage.setItem("autolock", e.target.value); } catch (_) {} armAutoLock(); toast(Number(e.target.value) ? `Locks after ${e.target.selectedOptions[0].text} without use.` : "Auto-lock is off."); } }, AUTOLOCK_CHOICES.map(([v, l]) => h("option", { value: String(v), selected: v === autoLockMinutes() || null }, l)))),
         h("span", { class: "note" }, "Locking wipes your keys from memory. While locked, this computer does not receive messages.")),
-      h("span", { class: "note" }, "The window title and taskbar show how many messages and requests are waiting.")),
+      h("span", { class: "note" }, "The window title, and the taskbar or dock, show how many messages and requests are waiting.")),
+    updatesCard(),
     h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "groups and calls (designed, not built), an installer with auto-update, and desktop notification banners (the taskbar flashes instead). This is an unreviewed prototype.")),
     h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: lockNow }, icon("lock"), "Lock now")))];
+}
+
+/* ---------- updates: only when asked (docs/desktop-release.md) ---------- */
+function updatesCard() {
+  const u = st.update;
+  const check = async () => { st.update = { busy: "Checking…" }; render(); try { st.update = await invoke("update_check"); } catch (e) { st.update = { error: String(e) }; } render(); };
+  const install = async () => { st.update = { ...st.update, busy: "Downloading and verifying…" }; render(); try { await invoke("update_install"); } catch (e) { st.update = { error: String(e) }; render(); } };
+  return h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Updates"),
+    h("span", { class: "note" }, "Spike never looks for updates by itself, because a check tells the update server that this computer runs Spike. Check when you choose."),
+    u && u.error ? h("div", { class: "status bad", role: "alert" }, h("span", {}, u.error)) : null,
+    u && u.supported === false ? h("div", { class: "status soft" }, h("span", {}, "This build cannot update itself. Install a newer version from where you got this one.")) : null,
+    u && u.available ? h("div", { class: "status soft" }, h("b", {}, "Version " + u.available + " is available."), u.notes ? h("span", {}, u.notes) : null) : null,
+    u && u.supported && !u.available && !u.busy && !u.error ? h("span", { class: "note" }, "You have the newest version (" + u.current + ").") : null,
+    u && u.busy ? h("span", { class: "note" }, u.busy) : null,
+    h("div", { style: "display:flex;gap:8px" },
+      h("button", { class: "btn", type: "button", disabled: (u && u.busy) || null, onclick: check }, "Check for updates"),
+      u && u.available ? h("button", { class: "btn primary", type: "button", disabled: u.busy || null, onclick: install }, "Install and restart") : null));
 }
 
 /* ---------- message requests (ADR 0021) ---------- */
@@ -463,7 +486,7 @@ const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { main: a
 const SCREENS = { requests: requestsScreen, verify: verifyScreen, add: addScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
 
 document.addEventListener("keydown", (e) => {
-  if (!e.ctrlKey || e.altKey || $("app").hidden) return;
+  if (!(MAC ? e.metaKey : e.ctrlKey) || e.altKey || $("app").hidden) return;
   const k = { "1": "chats", "2": "agents", "3": "devices", "4": "settings" }[e.key];
   if (k) { e.preventDefault(); go(k); } else if (e.key.toLowerCase() === "l") { e.preventDefault(); lockNow(); }
 });

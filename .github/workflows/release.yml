@@ -1,0 +1,87 @@
+name: Desktop release build (manual)
+
+# Builds installers for the desktop app on Windows, Linux and macOS. Run it by hand from the
+# Actions tab. It publishes nothing: the installers are artifacts of this run.
+#
+# Signing is optional and happens only if you add the secrets described in docs/desktop-release.md.
+# Without them the installers are UNSIGNED and carry no update channel (the same as installer.yml).
+# Only the Windows job has been run end to end by the author; Linux was built and tested under WSL
+# and macOS has never been run: treat those two jobs as a starting point.
+on:
+  workflow_dispatch:
+    inputs:
+      updater:
+        description: "Build with the self-updater (needs the TAURI_SIGNING_PRIVATE_KEY secret and a real pubkey/endpoint in tauri.updater.conf.json)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bundles: nsis
+            artifact: windows
+          - os: ubuntu-24.04
+            bundles: deb,appimage
+            artifact: linux
+          - os: macos-latest
+            bundles: dmg
+            artifact: macos
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os != 'windows-latest' }}
+    env:
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Import the Windows code-signing certificate (only if provided)
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $pw = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $c = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+          Remove-Item $pfx
+          "SIGN_THUMBPRINT=$($c.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          '{"bundle":{"windows":{"certificateThumbprint":"' + $c.Thumbprint + '","digestAlgorithm":"sha256","timestampUrl":"http://timestamp.digicert.com"}}}' | Out-File -Encoding ascii signing.conf.json
+      - name: Build
+        working-directory: desktop/src-tauri
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          args="--bundles ${{ matrix.bundles }}"
+          if [ -f ../../signing.conf.json ]; then args="$args --config ../../signing.conf.json"; fi
+          if [ "${{ inputs.updater }}" = "true" ]; then args="$args --features updater --config tauri.updater.conf.json"; fi
+          cargo tauri build $args
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: spike-connect-${{ matrix.artifact }}
+          path: |
+            desktop/src-tauri/target/release/bundle/**/*.exe
+            desktop/src-tauri/target/release/bundle/**/*.deb
+            desktop/src-tauri/target/release/bundle/**/*.AppImage
+            desktop/src-tauri/target/release/bundle/**/*.dmg
+            desktop/src-tauri/target/release/bundle/**/*.sig
+          if-no-files-found: error
