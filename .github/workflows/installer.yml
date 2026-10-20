@@ -1,0 +1,30 @@
+name: Windows installer (manual)
+
+# Builds the desktop app's per-user NSIS installer. Run it by hand from the Actions tab.
+# The result is UNSIGNED (Windows SmartScreen will warn) and is not published anywhere:
+# it is an artifact of this run. Signing and an update channel come before any release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nsis:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Build the installer
+        working-directory: desktop/src-tauri
+        run: cargo tauri build --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spike-connect-windows-installer-unsigned
+          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

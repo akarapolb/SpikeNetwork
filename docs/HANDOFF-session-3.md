@@ -9,13 +9,16 @@ Written 2026-10-19. Branch `claude/charming-ramanujan-5cl13k`. Read this, then `
 | Typed actions | Signed fields the human sees; services must match them exactly; `--typed-only` grants | ADR 0017, `core/src/action.rs`, commit `b4717cd` |
 | Design | Desktop prototype (aligned with the mobile prototype, quieter colour rule, icon-only rail, small groups, planned call screen); mobile prototype recoloured and updated to typed approvals; live mobile canvas republished (version 14) | `docs/desktop-prototype/`, `docs/mobile-prototype/`, commit `e094caa` |
 | Calls | Draft design: Spike signals, WebRTC carries media, direct first, relay fallback | ADR 0018 (draft) |
-| **Desktop app** | **Tauri 2 first slice, working end to end on Windows** | ADR 0019, `desktop/` |
+| **Desktop app** | **Tauri 2, working end to end on Windows**: first slice, then attachments, grants and linking, then relay trust, instant delivery, edit/delete, remove a device, auto-lock, installer config | ADR 0019, 0020, `desktop/` |
+| Relay | A device may hold up to 4 live connections and a message is pushed to all (the old "replace silently" rule left a waiting connection deaf) | ADR 0020, `relay/src/lib.rs` |
+| Docs | Relay deployment guide and a hosting-options brief for a decision | `docs/deploy-relay.md`, `docs/hosting-options.md` |
+| CI | GitHub Actions, cargo-deny, Dependabot (PR #1; blocked by an account billing problem, so unproven on GitHub) | `.github/`, `deny.toml` |
 
 ## 2. The desktop app, in one paragraph
-`desktop/` is its own Cargo workspace (excluded from the main one). `src-tauri/src/api.rs` holds all logic as plain functions over a `Session` (the unlocked `Home` plus the relay); `lib.rs` wraps them as Tauri commands. The UI is plain HTML/CSS/JS in `ui/` with a strict CSP, no npm, no remote content. Keys never enter the webview. All network operations are serialized by one lock because `send` and `recv` each load and save ratchet state. Receiving polls every 15 s. Built: create/unlock/lock, chats, send, receive, add contact by pasted card, verify, relay setting, agent panel (typed approvals, approve/deny, create/change/revoke grants), attachments (send, save), devices and linking (both sides). Not built: edit/delete, removing a device, groups, calls, message requests, search, Windows Hello, auto-lock, tray, installer, signing.
+`desktop/` is its own Cargo workspace (excluded from the main one). `src-tauri/src/api.rs` holds all logic as plain functions over a `Session` (the unlocked `Home` plus the relay); `lib.rs` wraps them as Tauri commands. The UI is plain HTML/CSS/JS in `ui/` with a strict CSP, no npm, no remote content. Keys never enter the webview. All network operations are serialized by one lock because `send` and `recv` each load and save ratchet state. Receiving polls every 15 s. Built: create/unlock/lock, chats with instant delivery, send, receive, edit, delete, add contact by pasted card, verify, relay settings (address, custom CA, opt-in plain ws, test button), agent panel (typed approvals, approve/deny, create/change/revoke grants), attachments (send, save), devices (list, link both sides, remove), idle auto-lock, attention (title count, taskbar flash), installer config. Not built: message requests (need a security design), groups, calls, search, Windows Hello, tray, signing, auto-update, keepalive.
 
 ## 3. State
-- `cd desktop/src-tauri && cargo test`: 10 passed (8 API against a real relay, 2 unit). The main workspace's `cargo test --all` was 150 passed before the desktop work and is unaffected by it (the desktop crate is excluded).
+- `cd desktop/src-tauri && cargo test`: 17 passed (15 API against a real relay, 2 unit). Root workspace: 151 passed on Windows and on Ubuntu (WSL). The main workspace's `cargo test --all` was 150 passed before the desktop work and is unaffected by it (the desktop crate is excluded).
 - Verified by driving the real app: two instances (`SPIKE_DESKTOP_HOME`) exchanged messages including Thai text; wrong and right passphrase after a restart; a typed request approved in the window; the agent received the receipt; `verify-receipt` refused payee `mallory` and accepted `acme-gpu`.
 - First `cargo build` of the desktop crate takes about 10 minutes (Tauri with optimised dependencies); later builds 10 to 20 s.
 
@@ -25,9 +28,10 @@ WebView2 exposes a debug port: start the exe with `WEBVIEW2_ADDITIONAL_BROWSER_A
 ## 5. Next steps (recommended order)
 1. **Decide on pushing and a PR.** Ask first.
 2. **CI** (fmt, clippy, tests for both workspaces, `cargo audit`, license check). None configured; the desktop crate needs a Windows runner at least.
-3. **Desktop, next slice:** edit/delete, removing a device, message requests, auto-lock, notifications, a QR code for linking, then an installer with `tauri-cli`.
+3. **Desktop, next slice:** a keepalive ping (dead connections), message requests (needs an ADR: first messages from unknown keys cannot be decrypted today), a QR code for linking, signing and auto-update, then a Linux and macOS pass.
 4. **Mobile and desktop parity** for groups: groups are design only. The proposed small-group approach (pairwise fan-out, up to 20) needs an ADR and a group membership model before code.
-5. **Spike OS integration and telemetry** still need the user's definitions (see session 2 handoff).
+5. **Hosting decision** (`docs/hosting-options.md`) and a published legal-requests policy before Spike operates any relay.
+6. **Spike OS integration and telemetry** still need the user's definitions (see session 2 handoff).
 6. Earlier open items: "resolved" notice for forwarded agent requests (ADR 0016), relay hardening, payee/path allowlists in grants, `docs/architecture.html` is stale.
 
 ## 6. Gotchas found this session
@@ -39,6 +43,9 @@ WebView2 exposes a debug port: start the exe with `WEBVIEW2_ADDITIONAL_BROWSER_A
 - **The UI's `invoke` wrapper dropped Tauri's third argument** (the headers for raw-body calls), so `send_file` got an empty contact. Calls made straight through `window.__TAURI__` worked, which hid it: when something works directly but not in the app, check the wrapper.
 - **Polling during linking would swallow the link frames** (`recv` acks what it cannot decrypt), so the UI stops polling while the new device waits.
 - **git-bash `/tmp` is not Windows Python's `/tmp`:** pass real Windows paths to Python scripts.
+- **A relay that "replaces" a connection silently leaves the old one deaf.** The first listener never woke in the real app although a library test passed, because that test accepted a quiet timeout. When a test can pass on either outcome, tighten it. See ADR 0020.
+- **Git-Bash rewrites `/CN=...` in `openssl -subj`** as a path (use `//CN=...`), and the failed command still left a half-written directory.
+- **The release installer needs `tauri-cli`** (`cargo install tauri-cli --version "^2" --locked`, about 10 minutes); the NSIS toolset is downloaded during the bundle step.
 - `Home` is not `Debug`, and tests use `.err().unwrap()`; the desktop `Session` follows the same habit (no `Debug`).
 
 ## 7. Decisions and approvals
