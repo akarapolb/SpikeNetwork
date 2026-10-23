@@ -315,6 +315,70 @@ enum Cmd {
         #[command(subcommand)]
         cmd: GroupCmd,
     },
+    /// Large groups (up to 500 people) on MLS. Experimental: not independently reviewed (ADR 0025).
+    Large {
+        #[command(subcommand)]
+        cmd: LargeCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum LargeCmd {
+    /// Publish key packages so people can add this device to large groups. Run it once, and again when it runs low.
+    Keys {
+        #[arg(long, default_value_t = 20)]
+        count: usize,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Create a large group. You are its admin.
+    New {
+        name: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Your large groups and invitations.
+    List,
+    /// Invite a contact (all their devices) to a large group.
+    Add {
+        group: String,
+        who: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Remove a person from a large group. The group moves to a mailbox they cannot reach.
+    Remove {
+        group: String,
+        who: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Join a group you were invited to.
+    Accept {
+        group: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Turn down an invitation.
+    Decline { group: String },
+    /// Send a message to a large group.
+    Send {
+        group: String,
+        message: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Fetch and apply everything new in your large groups.
+    Sync {
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Messages of a large group.
+    History {
+        group: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -688,6 +752,111 @@ async fn run() -> Result<()> {
                         if d.new_session { " (new session)" } else { "" }
                     ),
                     Some(e) => println!("  {who} {}: NOT sent: {e}", &d.device_id[..8]),
+                }
+            }
+        }
+        Cmd::Large { cmd } => {
+            use spike_cli::large::{self, Event, Status};
+            match cmd {
+                LargeCmd::Keys { count, relay } => {
+                    let n = large::publish_key_packages(&home, target(relay), count).await?;
+                    println!("published {n} key packages");
+                }
+                LargeCmd::New { name, relay } => {
+                    let r = large::create(&home, target(relay), &name).await?;
+                    println!("created {} ({})", r.name, &r.id[..12]);
+                }
+                LargeCmd::List => {
+                    let all = large::list(&home)?;
+                    if all.is_empty() {
+                        println!("no large groups");
+                    }
+                    for r in all {
+                        let status = match r.status {
+                            Status::Active => String::new(),
+                            Status::Invited => format!(
+                                " · INVITED by {}: `spike large accept {}` or `decline`",
+                                r.invite.as_ref().map(|i| i.from.as_str()).unwrap_or("?"),
+                                &r.id[..12]
+                            ),
+                            Status::Removed => " · you were removed".into(),
+                        };
+                        println!(
+                            "{} {} · {} member(s){status}",
+                            &r.id[..12],
+                            r.name,
+                            r.members
+                        );
+                    }
+                }
+                LargeCmd::Add { group, who, relay } => {
+                    let r = large::add(&home, target(relay), &group, &who).await?;
+                    println!(
+                        "invited {who} ({} device(s)); they join when they accept",
+                        r.devices
+                    );
+                }
+                LargeCmd::Remove { group, who, relay } => {
+                    large::remove(&home, target(relay), &group, &who).await?;
+                    println!("removed {who}; the group moved to a new mailbox");
+                }
+                LargeCmd::Accept { group, relay } => {
+                    let r = large::accept(&home, target(relay), &group).await?;
+                    println!("joined {} ({} member(s))", r.name, r.members);
+                }
+                LargeCmd::Decline { group } => {
+                    large::decline(&home, &group)?;
+                    println!("declined");
+                }
+                LargeCmd::Send {
+                    group,
+                    message,
+                    relay,
+                } => {
+                    large::send(&home, target(relay), &group, &message).await?;
+                }
+                LargeCmd::Sync { relay } => {
+                    let events = large::sync(&home, target(relay)).await?;
+                    if events.is_empty() {
+                        eprintln!("nothing new");
+                    }
+                    for e in events {
+                        match e {
+                            Event::Message {
+                                group, from, body, ..
+                            } => println!("[{group}] {from}: {body}"),
+                            Event::Changed {
+                                group,
+                                members,
+                                rotated,
+                            } => println!(
+                                "[{group}] membership changed ({members} member(s){})",
+                                if rotated {
+                                    ", moved to a new mailbox"
+                                } else {
+                                    ""
+                                }
+                            ),
+                            Event::Removed { group } => {
+                                println!("[{group}] you were removed; its history stays here")
+                            }
+                            Event::Refused { group, seq, why } => {
+                                println!("[{group}] entry {seq} refused: {why}")
+                            }
+                        }
+                    }
+                }
+                LargeCmd::History { group, limit } => {
+                    let (rec, msgs) = large::history(&home, &group, limit)?;
+                    println!("{} ({} member(s))", rec.name, rec.members);
+                    for m in msgs {
+                        let who = m
+                            .author
+                            .as_deref()
+                            .map(|o| spike_cli::groups::display_name(&home, o))
+                            .unwrap_or_default();
+                        println!("{who}: {}", m.body);
+                    }
                 }
             }
         }
@@ -1433,6 +1602,9 @@ async fn run() -> Result<()> {
                 ),
                 Outcome::GroupHistory { group, from, added } => println!("[{from} shared the last 7 days of {group}: {added} message(s) added, marked as shared]"),
                 Outcome::GroupInviteSettled { group, decision } => println!("[your other device {decision} the invite to {group}; settled here too]"),
+                Outcome::LargeInvite { group, from } => println!(
+                    "[large group invite: {from} invited you to {group}; `spike large accept` or `spike large decline`]"
+                ),
                 Outcome::GroupRemoved { group, by } => println!("[{by} removed you from {group}; its history stays here]"),
                 Outcome::SentCopy { to, body, .. } => {
                     println!("[you -> {to}, sent from your other device] {}", String::from_utf8_lossy(&body));

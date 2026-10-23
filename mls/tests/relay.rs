@@ -134,7 +134,7 @@ impl Node {
                     continue;
                 };
                 match self.group.as_mut().unwrap().process(&self.dev, dir, &inner) {
-                    Ok(Processed::Message(t)) => self.heard.push(t),
+                    Ok(Processed::Message(t, _)) => self.heard.push(t),
                     Ok(Processed::Commit {
                         rotated,
                         removed_me,

@@ -108,12 +108,12 @@ fn a_group_grows_and_everyone_reads_what_is_sent() {
     let wire = a.encrypt(b"hello group").unwrap();
     for m in [&mut b, &mut c] {
         match m.process(&dir, &wire).unwrap() {
-            Processed::Message(bytes) => assert_eq!(bytes, b"hello group"),
+            Processed::Message(bytes, _) => assert_eq!(bytes, b"hello group"),
             other => panic!("{other:?}"),
         }
     }
     let wire = c.encrypt(b"hi back").unwrap();
-    assert!(matches!(a.process(&dir, &wire).unwrap(), Processed::Message(m) if m == b"hi back"));
+    assert!(matches!(a.process(&dir, &wire).unwrap(), Processed::Message(m, _) if m == b"hi back"));
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn a_commit_changes_nothing_until_it_is_confirmed() {
     let wire = a.encrypt(b"still here").unwrap();
     assert!(matches!(
         b.process(&dir, &wire).unwrap(),
-        Processed::Message(_)
+        Processed::Message(..)
     ));
 
     // The next attempt is accepted.
@@ -393,7 +393,7 @@ fn a_message_sent_just_before_a_commit_still_arrives_after_it() {
     a.confirm();
     assert!(matches!(
         a.process(&dir, &late).unwrap(),
-        Processed::Message(_)
+        Processed::Message(..)
     ));
     let _ = out;
 }
@@ -617,7 +617,7 @@ fn garbage_is_an_error_not_a_panic_and_changes_nothing() {
     // And the real one still works afterwards.
     assert!(matches!(
         b.process(&dir, &good).unwrap(),
-        Processed::Message(_)
+        Processed::Message(..)
     ));
 }
 

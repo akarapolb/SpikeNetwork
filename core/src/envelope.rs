@@ -37,6 +37,8 @@ pub enum Kind {
     GroupHistoryRequest,
     /// A batch of that history (body: JSON `{"messages": [...]}`, ADR 0024 section 7).
     GroupHistory,
+    /// An invitation to a large (MLS) group: its Welcome and join bundle (body: JSON, ADR 0025).
+    LargeWelcome,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -146,6 +148,14 @@ impl Envelope {
         Ok(e)
     }
 
+    /// An invitation to a large group: `json` describes it, `welcome` is the uploaded Welcome.
+    pub fn large_welcome(json: &str, welcome: crate::attachment::Attachment) -> Result<Self> {
+        let mut e = Self::text(json)?;
+        e.kind = Kind::LargeWelcome;
+        e.attachment = Some(welcome);
+        Ok(e)
+    }
+
     /// A delete of message `target`.
     pub fn delete(target: &str) -> Result<Self> {
         let mut e = Self::text("")?;
@@ -191,7 +201,7 @@ impl Envelope {
                 | Kind::GroupStateRequest
                 | Kind::GroupHistoryRequest
                 | Kind::GroupHistory => e.group.is_some(),
-                Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => {
+                Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt | Kind::LargeWelcome => {
                     e.group.is_none() && e.gstate.is_none()
                 }
                 // A group message says which member list it was sent with.
@@ -205,7 +215,8 @@ impl Envelope {
             | Kind::GroupState
             | Kind::GroupStateRequest
             | Kind::GroupHistoryRequest
-            | Kind::GroupHistory => e.target.is_none(),
+            | Kind::GroupHistory
+            | Kind::LargeWelcome => e.target.is_none(),
             Kind::Edit | Kind::Delete => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
@@ -224,6 +235,8 @@ impl Envelope {
             | Kind::GroupStateRequest
             | Kind::GroupHistoryRequest
             | Kind::GroupHistory => e.attachment.is_none() && !e.body.is_empty(),
+            // The Welcome itself is too big for an envelope: it travels as an attachment.
+            Kind::LargeWelcome => e.attachment.is_some() && !e.body.is_empty(),
         };
         if e.v != VERSION
             || !id_ok
@@ -284,6 +297,31 @@ mod tests {
                 .contains("group"),
             "absent unless set"
         );
+    }
+
+    #[test]
+    fn a_large_group_welcome_carries_its_payload_as_a_file_and_nothing_else() {
+        let (att, _) = crate::attachment::seal_file("welcome", b"payload").unwrap();
+        let ok = Envelope::large_welcome("{}", att).unwrap();
+        assert!(Envelope::from_bytes(&ok.to_bytes()).is_ok());
+        let mut no_file = ok.clone();
+        no_file.attachment = None;
+        assert!(
+            Envelope::from_bytes(&no_file.to_bytes()).is_err(),
+            "the Welcome is the file"
+        );
+        let mut grouped = ok.clone();
+        grouped.group = Some("ab".repeat(16));
+        assert!(
+            Envelope::from_bytes(&grouped.to_bytes()).is_err(),
+            "not a small-group message"
+        );
+        let mut aimed = ok.clone();
+        aimed.target = Some("ab".repeat(16));
+        assert!(Envelope::from_bytes(&aimed.to_bytes()).is_err());
+        let mut empty = ok;
+        empty.body.clear();
+        assert!(Envelope::from_bytes(&empty.to_bytes()).is_err());
     }
 
     #[test]

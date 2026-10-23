@@ -306,6 +306,15 @@ impl Home {
         }
     }
 
+    /// Sealed bytes under `name`, or `None` if never written.
+    pub fn load_bytes(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        self.read_opt(name)
+    }
+
+    pub fn save_bytes(&self, name: &str, bytes: &[u8]) -> Result<()> {
+        self.write(name, bytes)
+    }
+
     fn read_opt(&self, name: &str) -> Result<Option<Vec<u8>>> {
         if self.dir.join(name).exists() {
             Ok(Some(self.read(name)?))

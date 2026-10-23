@@ -264,22 +264,8 @@ pub async fn send_file(
     Ok(report)
 }
 
-/// The decrypted bytes of a message's attachment: from this device if kept,
-/// otherwise downloaded from the relay holding it, checked, and kept.
-pub async fn fetch_attachment(
-    home: &Home,
-    relay: impl Into<Target>,
-    msg_id: &str,
-) -> Result<(Attachment, Vec<u8>)> {
-    let base: Target = relay.into();
-    let m = home.messages()?.find(msg_id)?;
-    let att = m
-        .attachment
-        .clone()
-        .ok_or_else(|| anyhow!("message {} has no attachment", &m.id[..8]))?;
-    if let Some(bytes) = home.load_attachment(&m.id)? {
-        return Ok((att, bytes));
-    }
+/// Download an attachment's chunks from the relay holding it, decrypt, and check them.
+pub(crate) async fn download_file(home: &Home, base: &Target, att: &Attachment) -> Result<Vec<u8>> {
     let url = att.relay.clone().unwrap_or_else(|| base.url.clone());
     let me = home.load_identity()?;
     let mut r = Relay::connect(
@@ -303,6 +289,26 @@ pub async fn fetch_attachment(
     }
     att.verify(&bytes)
         .map_err(|_| anyhow!("attachment failed its integrity check (size or hash mismatch)"))?;
+    Ok(bytes)
+}
+
+/// The decrypted bytes of a message's attachment: from this device if kept,
+/// otherwise downloaded from the relay holding it, checked, and kept.
+pub async fn fetch_attachment(
+    home: &Home,
+    relay: impl Into<Target>,
+    msg_id: &str,
+) -> Result<(Attachment, Vec<u8>)> {
+    let base: Target = relay.into();
+    let m = home.messages()?.find(msg_id)?;
+    let att = m
+        .attachment
+        .clone()
+        .ok_or_else(|| anyhow!("message {} has no attachment", &m.id[..8]))?;
+    if let Some(bytes) = home.load_attachment(&m.id)? {
+        return Ok((att, bytes));
+    }
+    let bytes = download_file(home, &base, &att).await?;
     home.save_attachment(&m.id, &bytes)?;
     Ok((att, bytes))
 }
@@ -481,7 +487,8 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
         | Kind::GroupState
         | Kind::GroupStateRequest
         | Kind::GroupHistoryRequest
-        | Kind::GroupHistory => {}
+        | Kind::GroupHistory
+        | Kind::LargeWelcome => {}
     }
     Ok(SendReport {
         id: env.id,

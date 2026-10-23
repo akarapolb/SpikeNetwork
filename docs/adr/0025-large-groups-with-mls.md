@@ -134,7 +134,7 @@ The `spike-mls` crate (`mls/`), openmls 0.9.2 and its companion crates pinned ex
 - **Not independently reviewed.** The ADR decision stands: independent review before anything real depends on this. openmls itself is unaudited and has had High advisories.
 - **Licence:** openmls pulls in `hpke-rs` (MPL-2.0). `deny.toml` carries three per-crate exceptions. **Accepted by the project owner, 2026-10-23.**
 - **Rejected commits stall a device.** A commit every member refuses still occupies a relay position; what a client does then (skip it, mark the group broken) is slice 2's problem and is not decided.
-- **Nothing here is used by a client.** Welcome and tree transport, the key-package flow, "needs to rejoin", leaving, and the dependency shape (the relay test makes `spike-mls` depend on the CLI in tests; slice 2 will have to invert that) are all slice 2.
+- **Nothing here is used by a client** (slice 2 below does). "Needs to rejoin" and leaving are still open. The relay test makes `spike-mls` depend on the CLI in tests while the CLI depends on `spike-mls`; Cargo allows that cycle through a dev-dependency, and it builds.
 - **Scale, measured once (below); other conditions are not.**
 
 **Scale measurement (2026-10-23).** `mls/tests/scale.rs`, release build, one machine, no network, one device per person, a group grown by adding people and then one more person added and one removed at each size (run by hand with `--ignored --nocapture`):
@@ -148,3 +148,25 @@ The `spike-mls` crate (`mls/`), openmls 0.9.2 and its companion crates pinned ex
 
 Everything grows roughly linearly and is cheap in time: a change at 500 members costs about 15 ms of work per device, so the snapshot taken before each commit (a copy of the same storage that is sealed to 3.6 MB, which takes 16 ms including encryption) is not a problem at this size. **Sizes are the finding.** A single-change commit at 500 members is 42 KB, under the relay's 64 KiB message limit, but a Welcome is 147 KB and a batch of adds would be larger, so the blob route in section 4 is needed (Welcome at about 250 members, commits earlier for batches), not optional. Still unmeasured: debug builds, a real network or a slow disk, devices with several leaves per person, a tree that has had many removals (blanked nodes), and phones.
 - Fuzz targets unrun, as above.
+
+## Slice 2: what was built (2026-10-23), the CLI core
+
+`cli/src/large.rs` and `spike large ...`: `keys`, `new`, `list`, `add`, `remove`, `accept`, `decline`, `send`, `sync`, `history`. It is the glue around `spike-mls`; the cryptography and rules are unchanged.
+
+- **Keys and state.** MLS key packages are published to the relay's key-package store (`large keys`); the device's MLS keys, openmls storage and each group's mailbox state are one sealed file in the home (`large-mls.enc`), records of groups another (`large-groups.enc`). A commit is **saved while pending, before it is sent**, and a message's ratchet is saved before the message is sent, so a crash can never reuse a message key and a commit that landed just before a crash is confirmed by the next sync when it sees its own entry.
+- **Who is who.** Credentials are checked against the device lists of contacts, our own, and lists fetched from the relay. When a credential cannot be checked because a list is missing or old, the library reports which owner, the client fetches that signed list and offers the same entry again (this is what the transactional processing in slice 1 is for). That is how people who are not each other's contacts can be in one group.
+- **Invitations need consent.** `add` claims one key package per device of the contact, commits, and sends the Welcome as an **uploaded encrypted file** (a new envelope kind, `large_welcome`; a Welcome at 500 members is 147 KB, far over the envelope limit, which settles the blob-route question for Welcomes) plus a small message. The invitee sees a pending invitation and **joins only on `accept`**. Nothing is read or sent for a group not joined.
+- **Races.** `add` and `remove` sync first, build the commit, save, append at the next position, and on a lost race discard it and redo it on the winner (five tries).
+- **Removal.** The group moves to the next mailbox in the same commit (slice 1); other members follow on their next `sync`; the removed person learns it from the old mailbox, keeps her history, and cannot send.
+
+**How it was tested.** 5 integration tests on a real relay (`cli/tests/large.rs`): people who are not contacts talking, consent, removal and rotation (both directions after it), missing key packages, restart. 4 protections mutation-checked (`cli/mutcheck_large.py`: fetching unknown members' lists in sync and in accept, resetting the cursor after rotation, refusing an add with no key package). One core test for the new envelope kind. Plus a run of the real binaries (`mls/demo_large.sh`): a relay and three people, invite, accept, talk, remove, history. The mutation run first showed a gap (nobody read from the new mailbox after a rotation) and the test was strengthened.
+
+**What it does not do.**
+- **No instant delivery:** `spike large sync` polls; `recv --follow` does not know about large groups yet.
+- **No leaving, no block, no admins beyond the creator, no change of policy, no new-member history, no files, no editing or deleting.** Policy is fixed at creation (admins add and remove).
+- **Own other devices are not handled:** the invitation goes to the contact; a second device of yours does not join, and a person's second device is added to a group only when the person is added (a device linked later is not added to existing groups).
+- **A rejected entry is skipped and reported** (`entry N refused`), and the cursor moves past it. That keeps a group usable but means a malicious or buggy commit is silently survived rather than escalated; whether to mark the group as broken is undecided.
+- **The Welcome file expires with the relay's blob retention.** An invitation left unaccepted too long cannot be accepted; the inviter has to add again, and the first commit stays in the group (a stale member who never joins). No tooling for that yet.
+- **A device in a group that never accepts** is a member who cannot read anything; removing it is manual.
+- **Several relays:** all of a group's mailbox traffic is on the relay it was created on, and key packages are claimed from each device's own relay.
+- Desktop screens are slice 3. Review, advisory watch and the independent review (slice 4) are still ahead; nothing here has been reviewed.

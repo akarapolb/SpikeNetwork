@@ -34,6 +34,10 @@ pub enum CredentialError {
 /// check it themselves.
 pub trait Directory {
     fn device_list(&self, owner: &[u8; 32]) -> Option<DeviceList>;
+
+    /// Called when a credential could not be checked because this owner's list is missing or older
+    /// than the credential. A client records it, fetches the list, and offers the same message again.
+    fn missed(&self, _owner: &[u8; 32]) {}
 }
 
 /// A directory held in memory, keyed by owner key.
@@ -138,8 +142,12 @@ pub fn verify_leaf(
     let list = dir
         .device_list(&owner)
         .filter(|l| hex::decode(&l.owner).ok().as_deref() == Some(&owner[..]) && l.verify().is_ok())
-        .ok_or(CredentialError::UnknownOwner)?;
+        .ok_or_else(|| {
+            dir.missed(&owner);
+            CredentialError::UnknownOwner
+        })?;
     if list_version > list.version {
+        dir.missed(&owner);
         return Err(CredentialError::StaleDirectory {
             have: list.version,
             need: list_version,

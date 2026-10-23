@@ -91,14 +91,14 @@ fn mutations(good: &[u8]) -> Vec<Vec<u8>> {
 fn a_mutated_application_message_never_panics_and_is_never_taken_for_the_real_one() {
     let mut w = world();
     for bad in mutations(&w.message) {
-        if let Ok(Processed::Message(m)) = w.b.1.process(&w.b.0, &w.dir, &bad) {
+        if let Ok(Processed::Message(m, _)) = w.b.1.process(&w.b.0, &w.dir, &bad) {
             panic!("accepted a mutation: {m:?}");
         }
     }
     // After all of that, the real one is still readable.
     assert!(matches!(
         w.b.1.process(&w.b.0, &w.dir, &w.message).unwrap(),
-        Processed::Message(m) if m == b"a real message"
+        Processed::Message(m, _) if m == b"a real message"
     ));
 }
 

@@ -710,6 +710,7 @@ impl Session {
                 Outcome::GroupJoined { .. }
                 | Outcome::GroupChanged { .. }
                 | Outcome::GroupHistory { .. }
+                | Outcome::LargeInvite { .. }
                 | Outcome::GroupInviteSettled { .. } => out.groups += 1,
                 Outcome::GroupRemoved { group, .. } => {
                     out.groups += 1;

@@ -35,6 +35,12 @@ fn bad(what: &'static str) -> Error {
 
 /// Seal a device and its groups under `name`.
 pub fn save(vault: &Vault, name: &str, dev: &Device, groups: &[&Group]) -> Result<Vec<u8>, Error> {
+    let json = export(dev, groups)?;
+    vault.seal(name, &json).map_err(|_| bad("seal"))
+}
+
+/// The state as plaintext bytes, for a caller that seals it itself. Handle as a secret.
+pub fn export(dev: &Device, groups: &[&Group]) -> Result<Vec<u8>, Error> {
     let storage = dev
         .provider
         .storage()
@@ -63,8 +69,7 @@ pub fn save(vault: &Vault, name: &str, dev: &Device, groups: &[&Group]) -> Resul
             })
             .collect(),
     };
-    let json = serde_json::to_vec(&saved).map_err(|_| bad("serialize"))?;
-    vault.seal(name, &json).map_err(|_| bad("seal"))
+    serde_json::to_vec(&saved).map_err(|_| bad("serialize"))
 }
 
 /// Open what [`save`] sealed.
@@ -72,7 +77,12 @@ pub fn load(vault: &Vault, name: &str, sealed: &[u8]) -> Result<(Device, Vec<Gro
     let json = vault
         .open(name, sealed)
         .map_err(|_| bad("state does not open"))?;
-    let s: Saved = serde_json::from_slice(&json).map_err(|_| bad("state is malformed"))?;
+    import(&json)
+}
+
+/// Read what [`export`] wrote.
+pub fn import(json: &[u8]) -> Result<(Device, Vec<Group>), Error> {
+    let s: Saved = serde_json::from_slice(json).map_err(|_| bad("state is malformed"))?;
     if s.v != 1 {
         return Err(bad("unknown state version"));
     }

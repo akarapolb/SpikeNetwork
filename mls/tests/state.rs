@@ -51,12 +51,12 @@ fn a_device_and_its_groups_survive_a_restart() {
     // Still a working member: reads, writes, and follows the next commit.
     let wire = ga.encrypt(&da, b"after restart").unwrap();
     assert!(
-        matches!(gb.process(&db, &dir, &wire).unwrap(), Processed::Message(m) if m == b"after restart")
+        matches!(gb.process(&db, &dir, &wire).unwrap(), Processed::Message(m, _) if m == b"after restart")
     );
     let wire = gb.encrypt(&db, b"and back").unwrap();
     assert!(matches!(
         ga.process(&da, &dir, &wire).unwrap(),
-        Processed::Message(_)
+        Processed::Message(..)
     ));
     let su = ga.self_update(&da).unwrap();
     ga.confirm(&da).unwrap();

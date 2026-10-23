@@ -211,8 +211,8 @@ pub struct Outgoing {
 
 #[derive(Debug)]
 pub enum Processed {
-    /// A decrypted application message.
-    Message(Vec<u8>),
+    /// A decrypted application message and who sent it (an authenticated member of this group).
+    Message(Vec<u8>, LeafIdentity),
     /// A commit, validated and merged.
     Commit {
         epoch: u64,
@@ -611,7 +611,10 @@ impl Group {
         let sender = processed.sender().clone();
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(a) => {
-                Ok(Processed::Message(a.into_bytes()))
+                let Sender::Member(index) = sender else {
+                    return Err(PolicyError::Forbidden("external").into());
+                };
+                Ok(Processed::Message(a.into_bytes(), self.identity_at(index)?))
             }
             ProcessedMessageContent::OwnPrivateMessage => Ok(Processed::Own),
             ProcessedMessageContent::StagedCommitMessage(sc) => {

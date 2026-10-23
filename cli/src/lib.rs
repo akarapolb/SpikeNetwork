@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod client;
 pub mod groups;
+pub mod large;
 pub mod link;
 pub mod messages;
 pub mod ops;
@@ -143,6 +144,8 @@ pub enum Outcome {
     /// Another of your devices accepted, declined or blocked an invite that this device also held,
     /// and it is settled here too. `decision` is "accepted", "declined" or "blocked".
     GroupInviteSettled { group: String, decision: String },
+    /// A contact invited you to a large group (ADR 0025). Nothing is joined until you accept.
+    LargeInvite { group: String, from: String },
     /// Not decryptable: corrupted, tampered, replayed, or not for us.
     Invalid,
 }
@@ -326,8 +329,11 @@ pub fn process(
                         persist(sessions, me)?;
                         return Ok(outcome);
                     }
-                    if matches!(env.kind, Kind::AgentRequest | Kind::AgentReceipt) {
-                        // Copies of our own agent traffic: nothing to store.
+                    if matches!(
+                        env.kind,
+                        Kind::AgentRequest | Kind::AgentReceipt | Kind::LargeWelcome
+                    ) {
+                        // Copies of our own agent traffic, or an invitation for someone else: nothing to store.
                         persist(sessions, me)?;
                         return Ok(Outcome::Ignored);
                     }
@@ -394,6 +400,11 @@ pub fn process(
                         } else {
                             agent::on_receipt(home, &c.name, &peer, &env.body)?
                         };
+                        persist(sessions, me)?;
+                        return Ok(outcome);
+                    }
+                    if env.kind == Kind::LargeWelcome {
+                        let outcome = large::on_welcome(home, &contacts[contact].name, &env)?;
                         persist(sessions, me)?;
                         return Ok(outcome);
                     }
