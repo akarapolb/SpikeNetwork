@@ -521,6 +521,11 @@ pub async fn recv(
                 outcome = o;
             }
         }
+        // A waiting decision for an invite settled the moment it arrived: that moved the inviter's
+        // session into the main store on disk, so what we hold in memory is out of date.
+        if matches!(outcome, Outcome::GroupInviteSettled { .. }) {
+            sessions = home.load_sessions()?;
+        }
         // Acknowledge first: the request is now durably handled on our side, and
         // an answer that fails can be asked for again.
         relay.ack(&d.id).await?;

@@ -43,6 +43,14 @@ pub enum SyncMsg {
         approve: bool,
         note: String,
     },
+    /// "I accepted, declined or blocked the invite to this group": every device of yours that
+    /// holds the same invite settles it too (ADR 0024). A block carries the inviter's card.
+    GroupInvite {
+        group: String,
+        decision: crate::groups::InviteDecision,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        card: Option<String>,
+    },
 }
 
 fn is_hex(s: &str, len: usize) -> bool {
@@ -89,6 +97,13 @@ impl SyncMsg {
             SyncMsg::AgentDecision {
                 request_id, note, ..
             } => is_hex(request_id, 32) && note.len() <= 200,
+            SyncMsg::GroupInvite { group, card, .. } => {
+                is_hex(group, 32)
+                    && card.as_ref().is_none_or(|c| {
+                        c.len() <= spike_core::envelope::MAX_INTRO
+                            && !c.chars().any(char::is_control)
+                    })
+            }
             SyncMsg::CatchUpBatch { messages, .. } => messages.iter().all(|m| {
                 is_hex(&m.id, 32)
                     && peer_ok(m)
@@ -180,6 +195,34 @@ mod tests {
                 last: true
             }]
         );
+    }
+
+    #[test]
+    fn invite_decisions_are_checked() {
+        use crate::groups::InviteDecision::{Accept, Block};
+        let ok = |m: SyncMsg| SyncMsg::from_envelope(&m.to_envelope().unwrap()).is_ok();
+        let group = "cd".repeat(16);
+        assert!(ok(SyncMsg::GroupInvite {
+            group: group.clone(),
+            decision: Accept,
+            card: None
+        }));
+        assert!(ok(SyncMsg::GroupInvite {
+            group: group.clone(),
+            decision: Block,
+            card: Some("spike2:ab".into())
+        }));
+        assert!(!ok(SyncMsg::GroupInvite {
+            group: "nothex".into(),
+            decision: Accept,
+            card: None
+        }));
+        let huge = "a".repeat(spike_core::envelope::MAX_INTRO + 1);
+        assert!(!ok(SyncMsg::GroupInvite {
+            group,
+            decision: Block,
+            card: Some(huge)
+        }));
     }
 
     #[test]

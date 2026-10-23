@@ -389,10 +389,25 @@ enum GroupCmd {
         #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
         relay: String,
     },
-    /// Accept an invite to a group.
-    Accept { group: String },
-    /// Decline an invite to a group. The inviter is not told.
-    Decline { group: String },
+    /// Accept an invite to a group. Your other devices join too.
+    Accept {
+        group: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Decline an invite to a group. The inviter is not told; your other devices decline too.
+    Decline {
+        group: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Decline an invite and block the inviter (only for someone who is not a contact): their
+    /// later first messages are dropped, on all your devices.
+    Block {
+        group: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
 }
 
 fn print_group_send(r: &spike_cli::groups::GroupSend) {
@@ -767,14 +782,37 @@ async fn run() -> Result<()> {
                         print_group_send(&r);
                     }
                 }
-                GroupCmd::Accept { group } => {
-                    let s = groups::accept(&home, &group)?;
-                    println!("joined {}", s.name);
+                GroupCmd::Accept { group, relay } => {
+                    let told = groups::decide_invite(
+                        &home,
+                        target(relay),
+                        &group,
+                        groups::InviteDecision::Accept,
+                    )
+                    .await?;
+                    let s = groups::find(&home, &group)?.current()?;
+                    println!("joined {} ({told} other device(s) told)", s.name);
                     print_group(&home, &s);
                 }
-                GroupCmd::Decline { group } => {
-                    groups::decline(&home, &group)?;
-                    println!("declined; the inviter is not told");
+                GroupCmd::Decline { group, relay } => {
+                    let told = groups::decide_invite(
+                        &home,
+                        target(relay),
+                        &group,
+                        groups::InviteDecision::Decline,
+                    )
+                    .await?;
+                    println!("declined; the inviter is not told ({told} other device(s) told)");
+                }
+                GroupCmd::Block { group, relay } => {
+                    let told = groups::decide_invite(
+                        &home,
+                        target(relay),
+                        &group,
+                        groups::InviteDecision::Block,
+                    )
+                    .await?;
+                    println!("declined and blocked: their later first messages are dropped ({told} other device(s) told). `spike unblock` undoes it.");
                 }
             }
         }
@@ -1315,6 +1353,7 @@ async fn run() -> Result<()> {
                     "[{by} changed the group {group} (version {version}){}]",
                     if released > 0 { format!("; {released} waiting message(s) shown") } else { String::new() }
                 ),
+                Outcome::GroupInviteSettled { group, decision } => println!("[your other device {decision} the invite to {group}; settled here too]"),
                 Outcome::GroupRemoved { group, by } => println!("[{by} removed you from {group}; its history stays here]"),
                 Outcome::SentCopy { to, body, .. } => {
                     println!("[you -> {to}, sent from your other device] {}", String::from_utf8_lossy(&body));

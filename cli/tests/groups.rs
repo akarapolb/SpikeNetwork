@@ -714,3 +714,350 @@ async fn a_group_follows_you_to_your_other_devices() {
         [("alice".into(), "from my phone".into())]
     );
 }
+
+// ----- invite decisions follow you to your other devices; block an inviter -----
+
+/// Alice, and Eve with a laptop and a phone who have never heard of Alice. Alice knows Eve.
+async fn alice_and_eve_with_two_devices() -> (String, Dev, Dev, Dev) {
+    let url = relay().await;
+    let alice = dev("alice", &url).await;
+    let (laptop, phone) = two_devices("eve", &url).await;
+    alice
+        .0
+        .add_contact("eve", &laptop.0.identity_card().unwrap(), false)
+        .unwrap();
+    (url, alice, laptop, phone)
+}
+
+fn invites(got: &[Outcome]) -> usize {
+    got.iter()
+        .filter(|o| matches!(o, Outcome::GroupInvite { .. }))
+        .count()
+}
+
+fn settled(got: &[Outcome], word: &str) -> bool {
+    got.iter()
+        .any(|o| matches!(o, Outcome::GroupInviteSettled { decision, .. } if decision == word))
+}
+
+#[tokio::test]
+async fn an_invite_decision_follows_you_to_your_other_devices() {
+    use groups::InviteDecision::{Accept, Decline};
+    let (url, alice, laptop, phone) = alice_and_eve_with_two_devices().await;
+    let pilot = groups::create(
+        &alice.0,
+        url.as_str(),
+        "Pilot",
+        &["eve".into()],
+        AddBy::Admins,
+    )
+    .await
+    .unwrap()
+    .0
+    .group;
+    let club = groups::create(
+        &alice.0,
+        url.as_str(),
+        "Club",
+        &["eve".into()],
+        AddBy::Admins,
+    )
+    .await
+    .unwrap()
+    .0
+    .group;
+    for d in [&laptop, &phone] {
+        let got = recv(d, &url).await;
+        assert_eq!(invites(&got), 2, "both devices were invited twice: {got:?}");
+    }
+
+    // Accepting on the laptop tells the phone, which joins too and can read what follows.
+    let told = groups::decide_invite(&laptop.0, url.as_str(), &pilot, Accept)
+        .await
+        .unwrap();
+    assert_eq!(told, 1, "one other device was told");
+    assert_eq!(
+        groups::find(&laptop.0, &pilot).unwrap().status,
+        Status::Joined
+    );
+    let got = recv(&phone, &url).await;
+    assert!(settled(&got, "accepted"), "{got:?}");
+    assert_eq!(
+        groups::find(&phone.0, &pilot).unwrap().status,
+        Status::Joined
+    );
+    groups::send(&alice.0, url.as_str(), "Pilot", "welcome, both")
+        .await
+        .unwrap();
+    for d in [&laptop, &phone] {
+        let got = recv(d, &url).await;
+        assert_eq!(texts(&got).len(), 1, "{got:?}");
+    }
+
+    // Declining on the phone leaves the laptop out of the other group.
+    groups::decide_invite(&phone.0, url.as_str(), &club, Decline)
+        .await
+        .unwrap();
+    let got = recv(&laptop, &url).await;
+    assert!(settled(&got, "declined"), "{got:?}");
+    for d in [&laptop, &phone] {
+        assert_eq!(groups::find(&d.0, &club).unwrap().status, Status::Left);
+    }
+    // Deciding twice is refused: the invite is gone.
+    assert!(
+        groups::decide_invite(&laptop.0, url.as_str(), &club, Accept)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn a_decision_that_arrives_before_its_invite_is_remembered() {
+    use groups::InviteDecision::Accept;
+    let (url, alice, laptop, phone) = alice_and_eve_with_two_devices().await;
+    let gid = groups::create(
+        &alice.0,
+        url.as_str(),
+        "Pilot",
+        &["eve".into()],
+        AddBy::Admins,
+    )
+    .await
+    .unwrap()
+    .0
+    .group;
+    assert_eq!(invites(&recv(&laptop, &url).await), 1);
+
+    // The phone hears the decision before its own copy of the invite (say, over a faster relay).
+    let o = groups::apply_invite_decision(&phone.0, &gid, Accept, None).unwrap();
+    assert_eq!(o, Outcome::Ignored);
+    assert!(groups::find(&phone.0, &gid).is_err(), "nothing to show yet");
+    let got = recv(&phone, &url).await;
+    assert!(
+        settled(&got, "accepted"),
+        "the invite settled on arrival: {got:?}"
+    );
+    assert_eq!(invites(&got), 0, "it never shows as an open invite");
+    assert_eq!(groups::find(&phone.0, &gid).unwrap().status, Status::Joined);
+}
+
+#[tokio::test]
+async fn blocking_an_inviter_blocks_them_on_every_device_and_drops_later_invites() {
+    use groups::InviteDecision::Block;
+    let (url, alice, laptop, phone) = alice_and_eve_with_two_devices().await;
+    let pilot = groups::create(
+        &alice.0,
+        url.as_str(),
+        "Pilot",
+        &["eve".into()],
+        AddBy::Admins,
+    )
+    .await
+    .unwrap()
+    .0
+    .group;
+    for d in [&laptop, &phone] {
+        assert_eq!(invites(&recv(d, &url).await), 1);
+    }
+
+    let told = groups::decide_invite(&laptop.0, url.as_str(), &pilot, Block)
+        .await
+        .unwrap();
+    assert_eq!(told, 1);
+    assert_eq!(
+        groups::find(&laptop.0, &pilot).unwrap().status,
+        Status::Left
+    );
+    let got = recv(&phone, &url).await;
+    assert!(settled(&got, "blocked"), "{got:?}");
+    for d in [&laptop, &phone] {
+        let blocked = requests::blocked(&d.0).unwrap();
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0].owner, owner(&alice));
+        assert_eq!(groups::find(&d.0, &pilot).unwrap().status, Status::Left);
+    }
+
+    // A new group from the blocked person never shows up on either device.
+    let club = groups::create(
+        &alice.0,
+        url.as_str(),
+        "Club",
+        &["eve".into()],
+        AddBy::Admins,
+    )
+    .await
+    .unwrap()
+    .0
+    .group;
+    for d in [&laptop, &phone] {
+        let got = recv(d, &url).await;
+        assert_eq!(invites(&got), 0, "{got:?}");
+        assert!(groups::find(&d.0, &club).is_err());
+    }
+}
+
+#[tokio::test]
+async fn only_a_stranger_can_be_blocked_from_an_invite() {
+    use groups::InviteDecision::Block;
+    let (url, alice, _bob, carol) = pilot().await;
+    // Carol leaves and Alice (a contact) adds her back: an invite, but not from a stranger.
+    groups::leave(&carol.0, url.as_str(), "Pilot")
+        .await
+        .unwrap();
+    recv(&alice, &url).await;
+    groups::add(&alice.0, url.as_str(), "Pilot", &["carol".into()])
+        .await
+        .unwrap();
+    let got = recv(&carol, &url).await;
+    assert_eq!(invites(&got), 1, "{got:?}");
+    let e = groups::decide_invite(&carol.0, url.as_str(), "Pilot", Block)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("not in your contacts"), "{e}");
+    assert_eq!(
+        groups::find(&carol.0, "Pilot").unwrap().status,
+        Status::Invited
+    );
+    assert!(requests::blocked(&carol.0).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_former_member_stays_known_but_cannot_write_privately_until_added() {
+    let (url, _alice, bob, carol) = pilot().await;
+    // Carol knows Bob only from the group; they have a session from his group messages.
+    groups::send(&bob.0, url.as_str(), "Pilot", "hello from bob")
+        .await
+        .unwrap();
+    assert_eq!(texts(&recv(&carol, &url).await).len(), 1);
+    bob.0
+        .add_contact("carol", &carol.0.identity_card().unwrap(), false)
+        .unwrap();
+
+    // Private messages from him are refused with a hint, in the group and after she leaves it;
+    // they are not lost to a request she could not read (the old session lives in her main store).
+    for round in 0..2 {
+        if round == 1 {
+            groups::leave(&carol.0, url.as_str(), "Pilot")
+                .await
+                .unwrap();
+        }
+        ops::send(&bob.0, url.as_str(), "carol", b"psst")
+            .await
+            .unwrap();
+        let got = recv(&carol, &url).await;
+        assert!(
+            matches!(got.as_slice(), [Outcome::Rejected { .. }]),
+            "round {round}: {got:?}"
+        );
+    }
+    assert!(requests::list(&carol.0).unwrap().is_empty());
+
+    // Adding him as a contact is what lets him write to her one to one.
+    carol
+        .0
+        .add_contact("bob", &bob.0.identity_card().unwrap(), false)
+        .unwrap();
+    ops::send(&bob.0, url.as_str(), "carol", b"now it works")
+        .await
+        .unwrap();
+    let got = recv(&carol, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::Message { from, .. }] if from == "bob"),
+        "{got:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_blocked_inviter_cannot_invite_you_again_even_if_you_share_a_group() {
+    use groups::InviteDecision::{Accept, Block};
+    let (url, alice, laptop, phone) = alice_and_eve_with_two_devices().await;
+    let ids: Vec<String> = {
+        let mut v = vec![];
+        for name in ["Pilot", "Club"] {
+            v.push(
+                groups::create(&alice.0, url.as_str(), name, &["eve".into()], AddBy::Admins)
+                    .await
+                    .unwrap()
+                    .0
+                    .group,
+            );
+        }
+        v
+    };
+    for d in [&laptop, &phone] {
+        assert_eq!(invites(&recv(d, &url).await), 2);
+    }
+    // Eve joins Pilot (so Alice is a known member on both devices), then blocks Alice over Club.
+    groups::decide_invite(&laptop.0, url.as_str(), &ids[0], Accept)
+        .await
+        .unwrap();
+    groups::decide_invite(&laptop.0, url.as_str(), &ids[1], Block)
+        .await
+        .unwrap();
+    let got = recv(&phone, &url).await;
+    assert!(
+        settled(&got, "accepted") && settled(&got, "blocked"),
+        "{got:?}"
+    );
+
+    // A third group from Alice is dropped on both devices; Pilot, which Eve chose, still works.
+    let third = groups::create(
+        &alice.0,
+        url.as_str(),
+        "Third",
+        &["eve".into()],
+        AddBy::Admins,
+    )
+    .await
+    .unwrap()
+    .0
+    .group;
+    groups::send(&alice.0, url.as_str(), "Pilot", "still here")
+        .await
+        .unwrap();
+    for d in [&laptop, &phone] {
+        let got = recv(d, &url).await;
+        assert_eq!(invites(&got), 0, "{got:?}");
+        assert!(
+            groups::find(&d.0, &third).is_err(),
+            "no trace of the blocked invite"
+        );
+        assert_eq!(
+            texts(&got).len(),
+            1,
+            "the group she joined keeps working: {got:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn blocking_an_inviter_also_clears_their_other_waiting_invites() {
+    use groups::InviteDecision::Block;
+    let (url, alice, laptop, phone) = alice_and_eve_with_two_devices().await;
+    let mut ids = vec![];
+    for name in ["One", "Two", "Three"] {
+        ids.push(
+            groups::create(&alice.0, url.as_str(), name, &["eve".into()], AddBy::Admins)
+                .await
+                .unwrap()
+                .0
+                .group,
+        );
+    }
+    for d in [&laptop, &phone] {
+        assert_eq!(invites(&recv(d, &url).await), 3);
+    }
+    groups::decide_invite(&laptop.0, url.as_str(), &ids[0], Block)
+        .await
+        .unwrap();
+    recv(&phone, &url).await;
+    for d in [&laptop, &phone] {
+        for id in &ids {
+            assert_eq!(
+                groups::find(&d.0, id).unwrap().status,
+                Status::Left,
+                "every waiting invite from the blocked person is gone"
+            );
+        }
+    }
+}

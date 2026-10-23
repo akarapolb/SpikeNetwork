@@ -565,11 +565,16 @@ function unverifiedText(d) {
 function inviteScreen() {
   const d = st.gdetail, back = () => { st.group = null; st.gdetail = null; st.screen = null; render(); };
   const stranger = (d.invited_by || "").startsWith("~") || !d.invited_by;
-  const decide = async (accept) => {
+  const decide = async (kind) => {
+    if (kind === "block" && !confirm(`Block ${d.invited_by || "this person"}?
+
+This declines the invite, and anything they send you from now on is dropped, on all your devices. You can unblock them in Settings.`)) return;
     try {
-      await invoke(accept ? "group_accept" : "group_decline", { id: d.id });
-      if (!accept) { st.group = null; st.gdetail = null; }
-      await refresh(); toast(accept ? `You joined ${d.name}.` : "Declined. They are not told.");
+      await invoke({ accept: "group_accept", decline: "group_decline", block: "group_block" }[kind], { id: d.id });
+      if (kind !== "accept") { st.group = null; st.gdetail = null; }
+      if (kind === "block") st.blockedLoaded = false;
+      await refresh();
+      toast(kind === "accept" ? `You joined ${d.name}. Your other devices join too.` : kind === "block" ? "Declined and blocked. They are not told." : "Declined. They are not told.");
     } catch (e) { toast(String(e)); }
   };
   return [header("Group invite", back), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
@@ -578,8 +583,11 @@ function inviteScreen() {
       d.members.map((m) => h("div", { class: "member" }, h("span", { class: "tile sm c-neutral", "aria-hidden": "true" }, memLetter(m)),
         h("span", { class: "body" }, h("b", { style: "font-weight:600" }, m.you ? "You" : m.name, m.name === d.invited_by ? h("span", { class: "tag plain", style: "margin-left:8px" }, "added you") : null), h("span", { class: "note" }, m.you ? "" : m.contact ? (m.verified ? "In your contacts · verified" : "In your contacts · not verified") : "Not in your contacts"))))),
     stranger ? h("div", { class: "status warn" }, h("b", {}, "You do not know who added you."), h("span", {}, "Join only if you expect this. Members you do not know are shown as not verified.")) : null,
-    h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:10px" }, h("button", { class: "btn big", type: "button", onclick: () => decide(false) }, "Decline"), h("button", { class: "btn primary big", type: "button", onclick: () => decide(true) }, "Join the group")),
-    h("p", { class: "note" }, "If you decline, they are not told, and anyone can invite you again.")))];
+    h("div", { style: `display:grid;grid-template-columns:${d.can_block ? "1fr 1fr 1fr" : "1fr 1fr"};gap:10px` },
+      d.can_block ? h("button", { class: "btn big danger", type: "button", onclick: () => decide("block") }, "Block") : null,
+      h("button", { class: "btn big", type: "button", onclick: () => decide("decline") }, "Decline"),
+      h("button", { class: "btn primary big", type: "button", onclick: () => decide("accept") }, "Join the group")),
+    h("p", { class: "note" }, d.can_block ? "Decline: they are not told, and anyone can invite you again. Block also drops anything this person sends you from now on. Your decision reaches your other devices." : "If you decline, they are not told, and anyone can invite you again. Your decision reaches your other devices.")))];
 }
 function segChoice(label, value, opts, onpick, disabled) {
   return h("div", { class: "optrow" }, h("b", { style: "font-weight:600" }, label),

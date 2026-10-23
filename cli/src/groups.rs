@@ -25,11 +25,16 @@ use spike_core::envelope::{Envelope, Kind};
 use spike_core::group::{AddBy, Added, Chain, Draft, GroupState, History, Member, MessageCheck};
 use spike_core::identity::{DeviceCard, Identity};
 use spike_core::owner::{IdentityCard, Update};
+use spike_core::session::Sessions;
 use std::collections::{BTreeMap, HashMap};
 
 const GROUPS: &str = "groups.enc";
 const MEMBERS: &str = "members.enc";
 const OUTBOX: &str = "group-outbox.enc";
+const DECISIONS: &str = "invite-decisions.enc";
+/// How long a decision from another of your devices waits for its invite to arrive here.
+const DECISION_TTL_MS: u64 = 30 * 24 * 3600 * 1000;
+const MAX_DECISIONS: usize = 50;
 /// Messages held per group while the state they name is fetched.
 pub const MAX_HELD: usize = 50;
 /// Groups waiting for you to accept, from people who are not contacts.
@@ -46,6 +51,41 @@ pub enum Status {
     Invited,
     /// You left, declined, or were removed. History stays; a later add is an invite.
     Left,
+}
+
+/// What you chose to do with an invite.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InviteDecision {
+    Accept,
+    Decline,
+    /// Decline, and drop everything the inviter sends from now on. Only for someone who is not a contact.
+    Block,
+}
+
+impl InviteDecision {
+    fn word(self) -> &'static str {
+        match self {
+            Self::Accept => "accepted",
+            Self::Decline => "declined",
+            Self::Block => "blocked",
+        }
+    }
+}
+
+/// A decision made on another of your devices for an invite this device has not received yet.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct PendingDecision {
+    group: String,
+    decision: InviteDecision,
+    at: u64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// A group message that names a state we do not hold yet.
@@ -193,7 +233,8 @@ pub async fn refresh_member_cards(
     let mine = my_owner(home)?;
     let mut wanted: BTreeMap<String, Option<String>> = BTreeMap::new();
     for r in list(home)? {
-        if r.status == Status::Left {
+        // Only groups you are in: the people in an invite stay strangers until you accept.
+        if r.status != Status::Joined {
             continue;
         }
         for m in r.current()?.members {
@@ -722,8 +763,158 @@ pub async fn leave(home: &Home, relay: impl Into<Target>, group: &str) -> Result
     publish(home, &relay.into(), Some(&cur), &next).await
 }
 
+fn remember_decision(home: &Home, group: &str, decision: InviteDecision) -> Result<()> {
+    let now = now_ms();
+    let mut all: Vec<PendingDecision> = home.load_json(DECISIONS)?;
+    all.retain(|p| p.group != group && p.at + DECISION_TTL_MS > now);
+    all.push(PendingDecision {
+        group: group.to_string(),
+        decision,
+        at: now,
+    });
+    let extra = all.len().saturating_sub(MAX_DECISIONS);
+    all.drain(..extra);
+    home.save_json(DECISIONS, &all)
+}
+
+/// The decision another of your devices made for this group, if one is waiting (used once).
+fn take_decision(home: &Home, group: &str) -> Result<Option<InviteDecision>> {
+    let now = now_ms();
+    let mut all: Vec<PendingDecision> = home.load_json(DECISIONS)?;
+    all.retain(|p| p.at + DECISION_TTL_MS > now);
+    let hit = all
+        .iter()
+        .position(|p| p.group == group)
+        .map(|i| all.remove(i).decision);
+    home.save_json(DECISIONS, &all)?;
+    Ok(hit)
+}
+
+/// Decline every invite still waiting from this person (owner key): you blocked them.
+fn decline_invites_from(home: &Home, owner: &str) -> Result<()> {
+    for r in list(home)? {
+        if r.status == Status::Invited && r.invited_by.as_deref() == Some(owner) {
+            decline(home, r.id())?;
+        }
+    }
+    Ok(())
+}
+
+/// Accept, decline or block an invite, then tell your other devices (best effort: offline, they
+/// decide for themselves). Returns how many were told. Blocking is only for an inviter who is not
+/// a contact: a contact's messages are never dropped, so a block would do nothing.
+pub async fn decide_invite(
+    home: &Home,
+    relay: impl Into<Target>,
+    group: &str,
+    decision: InviteDecision,
+) -> Result<usize> {
+    let rec = find(home, group)?;
+    if rec.status != Status::Invited {
+        bail!("there is no pending invite for this group");
+    }
+    let gid = rec.id().to_string();
+    let card = rec.stranger.as_ref().map(|(_, c)| c.clone());
+    match decision {
+        InviteDecision::Accept => {
+            accept(home, &gid)?;
+        }
+        InviteDecision::Decline => decline(home, &gid)?,
+        InviteDecision::Block => {
+            let Some(card) = &card else {
+                bail!("you can only block someone who is not in your contacts");
+            };
+            crate::requests::add_block(home, card)?;
+            decline(home, &gid)?;
+            decline_invites_from(home, &IdentityCard::decode(card)?.owner_hex())?;
+        }
+    }
+    let msg = crate::sync::SyncMsg::GroupInvite {
+        group: gid,
+        decision,
+        card: card.filter(|_| decision == InviteDecision::Block),
+    };
+    Ok(ops::broadcast_own(home, relay.into(), &msg)
+        .await
+        .unwrap_or(0))
+}
+
+/// Apply a decision another of your devices made (from `apply_sync`). An invite that has not
+/// reached this device yet is settled the moment it does. A block also drops the inviter's later
+/// first messages here, whether or not this device held the invite.
+pub fn apply_invite_decision(
+    home: &Home,
+    group: &str,
+    decision: InviteDecision,
+    card: Option<&str>,
+) -> Result<Outcome> {
+    let mut main = home.load_sessions()?;
+    let o = apply_invite_decision_in(home, &mut main, group, decision, card)?;
+    home.save_sessions(&main)?;
+    Ok(o)
+}
+
+/// [`apply_invite_decision`] on sessions the caller holds in memory and saves itself.
+pub fn apply_invite_decision_in(
+    home: &Home,
+    main: &mut Sessions,
+    group: &str,
+    decision: InviteDecision,
+    card: Option<&str>,
+) -> Result<Outcome> {
+    let mut blocked_owner = None;
+    if decision == InviteDecision::Block {
+        if let Some(c) = card {
+            if let Err(e) = crate::requests::add_block(home, c) {
+                return Ok(Outcome::Rejected {
+                    reason: format!("a block from your other device named an invalid card: {e}"),
+                });
+            }
+            blocked_owner = IdentityCard::decode(c).ok().map(|id| id.owner_hex());
+        }
+    }
+    let rec = list(home)?.into_iter().find(|r| r.id() == group);
+    let outcome = match rec {
+        Some(r) if r.status == Status::Invited => {
+            let name = r.current()?.name;
+            match decision {
+                InviteDecision::Accept => {
+                    accept_into(home, group, main)?;
+                }
+                InviteDecision::Decline | InviteDecision::Block => decline(home, group)?,
+            }
+            Outcome::GroupInviteSettled {
+                group: name,
+                decision: decision.word().into(),
+            }
+        }
+        // Already settled here, or you are in it: nothing to change.
+        Some(_) => Outcome::Ignored,
+        None => {
+            if decision != InviteDecision::Block {
+                remember_decision(home, group, decision)?;
+            }
+            Outcome::Ignored
+        }
+    };
+    if let Some(owner) = blocked_owner {
+        decline_invites_from(home, &owner)?;
+    }
+    Ok(outcome)
+}
+
 /// Accept an invite: the group's messages are shown from now on.
 pub fn accept(home: &Home, group: &str) -> Result<GroupState> {
+    let mut main = home.load_sessions()?;
+    let s = accept_into(home, group, &mut main)?;
+    home.save_sessions(&main)?;
+    Ok(s)
+}
+
+/// [`accept`] for a caller that already holds this device's sessions in memory (while receiving):
+/// the inviter's session moves into `main`, which the caller saves. Saving a separate copy here
+/// would be overwritten by the caller's older one.
+pub fn accept_into(home: &Home, group: &str, main: &mut Sessions) -> Result<GroupState> {
     let mut rec = find(home, group)?;
     if rec.status != Status::Invited {
         bail!("there is no pending invite for this group");
@@ -732,9 +923,7 @@ pub fn accept(home: &Home, group: &str) -> Result<GroupState> {
         // Their session moves out of quarantine; their card is kept as a group member's.
         let k = key_bytes(&key)?;
         let mut q = home.load_quarantine()?;
-        let mut main = home.load_sessions()?;
         main.adopt(&mut q, &k);
-        home.save_sessions(&main)?;
         home.save_quarantine(&q)?;
         let id = IdentityCard::decode(&card)?;
         let mut cards = member_cards(home)?;
@@ -754,9 +943,17 @@ pub fn decline(home: &Home, group: &str) -> Result<()> {
         bail!("there is no pending invite for this group");
     }
     if let Some((key, _)) = rec.stranger.take() {
-        let mut q = home.load_quarantine()?;
-        q.forget(&key_bytes(&key)?);
-        home.save_quarantine(&q)?;
+        // One session can carry several invites from the same person: keep it while another waits.
+        let shared = list(home)?.iter().any(|r| {
+            r.id() != rec.id()
+                && r.status == Status::Invited
+                && r.stranger.as_ref().is_some_and(|(k, _)| *k == key)
+        });
+        if !shared {
+            let mut q = home.load_quarantine()?;
+            q.forget(&key_bytes(&key)?);
+            home.save_quarantine(&q)?;
+        }
     }
     rec.status = Status::Left;
     rec.invited_by = None;
@@ -1159,6 +1356,11 @@ fn on_states(
         r.set_chain(&chain);
         update_record(home, &r)?;
         let group = chain.current().name.clone();
+        if status == Status::Invited {
+            if let Some(d) = take_decision(home, &chain.current().group)? {
+                return apply_invite_decision(home, &chain.current().group, d, None);
+            }
+        }
         Ok(match status {
             Status::Invited => Outcome::GroupInvite {
                 group,
@@ -1179,12 +1381,18 @@ fn on_states(
         } else {
             Status::Invited
         };
+        // A blocked person cannot invite you, even if you share another group with them.
+        if status == Status::Invited && crate::requests::is_blocked_owner(home, sender.owner)? {
+            return Ok(Outcome::Ignored);
+        }
         return fresh_start(status);
     };
     if rec.status == Status::Left {
         // After leaving, being added again is always an invite (ADR 0024, section 6). Our own
         // devices are the exception: that is us accepting elsewhere.
-        if !newest.is_member(me) {
+        if !newest.is_member(me)
+            || (!sender.own && crate::requests::is_blocked_owner(home, sender.owner)?)
+        {
             return Ok(Outcome::Ignored);
         }
         return fresh_start(if sender.own {
@@ -1316,6 +1524,9 @@ pub fn on_stranger_invite(
     };
     r.set_chain(&chain);
     update_record(home, &r)?;
+    if let Some(d) = take_decision(home, &gid)? {
+        return Ok(Some(apply_invite_decision(home, &gid, d, None)?));
+    }
     let fp = IdentityCard::decode(card)
         .map(|c| c.fingerprint())
         .unwrap_or_default();
@@ -1323,6 +1534,24 @@ pub fn on_stranger_invite(
         group: chain.current().name.clone(),
         from: format!("{fp} (not a contact)"),
     }))
+}
+
+/// Who is behind an invite message: the card it carries or, for a later invite on a session that
+/// is already waiting (the sender sends no card again), the card kept with the earlier invite.
+pub fn introduction_for(
+    home: &Home,
+    env: &Envelope,
+    device_key: &str,
+) -> Option<(String, IdentityCard)> {
+    let card = env.intro.clone().or_else(|| {
+        list(home).ok()?.into_iter().find_map(|r| {
+            r.stranger
+                .filter(|(k, _)| r.status == Status::Invited && k == device_key)
+                .map(|(_, c)| c)
+        })
+    })?;
+    let id = IdentityCard::decode(&card).ok()?;
+    Some((card, id))
 }
 
 /// Is this quarantined device key waiting on a group invite (so its session must be kept)?

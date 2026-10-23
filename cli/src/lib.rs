@@ -133,6 +133,9 @@ pub enum Outcome {
     },
     /// You were removed from a group. Its history stays on this device.
     GroupRemoved { group: String, by: String },
+    /// Another of your devices accepted, declined or blocked an invite that this device also held,
+    /// and it is settled here too. `decision` is "accepted", "declined" or "blocked".
+    GroupInviteSettled { group: String, decision: String },
     /// Not decryptable: corrupted, tampered, replayed, or not for us.
     Invalid,
 }
@@ -307,7 +310,9 @@ pub fn process(
                 From::Own => {
                     if env.kind == Kind::Sync {
                         let outcome = match sync::SyncMsg::from_envelope(&env) {
-                            Ok(msg) => apply_sync(home, &contacts, msg, &sender_device, &my_id)?,
+                            Ok(msg) => {
+                                apply_sync(home, sessions, &contacts, msg, &sender_device, &my_id)?
+                            }
                             Err(_) => Outcome::Invalid,
                         };
                         persist(sessions, me)?;
@@ -441,6 +446,7 @@ enum From {
 /// Apply a sync message that came from one of our own devices.
 fn apply_sync(
     home: &Home,
+    sessions: &mut Sessions,
     contacts: &[state::Contact],
     msg: sync::SyncMsg,
     sender_device: &str,
@@ -498,6 +504,11 @@ fn apply_sync(
             approve,
             note,
         } => agent::on_remote_decision(home, my_device_id, &request_id, approve, &note)?,
+        SyncMsg::GroupInvite {
+            group,
+            decision,
+            card,
+        } => groups::apply_invite_decision_in(home, sessions, &group, decision, card.as_deref())?,
         req @ (SyncMsg::CatchUpRequest { .. } | SyncMsg::FileRequest { .. }) => {
             Outcome::SyncRequest {
                 from_device: sender_device.to_string(),

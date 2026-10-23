@@ -197,6 +197,8 @@ pub struct GroupDetailDto {
     pub version: u64,
     pub max: usize,
     pub unverified: usize,
+    /// An invite from someone who is not a contact: it can be declined *and* the inviter blocked.
+    pub can_block: bool,
 }
 
 /// What a group change or message reached.
@@ -700,7 +702,9 @@ impl Session {
                 Outcome::MessageRequest { new: true, .. } => out.message_requests += 1,
                 Outcome::GroupMessage { .. } => out.received += 1,
                 Outcome::GroupInvite { .. } => out.message_requests += 1,
-                Outcome::GroupJoined { .. } | Outcome::GroupChanged { .. } => out.groups += 1,
+                Outcome::GroupJoined { .. }
+                | Outcome::GroupChanged { .. }
+                | Outcome::GroupInviteSettled { .. } => out.groups += 1,
                 Outcome::GroupRemoved { group, .. } => {
                     out.groups += 1;
                     out.notes.push(format!(
@@ -1366,6 +1370,7 @@ impl Session {
             version: s.version,
             max: MAX_MEMBERS,
             unverified: self.unverified_members(&s),
+            can_block: r.status == groups::Status::Invited && r.stranger.is_some(),
             name: s.name,
         })
     }
@@ -1474,13 +1479,29 @@ impl Session {
         Ok(())
     }
 
-    pub fn group_accept(&self, id: &str) -> Result<()> {
-        groups::accept(&self.home, id)?;
-        Ok(())
+    /// Accept an invite. Your other devices that hold the same invite join too.
+    pub async fn group_accept(&self, id: &str) -> Result<()> {
+        self.invite_decision(id, groups::InviteDecision::Accept)
+            .await
     }
 
-    pub fn group_decline(&self, id: &str) -> Result<()> {
-        groups::decline(&self.home, id)
+    /// Decline an invite. The inviter is not told; your other devices decline too.
+    pub async fn group_decline(&self, id: &str) -> Result<()> {
+        self.invite_decision(id, groups::InviteDecision::Decline)
+            .await
+    }
+
+    /// Decline an invite and block the inviter (someone who is not a contact), on all your devices.
+    pub async fn group_block(&self, id: &str) -> Result<()> {
+        self.invite_decision(id, groups::InviteDecision::Block)
+            .await
+    }
+
+    async fn invite_decision(&self, id: &str, d: groups::InviteDecision) -> Result<()> {
+        let _net = self.net.lock().await;
+        // Settled here first; telling the other devices is best effort (offline, they decide themselves).
+        groups::decide_invite(&self.home, self.target(), id, d).await?;
+        Ok(())
     }
 
     /// Mark a group read here, and on your other devices if reachable.

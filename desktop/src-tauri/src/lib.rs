@@ -439,13 +439,18 @@ async fn group_leave(state: State<'_, AppState>, id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-fn group_accept(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    session(&state)?.group_accept(&id).map_err(err)
+async fn group_accept(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.group_accept(&id).await.map_err(err)
 }
 
 #[tauri::command]
-fn group_decline(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    session(&state)?.group_decline(&id).map_err(err)
+async fn group_decline(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.group_decline(&id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn group_block(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.group_block(&id).await.map_err(err)
 }
 
 #[tauri::command]
@@ -718,6 +723,7 @@ pub fn run() {
             group_leave,
             group_accept,
             group_decline,
+            group_block,
             group_mark_read,
             add_member_as_contact,
         ])

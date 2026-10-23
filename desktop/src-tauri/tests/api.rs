@@ -1204,7 +1204,7 @@ async fn an_invite_from_someone_you_do_not_know_waits_for_you() {
     eve.s.sync(IDLE).await.unwrap();
     assert!(eve.s.group_conversation(&gid, 50).unwrap().is_empty());
 
-    eve.s.group_accept(&gid).unwrap();
+    eve.s.group_accept(&gid).await.unwrap();
     assert_eq!(eve.s.overview().unwrap().groups[0].status, "joined");
     assert_eq!(eve.s.attention().unwrap(), 0);
     alice.s.group_send(&gid, "welcome eve").await.unwrap();
@@ -1218,10 +1218,60 @@ async fn an_invite_from_someone_you_do_not_know_waits_for_you() {
     alice.s.add_contact("Zed", &card(&zed)).unwrap();
     alice.s.group_add(&gid, &["Zed".into()]).await.unwrap();
     zed.s.sync(IDLE).await.unwrap();
-    zed.s.group_decline(&gid).unwrap();
+    assert!(!zed.s.group(&gid).unwrap().members.is_empty());
+    assert!(
+        zed.s.group(&gid).unwrap().can_block,
+        "a stranger's invite can be blocked"
+    );
+    zed.s.group_decline(&gid).await.unwrap();
     assert!(
         zed.s.overview().unwrap().groups.is_empty(),
         "nothing to show: no history"
     );
-    assert!(zed.s.group_accept(&gid).is_err());
+    assert!(zed.s.group_accept(&gid).await.is_err());
+}
+
+#[tokio::test]
+async fn blocking_an_inviter_from_the_app_drops_their_later_invites() {
+    let (url, alice, bob, carol, gid) = pilot().await;
+    // Carol leaves and Alice, a contact, adds her back: an invite you can decline but not block.
+    carol.s.group_leave(&gid).await.unwrap();
+    alice.s.sync(IDLE).await.unwrap();
+    alice.s.group_add(&gid, &["Carol".into()]).await.unwrap();
+    carol.s.sync(IDLE).await.unwrap();
+    let d = carol.s.group(&gid).unwrap();
+    assert_eq!((d.status.as_str(), d.can_block), ("invited", false));
+    assert!(carol.s.group_block(&gid).await.is_err());
+    assert_eq!(
+        carol.s.group(&gid).unwrap().status,
+        "invited",
+        "still waiting"
+    );
+    drop(bob);
+
+    // Eve does not know Alice: that invite can be blocked, and it shows in the blocked list.
+    let eve = dev("eve", &url);
+    eve.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Eve", &card(&eve)).unwrap();
+    alice.s.group_add(&gid, &["Eve".into()]).await.unwrap();
+    eve.s.sync(IDLE).await.unwrap();
+    assert!(eve.s.group(&gid).unwrap().can_block);
+    eve.s.group_block(&gid).await.unwrap();
+    assert_eq!(eve.s.group(&gid).unwrap().status, "left");
+    let blocked = eve.s.blocked().unwrap();
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0].owner, owner_key(&alice));
+
+    // A second group from the blocked person never shows up.
+    let other = alice
+        .s
+        .group_create("Club", &["Eve".into()], false)
+        .await
+        .unwrap();
+    eve.s.sync(IDLE).await.unwrap();
+    assert!(eve.s.group(&other.group).is_err());
+    assert_eq!(eve.s.attention().unwrap(), 0);
+    // Unblocking is the existing Settings action.
+    eve.s.unblock(&blocked[0].owner).unwrap();
+    assert!(eve.s.blocked().unwrap().is_empty());
 }

@@ -109,6 +109,11 @@ pub fn blocked(home: &Home) -> Result<Vec<Blocked>> {
     home.load_json(BLOCKED)
 }
 
+/// Is this person (owner key) on the block list?
+pub fn is_blocked_owner(home: &Home, owner: &str) -> Result<bool> {
+    Ok(blocked(home)?.iter().any(|b| b.owner == owner))
+}
+
 pub fn is_blocked(home: &Home, device_key: &[u8; 32]) -> Result<bool> {
     let k = hex::encode(device_key);
     Ok(blocked(home)?.iter().any(|b| b.keys.contains(&k)))
@@ -193,11 +198,7 @@ pub fn on_stranger(home: &Home, me: &mut Identity, blob: &[u8], key: [u8; 32]) -
     if env.kind == Kind::GroupState && !known {
         // Someone who is not a contact added us to a group (ADR 0024, section 6): an invite,
         // introduced and bound like any request, its session kept in quarantine until we accept.
-        let Some((intro, card)) = env.intro.as_deref().and_then(|c| {
-            IdentityCard::decode(c)
-                .ok()
-                .map(|card| (c.to_string(), card))
-        }) else {
+        let Some((intro, card)) = crate::groups::introduction_for(home, &env, &key_hex) else {
             return refuse(&mut q);
         };
         if !card.devices().iter().any(|d| d.x25519 == key) {
@@ -274,7 +275,25 @@ pub fn on_pending(home: &Home, me: &mut Identity, blob: &[u8]) -> Result<Option<
     let mut all = load(home)?;
     let Some(req) = all.iter_mut().find(|r| r.key == who_hex) else {
         if crate::groups::is_invite_key(home, &who_hex)? {
-            // Someone whose group invite waits for you: nothing is shown until you accept.
+            // Someone whose group invite waits for you: nothing is shown until you accept. A
+            // further invite from them arrives on the same session and waits beside the first.
+            if let Ok(env) = Envelope::from_bytes(&plain) {
+                if env.kind == Kind::GroupState {
+                    if let Some((card_str, card)) =
+                        crate::groups::introduction_for(home, &env, &who_hex)
+                    {
+                        if let Some(o) = crate::groups::on_stranger_invite(
+                            home,
+                            &env,
+                            &who_hex,
+                            &card_str,
+                            &card.owner_hex(),
+                        )? {
+                            return Ok(Some(o));
+                        }
+                    }
+                }
+            }
             return Ok(Some(Outcome::Ignored));
         }
         // A session with no request (it expired): drop it.
@@ -388,16 +407,16 @@ pub fn decline(home: &Home, id: &str) -> Result<()> {
     home.save_json(REQUESTS, &all)
 }
 
-/// Decline and block: later messages from any device in their card are dropped on arrival.
-pub fn block(home: &Home, id: &str) -> Result<()> {
-    let all = load(home)?;
-    let req = find(&all, id)?.clone();
-    let card = IdentityCard::decode(&req.card)?;
+/// Block a person given their identity card: later first messages from any device in it are
+/// dropped on arrival, before a session exists. Blocking someone twice changes nothing.
+pub fn add_block(home: &Home, card: &str) -> Result<()> {
+    let card = IdentityCard::decode(card)?;
+    let owner = card.owner_hex();
     let mut list = blocked(home)?;
-    if !list.iter().any(|b| b.owner == req.owner) {
+    if !list.iter().any(|b| b.owner == owner) {
         list.push(Blocked {
-            owner: req.owner.clone(),
-            fingerprint: req.fingerprint.clone(),
+            owner,
+            fingerprint: card.fingerprint(),
             keys: card
                 .devices()
                 .iter()
@@ -407,5 +426,13 @@ pub fn block(home: &Home, id: &str) -> Result<()> {
         });
         home.save_json(BLOCKED, &list)?;
     }
+    Ok(())
+}
+
+/// Decline and block: later messages from any device in their card are dropped on arrival.
+pub fn block(home: &Home, id: &str) -> Result<()> {
+    let all = load(home)?;
+    let req = find(&all, id)?.clone();
+    add_block(home, &req.card)?;
     decline(home, id)
 }
