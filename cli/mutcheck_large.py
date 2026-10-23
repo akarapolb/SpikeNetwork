@@ -4,10 +4,16 @@ import os, shutil, subprocess
 
 PATH = "cli/src/large.rs"
 MUTS = [
-    ("if dir.refresh(home, r, &missed).await? > 0 {", "if false && dir.refresh(home, r, &missed).await? > 0 {", "sync never fetches unknown members' lists"),
-    ("if dir.refresh(home, &mut r, &missed).await? == 0 {", "if true {", "accept never fetches unknown members' lists"),
     ("                        rec.cursor = 0;\n                        break;", "                        break;", "cursor not reset after rotation"),
     ("            None => bail!(\n", "            None => continue,\n            Some(_) if false => bail!(\n", "add with no key package"),
+    ("                            for list in l.lists.iter().take(64) {\n                                dir.apply(list);\n                            }", "                            let _ = &l;", "lists announced in the log are ignored"),
+    ("    let mut announced = news.is_empty();", "    let mut announced = true;", "a commit does not announce the lists it depends on first"),
+    ("if owner != me && i_am_admin && !rec.pending_leavers.contains(&owner) {", "if false && owner != me && i_am_admin && !rec.pending_leavers.contains(&owner) {", "an admin does not remove someone who left"),
+    ("    if !missing.is_empty() {", "    if false && !missing.is_empty() {", "own new devices are never added"),
+    ("    if !stale.is_empty() {", "    if false && !stale.is_empty() {", "own revoked devices are never removed"),
+    ("                used_last_resort |= last_resort;", "                let _ = last_resort;", "use of the reusable key package is not reported"),
+    ("(Status::Invited, Some(true)) => {", "(Status::Invited, Some(true)) if false => {", "own devices' invitations are not accepted"),
+    ("            if gone || !i_am_admin {", "            if false {", "a leaver notice is never dropped"),
 ]
 
 

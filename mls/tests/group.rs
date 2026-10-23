@@ -700,3 +700,51 @@ fn a_commit_from_a_revoked_device_is_refused_even_when_it_only_adds_people() {
     ));
     assert_eq!(b.g().members().len(), 2);
 }
+
+#[test]
+fn a_last_resort_key_package_can_be_used_again_and_a_one_time_one_cannot() {
+    let (alice, bob) = (Person::new(1), Person::new(1));
+    let dir = directory(&[&alice, &bob]);
+    let b = Member::new(&bob, 0);
+    let (mut a1, mut a2) = (Member::new(&alice, 0), Member::new(&alice, 0));
+    grow(&mut a1, &mut [], &dir, policy_for(&alice));
+    grow(&mut a2, &mut [], &dir, policy_for(&alice));
+
+    // The same last-resort package welcomes Bob into two different groups.
+    let kp = b.dev.last_resort_key_package();
+    for a in [&mut a1, &mut a2] {
+        let out = a.add(&dir, std::slice::from_ref(&kp)).unwrap();
+        a.confirm();
+        let g = Group::join(
+            &b.dev,
+            &dir,
+            out.welcome.as_ref().unwrap(),
+            out.join_bundle.as_ref().unwrap(),
+        )
+        .expect("a last-resort package is not used up");
+        assert_eq!(g.members().len(), 2);
+    }
+
+    // A one-time package is used up by the first Welcome.
+    let (mut a3, mut a4) = (Member::new(&alice, 0), Member::new(&alice, 0));
+    grow(&mut a3, &mut [], &dir, policy_for(&alice));
+    grow(&mut a4, &mut [], &dir, policy_for(&alice));
+    let once = b.kp();
+    let first = a3.add(&dir, std::slice::from_ref(&once)).unwrap();
+    a3.confirm();
+    Group::join(
+        &b.dev,
+        &dir,
+        first.welcome.as_ref().unwrap(),
+        first.join_bundle.as_ref().unwrap(),
+    )
+    .unwrap();
+    let second = a4.add(&dir, &[once]).unwrap();
+    assert!(Group::join(
+        &b.dev,
+        &dir,
+        second.welcome.as_ref().unwrap(),
+        second.join_bundle.as_ref().unwrap()
+    )
+    .is_err());
+}

@@ -45,6 +45,9 @@ pub enum SyncMsg {
     },
     /// "I accepted, declined or blocked the invite to this group": every device of yours that
     /// holds the same invite settles it too (ADR 0024). A block carries the inviter's card.
+    /// "I accepted or declined the invitation to this large group": your other devices that hold
+    /// the same invitation do the same (ADR 0025).
+    LargeInvite { group: String, accepted: bool },
     GroupInvite {
         group: String,
         decision: crate::groups::InviteDecision,
@@ -97,6 +100,7 @@ impl SyncMsg {
             SyncMsg::AgentDecision {
                 request_id, note, ..
             } => is_hex(request_id, 32) && note.len() <= 200,
+            SyncMsg::LargeInvite { group, .. } => is_hex(group, 32),
             SyncMsg::GroupInvite { group, card, .. } => {
                 is_hex(group, 32)
                     && card.as_ref().is_none_or(|c| {

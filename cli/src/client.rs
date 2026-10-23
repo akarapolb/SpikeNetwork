@@ -12,6 +12,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
+#[derive(Debug, Clone)]
 pub struct Delivery {
     pub id: String,
     pub blob: Vec<u8>,
@@ -23,6 +24,14 @@ pub struct GroupEntry {
     pub seq: u64,
     pub kind: GroupKind,
     pub blob: Vec<u8>,
+}
+
+/// Something the relay pushed: a one-to-one delivery, or an entry in a subscribed group mailbox
+/// `(mailbox, entry, sealed)`.
+#[derive(Debug, Clone)]
+pub enum Incoming {
+    Delivery(Delivery),
+    Group((String, GroupEntry, bool)),
 }
 
 /// What a read of a group mailbox returned.
@@ -169,11 +178,39 @@ impl Relay {
     /// nothing arrived within the idle window. While waiting, the connection pings the
     /// relay now and then; if the relay stops answering, this returns an error so the
     /// caller can reconnect (a router may have dropped the connection without telling us).
+    /// Group entries pushed meanwhile are kept for [`next_group_entry`](Self::next_group_entry).
     pub async fn next_delivery(&mut self, idle: Option<Duration>) -> Result<Option<Delivery>> {
         let deadline = idle.map(|d| Instant::now() + d);
         loop {
+            match self.incoming_until(deadline, false).await? {
+                None => return Ok(None),
+                Some(Incoming::Delivery(d)) => return Ok(Some(d)),
+                Some(Incoming::Group(e)) => self.group_pending.push_back(e),
+            }
+        }
+    }
+
+    /// Like [`next_delivery`](Self::next_delivery), but also returns the entries the relay pushes for
+    /// group mailboxes this connection subscribed to. For a listener that only needs to know
+    /// that *something* arrived.
+    pub async fn next_incoming(&mut self, idle: Option<Duration>) -> Result<Option<Incoming>> {
+        let deadline = idle.map(|d| Instant::now() + d);
+        self.incoming_until(deadline, true).await
+    }
+
+    async fn incoming_until(
+        &mut self,
+        deadline: Option<Instant>,
+        with_groups: bool,
+    ) -> Result<Option<Incoming>> {
+        loop {
             if let Some(d) = self.pending.pop_front() {
-                return Ok(Some(d));
+                return Ok(Some(Incoming::Delivery(d)));
+            }
+            if with_groups {
+                if let Some(e) = self.group_pending.pop_front() {
+                    return Ok(Some(Incoming::Group(e)));
+                }
             }
             // Wake for the earliest of: the caller's idle window, the next ping, the pong deadline.
             let mut wake = self.next_ping;
@@ -183,7 +220,7 @@ impl Relay {
             if let Some(d) = deadline {
                 wake = wake.min(d);
             }
-            let msg = match tokio::time::timeout_at(wake.into(), self.read()).await {
+            let msg = match tokio::time::timeout_at(wake.into(), self.read_raw()).await {
                 Ok(m) => {
                     // The relay is alive: anything it sends counts as an answer.
                     self.pong_due = None;
@@ -210,10 +247,21 @@ impl Relay {
             };
             match msg {
                 ServerMsg::Deliver { id, blob } => {
-                    return Ok(Some(Delivery {
+                    return Ok(Some(Incoming::Delivery(Delivery {
                         id,
                         blob: hex::decode(blob)?,
-                    }))
+                    })))
+                }
+                ServerMsg::GroupEntry {
+                    mailbox,
+                    entry,
+                    sealed,
+                } => {
+                    return Ok(Some(Incoming::Group((
+                        mailbox,
+                        group_entry(entry)?,
+                        sealed,
+                    ))))
                 }
                 ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
                 _ => {}

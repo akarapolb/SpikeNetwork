@@ -68,7 +68,9 @@ pub fn decide(
         | Kind::GroupStateRequest
         | Kind::GroupHistoryRequest
         | Kind::GroupHistory
-        | Kind::LargeWelcome => Action::Ignore,
+        | Kind::LargeWelcome
+        | Kind::LargeLeave
+        | Kind::LargeLists => Action::Ignore,
     }
 }
 

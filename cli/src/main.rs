@@ -353,6 +353,35 @@ enum LargeCmd {
         #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
         relay: String,
     },
+    /// Rename a large group, for everyone. Admins only.
+    Rename {
+        group: String,
+        name: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Make a member an admin (by their owner key, as `large members` shows it). Admins only.
+    MakeAdmin {
+        group: String,
+        owner: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Who may add people: `admins` or `members`. Admins only.
+    WhoCanAdd {
+        group: String,
+        who: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// The people in a large group, with their owner keys.
+    Members { group: String },
+    /// Leave a large group. An admin removes you on their next sync.
+    Leave {
+        group: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
     /// Join a group you were invited to.
     Accept {
         group: String,
@@ -360,7 +389,11 @@ enum LargeCmd {
         relay: String,
     },
     /// Turn down an invitation.
-    Decline { group: String },
+    Decline {
+        group: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
     /// Send a message to a large group.
     Send {
         group: String,
@@ -756,6 +789,7 @@ async fn run() -> Result<()> {
             }
         }
         Cmd::Large { cmd } => {
+            use spike_cli::groups;
             use spike_cli::large::{self, Event, Status};
             match cmd {
                 LargeCmd::Keys { count, relay } => {
@@ -780,6 +814,7 @@ async fn run() -> Result<()> {
                                 &r.id[..12]
                             ),
                             Status::Removed => " · you were removed".into(),
+                            Status::Left => " · you left".into(),
                         };
                         println!(
                             "{} {} · {} member(s){status}",
@@ -800,12 +835,48 @@ async fn run() -> Result<()> {
                     large::remove(&home, target(relay), &group, &who).await?;
                     println!("removed {who}; the group moved to a new mailbox");
                 }
+                LargeCmd::Rename { group, name, relay } => {
+                    large::rename(&home, target(relay), &group, &name).await?;
+                    println!("renamed to {name}");
+                }
+                LargeCmd::MakeAdmin {
+                    group,
+                    owner,
+                    relay,
+                } => {
+                    large::make_admin(&home, target(relay), &group, &owner).await?;
+                    println!("done");
+                }
+                LargeCmd::WhoCanAdd { group, who, relay } => {
+                    let any = match who.as_str() {
+                        "members" => true,
+                        "admins" => false,
+                        _ => bail!("say `admins` or `members`"),
+                    };
+                    large::set_members_can_add(&home, target(relay), &group, any).await?;
+                    println!("done");
+                }
+                LargeCmd::Members { group } => {
+                    for m in large::members(&home, &group)? {
+                        println!(
+                            "{} {} · {} device(s) · {}",
+                            groups::display_name(&home, &m.owner),
+                            if m.admin { "admin" } else { "member" },
+                            m.devices,
+                            m.owner
+                        );
+                    }
+                }
+                LargeCmd::Leave { group, relay } => {
+                    large::leave(&home, target(relay), &group).await?;
+                    println!("you left; an admin removes you on their next sync");
+                }
                 LargeCmd::Accept { group, relay } => {
                     let r = large::accept(&home, target(relay), &group).await?;
                     println!("joined {} ({} member(s))", r.name, r.members);
                 }
-                LargeCmd::Decline { group } => {
-                    large::decline(&home, &group)?;
+                LargeCmd::Decline { group, relay } => {
+                    large::decline(&home, target(relay), &group).await?;
                     println!("declined");
                 }
                 LargeCmd::Send {
@@ -837,6 +908,10 @@ async fn run() -> Result<()> {
                                     ""
                                 }
                             ),
+                            Event::OwnDevices => {
+                                println!("your other devices were updated in your large groups")
+                            }
+                            Event::Left { group, who } => println!("[{group}] {who} is leaving"),
                             Event::Removed { group } => {
                                 println!("[{group}] you were removed; its history stays here")
                             }

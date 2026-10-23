@@ -39,6 +39,12 @@ pub enum Kind {
     GroupHistory,
     /// An invitation to a large (MLS) group: its Welcome and join bundle (body: JSON, ADR 0025).
     LargeWelcome,
+    /// Inside a large group's own messages only: the sender is leaving (body: `{}`). Never valid
+    /// in a one-to-one session.
+    LargeLeave,
+    /// Inside a large group's own messages only: signed device lists the group should know (body:
+    /// `{"lists": [...]}`). The group's idea of who owns which devices is built from these, in order.
+    LargeLists,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -156,6 +162,20 @@ impl Envelope {
         Ok(e)
     }
 
+    /// Signed device lists (`json`), announced inside a large group.
+    pub fn large_lists(json: &str) -> Result<Self> {
+        let mut e = Self::text(json)?;
+        e.kind = Kind::LargeLists;
+        Ok(e)
+    }
+
+    /// A notice, inside a large group, that the sender is leaving it.
+    pub fn large_leave() -> Result<Self> {
+        let mut e = Self::text("{}")?;
+        e.kind = Kind::LargeLeave;
+        Ok(e)
+    }
+
     /// A delete of message `target`.
     pub fn delete(target: &str) -> Result<Self> {
         let mut e = Self::text("")?;
@@ -201,9 +221,12 @@ impl Envelope {
                 | Kind::GroupStateRequest
                 | Kind::GroupHistoryRequest
                 | Kind::GroupHistory => e.group.is_some(),
-                Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt | Kind::LargeWelcome => {
-                    e.group.is_none() && e.gstate.is_none()
-                }
+                Kind::Sync
+                | Kind::AgentRequest
+                | Kind::AgentReceipt
+                | Kind::LargeWelcome
+                | Kind::LargeLeave
+                | Kind::LargeLists => e.group.is_none() && e.gstate.is_none(),
                 // A group message says which member list it was sent with.
                 Kind::Text | Kind::Edit | Kind::Delete => e.group.is_some() == e.gstate.is_some(),
             };
@@ -216,7 +239,9 @@ impl Envelope {
             | Kind::GroupStateRequest
             | Kind::GroupHistoryRequest
             | Kind::GroupHistory
-            | Kind::LargeWelcome => e.target.is_none(),
+            | Kind::LargeWelcome
+            | Kind::LargeLeave
+            | Kind::LargeLists => e.target.is_none(),
             Kind::Edit | Kind::Delete => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
@@ -237,6 +262,7 @@ impl Envelope {
             | Kind::GroupHistory => e.attachment.is_none() && !e.body.is_empty(),
             // The Welcome itself is too big for an envelope: it travels as an attachment.
             Kind::LargeWelcome => e.attachment.is_some() && !e.body.is_empty(),
+            Kind::LargeLeave | Kind::LargeLists => e.attachment.is_none() && !e.body.is_empty(),
         };
         if e.v != VERSION
             || !id_ok

@@ -172,23 +172,53 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
             online = Some(true);
             let _ = app.emit("relay-status", json!({ "online": true }));
         }
+        if let Some(s) = weak.upgrade() {
+            s.listener_subscribe(&mut relay).await;
+        }
+        let changed = weak.upgrade().map(|s| s.subscription_signal());
         // Wait on this connection. The idle window is only a heartbeat: nothing arrived, keep waiting.
+        let connected_at = std::time::Instant::now();
+        let mut resubscribe = false;
         let woke = loop {
             if weak.strong_count() == 0 {
                 return;
             }
-            match relay.next_delivery(Some(Duration::from_secs(50))).await {
-                Ok(Some(_)) => break true,
-                Ok(None) => continue,
-                // Displaced by an operation that connected, or the connection dropped.
-                Err(e) => {
-                    dbg_log!("wait ended: {e:#}");
+            let signal = async {
+                match &changed {
+                    Some(c) => c.notified().await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                r = relay.next_incoming(Some(Duration::from_secs(50))) => match r {
+                    Ok(Some(_)) => break true,
+                    Ok(None) => continue,
+                    // Displaced by an operation that connected, or the connection dropped.
+                    Err(e) => {
+                        dbg_log!("wait ended: {e:#}");
+                        break false;
+                    }
+                },
+                // We joined, left or moved a large group: reconnect to listen to the right mailboxes.
+                _ = signal => {
+                    dbg_log!("large groups changed; listening again");
+                    resubscribe = true;
                     break false;
                 }
             }
         };
         drop(relay);
+        if resubscribe {
+            retry = Duration::from_millis(200);
+            continue;
+        }
         if !woke {
+            // Displaced by one of our own operations (they all connect, and the relay keeps one
+            // connection per device): that is normal, not a failing relay, so come straight back.
+            // Only a connection that does not even last a few seconds counts as trouble and backs off.
+            if connected_at.elapsed() > Duration::from_secs(3) {
+                retry = Duration::from_millis(200);
+            }
             tokio::time::sleep(retry).await;
             retry = (retry * 2).min(Duration::from_secs(30));
             continue;

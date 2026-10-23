@@ -41,10 +41,12 @@ what was learned). Threat model of the product: `docs/threat-model.md`. The open
 - **One MLS leaf per device.** The leaf's credential identity is
   `format | owner_pub(32) | device_id(16) | device_list_version(8) | owner_signature(64)`; the owner key (the
   person's long-term Ed25519 key) signs the leaf's own signature key, the device, and the list version.
-- **Freshness.** A leaf is accepted only if the owner's *current signed device list* names the device. A
-  credential from a list newer than we hold is `StaleDirectory` (fetch the list, try again), never accepted.
-  Lists come from contacts, from our own state, and from the relay (the relay can withhold a newer list but
-  cannot forge one; a rollback to an older version is ignored).
+- **Freshness.** A leaf is accepted only if the owner's signed device list, *as the group knows it*, names
+  the device. The group's lists come only from its own history: those in the Welcome that brought a member
+  in, and `LargeLists` messages announcing a new list before any commit that depends on it. Every member
+  replaying the log therefore reaches the same verdicts (a list fetched from elsewhere could make a lagging
+  member refuse a commit that was legitimate when made, and fall out of step; this was found and fixed in
+  slice 5). A credential from a list newer than the group has seen is refused as stale.
 - **Policy** lives in a GroupContext extension (so joiners get it in the Welcome): admins, who may add and
   remove, caps (500 people / 1000 devices).
 - **Every commit is validated before it is merged**: sender's own credential, every leaf it introduces, and
@@ -79,6 +81,9 @@ before and after was clean. "Mutation-checked" means exactly that and no more.
 | Newcomers get the current generation, and a wrong or altered bundle is refused | `group.rs` | `a_new_member_is_handed_...`, `a_join_bundle_that_is_wrong_...` |
 | Every member in a Welcome is verified before the group is kept | `group.rs::join` | `a_welcome_with_a_member_nobody_vouches_for_...` |
 | A pending commit is saved before it is sent; a message ratchet before the message | `cli/src/large.rs` | not directly testable (a crash); reviewed by reading |
+| A member offline across a revocation still follows the group (lists come from the log, announced before use) | `cli/src/large.rs` (`GroupDir`, `commit_with`) | `a_revoked_device_is_taken_out_of_the_groups` |
+| A rule-breaking commit is skipped, recorded, and the group carries on | `cli/src/large.rs` | `a_commit_every_member_refuses_is_skipped_...` |
+| A person's own devices are added and removed to match their signed list | `cli/src/large.rs` | `a_device_linked_later_...`, `a_revoked_device_is_...` |
 | Invitations do nothing until accepted | `cli/src/large.rs` | `an_invitation_does_nothing_until_it_is_accepted` |
 
 ## What we already know is weak (so you do not have to find it)
@@ -94,18 +99,21 @@ before and after was clean. "Mutation-checked" means exactly that and no more.
   refuses survives silently; whether to mark the group broken is undecided.
 - **Messages from the last three epochs are accepted** (a message sent just before a commit can arrive just
   after), so three old epochs' secrets live on.
-- **Last-resort key packages are not implemented**; an exhausted pool means nobody can add that device.
-- **Own other devices are not added to groups**; a device linked later is not added to existing groups.
 - **The Welcome file expires with the relay's blob retention**; an old invitation cannot be accepted.
-- **Directory trust.** Device lists fetched from the relay are verified (signed by the owner key) but the
-  *first* list for an owner we have never met is trusted on first sight (the owner key is not otherwise
-  verified for non-contacts; the UI shows them as "not verified").
+- **Directory trust.** Lists are verified (signed by the owner key) but the *first* list for an owner a
+  member has never met comes from whoever added them, and is trusted on first sight (the owner key is not
+  otherwise verified for non-contacts; the UI shows them as "not verified"). The announcement of a
+  revocation is made by the owner's own remaining device; between a revocation and that announcement the
+  revoked device is still accepted.
+- **Leaving is a request.** A leaver is a member until an admin removes them.
+- **A member whose own commit every other member refuses forks off alone** and needs to be removed and
+  re-added.
 - **Not measured:** phones, a slow disk or network, trees with many blanked nodes, devices with many leaves
   per person. Scale numbers (to 500 members) are in the ADR.
 
 ## Evidence so far (and its limits)
 
-- 56 tests in `spike-mls`, 5 in the CLI for large groups, 4 in the desktop API tests, one core envelope test;
+- 59 tests in `spike-mls`, 16 in the CLI for large groups, 5 in the desktop API tests for them, core envelope tests;
   `cargo test --all` passes. 13 protections mutation-checked in `spike-mls`, 4 in the CLI glue.
 - The real binaries were driven end to end: three CLI users (`mls/demo_large.sh`) and three desktop windows
   (`desktop/drive_large.mjs`).

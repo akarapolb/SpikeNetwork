@@ -12,6 +12,10 @@ name = "spike_cli"
 name = "spike"
 path = "src/main.rs"
 
+[features]
+# Lets tests make commits the honest API refuses to, to show every member refuses them too.
+test-hooks = ["spike-mls/test-hooks"]
+
 [dependencies]
 rand = "0.8"
 spike-core = { path = "../core" }
@@ -33,6 +37,7 @@ webpki-roots = "0.26"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [dev-dependencies]
+spike-cli = { path = ".", features = ["test-hooks"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 rustls-pki-types = "1"
 spike-relay = { path = "../relay" }

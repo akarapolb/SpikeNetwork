@@ -2,6 +2,8 @@ pub mod agent;
 pub mod client;
 pub mod groups;
 pub mod large;
+#[cfg(feature = "test-hooks")]
+pub mod large_testing;
 pub mod link;
 pub mod messages;
 pub mod ops;
@@ -288,6 +290,11 @@ pub fn process(
             };
             let sender_device = cards[device].device_id();
             home.observe_lamport(env.lamport)?;
+            if matches!(env.kind, Kind::LargeLeave | Kind::LargeLists) {
+                // Only ever sent inside a large group's own messages: never valid between two people.
+                persist(sessions, me)?;
+                return Ok(Outcome::Invalid);
+            }
             if env.group.is_some() {
                 let owner = match &owner_of[device] {
                     From::Own => my_list.owner.clone(),
@@ -329,10 +336,14 @@ pub fn process(
                         persist(sessions, me)?;
                         return Ok(outcome);
                     }
-                    if matches!(
-                        env.kind,
-                        Kind::AgentRequest | Kind::AgentReceipt | Kind::LargeWelcome
-                    ) {
+                    if env.kind == Kind::LargeWelcome {
+                        // From another device of ours: a Welcome for one of our devices, or a copy of
+                        // one we sent to a contact (which `on_own_welcome` ignores).
+                        let outcome = large::on_own_welcome(home, &env)?;
+                        persist(sessions, me)?;
+                        return Ok(outcome);
+                    }
+                    if matches!(env.kind, Kind::AgentRequest | Kind::AgentReceipt) {
                         // Copies of our own agent traffic, or an invitation for someone else: nothing to store.
                         persist(sessions, me)?;
                         return Ok(Outcome::Ignored);
@@ -525,6 +536,7 @@ fn apply_sync(
             approve,
             note,
         } => agent::on_remote_decision(home, my_device_id, &request_id, approve, &note)?,
+        SyncMsg::LargeInvite { group, accepted } => large::on_own_decision(home, &group, accepted)?,
         SyncMsg::GroupInvite {
             group,
             decision,

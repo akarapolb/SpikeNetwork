@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const MAX_PEOPLE: u32 = 500;
 pub const MAX_DEVICES: u32 = 1000;
 pub const POLICY_VERSION: u8 = 1;
+/// Longest group name, in bytes.
+pub const MAX_NAME: usize = 100;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -24,6 +26,9 @@ pub enum Who {
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub v: u8,
+    /// The group's name. Part of the signed policy, so an admin renames for everyone at once.
+    #[serde(default)]
+    pub name: String,
     /// Owner keys (hex) of the people who administer the group.
     pub admins: Vec<String>,
     pub add: Who,
@@ -56,6 +61,7 @@ impl Policy {
     pub fn new(admins: Vec<[u8; 32]>) -> Self {
         Self {
             v: POLICY_VERSION,
+            name: String::new(),
             admins: admins.iter().map(hex::encode).collect(),
             add: Who::Admins,
             remove: Who::Admins,
@@ -82,6 +88,8 @@ impl Policy {
                 .iter()
                 .all(|a| hex::decode(a).map(|b| b.len() == 32).unwrap_or(false));
         if self.v != POLICY_VERSION
+            || self.name.len() > MAX_NAME
+            || self.name.chars().any(char::is_control)
             || !admins_ok
             || self.max_people == 0
             || self.max_people > MAX_PEOPLE

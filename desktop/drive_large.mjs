@@ -20,7 +20,8 @@ let failures = 0;
 const check = (ok, what) => { console.log(`${ok ? "ok  " : "FAIL"} ${what}`); if (!ok) failures++; };
 
 function start(cmd, args, env) {
-  const p = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: "ignore" });
+  // DRIVE_STDERR=1 shows the apps' own debug output (the listener logs what it does, never content).
+  const p = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: process.env.DRIVE_STDERR ? ["ignore", "ignore", "inherit"] : "ignore" });
   procs.push(p);
   return p;
 }
@@ -150,13 +151,34 @@ try {
   t = await carol.text();
   check(t.includes("thanks alice") && /~[0-9a-f]/.test(t), "carol reads bob's message under a name she can recognise, not as a contact");
 
-  // Members screen: alice is admin and can remove; make-admin / rename / leave are not offered.
+  // Instant delivery: nobody calls sync here. The relay pushes, the listener wakes, the screen has it.
+  await sleep(4000); // let the listeners reconnect and subscribe after joining (they back off after each displacement)
+  await alice.refresh(); await alice.click("Org"); await sleep(500);
+  await say(alice, "push test");
+  let seen = false;
+  for (let i = 0; i < 40 && !seen; i++) {
+    await sleep(500);
+    const g = (await carol.invoke("overview")).groups[0];
+    seen = !!g && (g.last || "").includes("push test");
+  }
+  check(seen, "carol has alice's message within a few seconds without syncing (instant delivery)");
+
+  // Members screen: alice is admin; the controls for large groups are there.
   await alice.invoke("sync"); await alice.refresh(); await alice.click("Org"); await sleep(500);
   await alice.click("Members"); await sleep(700);
   t = await alice.text();
   check(t.toLowerCase().includes("members (3)") && t.includes("up to 500"), "alice's members screen counts 3 of up to 500");
-  check(!t.includes("Make admin") && !t.includes("Leave group") && !t.includes("Group settings"), "unsupported controls are not offered");
+  const tl = t.toLowerCase();
+  check(tl.includes("make admin") && tl.includes("leave group") && tl.includes("group settings"), "rename, admin, who-can-add and leave are offered");
+  check(!t.includes("New members see"), "the history choice is not (not built for large groups)");
   await alice.shot("6-members");
+
+  // Rename from the screen; the others see it after a sync.
+  await alice.eval(`const i=document.querySelector('input[aria-label="Group name"]'); i.value="Board"; i.dispatchEvent(new Event('change',{bubbles:true}));`);
+  await sleep(2500);
+  for (const p of [bob, carol]) { await p.invoke("sync"); }
+  check((await bob.invoke("overview")).groups[0].name === "Board", "bob sees the new name");
+  await alice.refresh();
 
   // Alice removes Carol. (confirm() is auto-accepted for the run.)
   await alice.eval("window.confirm = () => true;");
@@ -164,22 +186,35 @@ try {
   await sleep(3000);
   t = await alice.text();
   check(t.toLowerCase().includes("members (2)"), "alice's member list shrinks to 2");
+  // The listeners may well have synced already (instant delivery), so look at the result, not at one sync's notes.
+  const until = async (fn, tries = 40) => { for (let i = 0; i < tries; i++) { if (await fn()) return true; await sleep(500); } return false; };
   await bob.invoke("sync");
-  const carolSync = await carol.invoke("sync");
-  check(carolSync.notes.some((n) => n.includes("removed")), "carol is told she was removed");
+  await carol.invoke("sync");
+  check(await until(async () => (await carol.invoke("overview")).groups[0].status === "left"), "carol is told she was removed");
   await carol.refresh();
   t = await carol.text();
   check(t.includes("left"), "carol's list marks the group as left");
-  await carol.click("Org"); await sleep(600);
+  await carol.click("Board"); await sleep(600);
   t = await carol.text();
   check(t.includes("You are not in this group"), "carol cannot write any more");
   await carol.shot("7-removed");
   // Bob and Alice carry on in the new mailbox.
-  await bob.refresh(); await bob.click("Org"); await sleep(500);
+  await bob.refresh(); await bob.click("Board"); await sleep(500);
   await say(bob, "just us now");
   await alice.invoke("sync");
   const aliceMsgs = await alice.invoke("group_conversation", { id: (await alice.invoke("overview")).groups[0].id });
   check(aliceMsgs.some((m) => m.body === "just us now"), "alice reads bob's message in the new mailbox");
+
+  // Bob leaves from the screen; Alice, the admin, removes him on her next sync.
+  await bob.eval("window.confirm = () => true;");
+  await bob.refresh(); await bob.click("Board"); await sleep(500);
+  await bob.click("Members"); await sleep(600);
+  await bob.click("Leave group"); await sleep(2500);
+  t = await bob.text();
+  check((await bob.invoke("overview")).groups[0].status === "left", "bob's list marks the group as left");
+  await alice.invoke("sync");
+  check(await until(async () => (await alice.invoke("overview")).groups[0].members === 1), "alice sees bob leaving and removes him: one member left");
+  await alice.refresh();
 } catch (e) {
   console.log("ERROR", e.message);
   failures++;

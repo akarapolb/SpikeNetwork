@@ -1528,11 +1528,7 @@ async fn the_admin_removes_and_adds_people_and_the_removed_one_is_told() {
 async fn controls_a_large_group_does_not_have_yet_say_so_instead_of_pretending() {
     let (_url, alice, _bob, _carol, gid) = org().await;
     for e in [
-        alice.s.group_rename(&gid, "New").await.err(),
-        alice.s.group_leave(&gid).await.err(),
-        alice.s.group_set_add_by(&gid, true).await.err(),
         alice.s.group_set_history(&gid, true).await.err(),
-        alice.s.group_make_admin(&gid, "ab").await.err(),
         alice.s.group_block(&gid).await.err(),
         alice.s.group_send_file(&gid, "a.txt", b"x", "").await.err(),
     ] {
@@ -1541,4 +1537,53 @@ async fn controls_a_large_group_does_not_have_yet_say_so_instead_of_pretending()
     }
     // Small groups are unaffected by any of this.
     assert!(alice.s.group_create("Small", &[], false).await.is_err());
+}
+
+#[tokio::test]
+async fn the_admin_renames_adds_an_admin_and_a_member_leaves_from_the_app() {
+    let (_url, alice, bob, carol, gid) = org().await;
+    for d in [&alice, &bob, &carol] {
+        d.s.sync(IDLE).await.unwrap();
+    }
+    // Rename: everyone sees it after their next sync; only an admin may.
+    assert!(bob.s.group_rename(&gid, "Mine").await.is_err());
+    alice.s.group_rename(&gid, "Board").await.unwrap();
+    for d in [&bob, &carol] {
+        d.s.sync(IDLE).await.unwrap();
+        assert_eq!(d.s.overview().unwrap().groups[0].name, "Board");
+    }
+    // Who can add people.
+    assert_eq!(alice.s.group(&gid).unwrap().add_by, "admins");
+    alice.s.group_set_add_by(&gid, true).await.unwrap();
+    assert_eq!(alice.s.group(&gid).unwrap().add_by, "any");
+    bob.s.sync(IDLE).await.unwrap();
+    assert!(bob.s.group(&gid).unwrap().can_add, "now any member may");
+    assert!(!bob.s.group(&gid).unwrap().me_admin);
+
+    // A second admin.
+    let bob_key = alice
+        .s
+        .group(&gid)
+        .unwrap()
+        .members
+        .into_iter()
+        .find(|m| m.name == "Bob")
+        .unwrap()
+        .owner;
+    alice.s.group_make_admin(&gid, &bob_key).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    assert!(bob.s.group(&gid).unwrap().me_admin);
+
+    // Carol leaves: she is out here at once, an admin removes her on the next sync, and the others are told.
+    carol.s.group_leave(&gid).await.unwrap();
+    assert_eq!(carol.s.overview().unwrap().groups[0].status, "left");
+    let r = alice.s.sync(IDLE).await.unwrap();
+    assert!(
+        r.notes.iter().any(|n| n.contains("is leaving")),
+        "{:?}",
+        r.notes
+    );
+    assert_eq!(alice.s.group(&gid).unwrap().members.len(), 2);
+    // The only admin cannot leave; with a second one she can.
+    alice.s.group_leave(&gid).await.unwrap();
 }

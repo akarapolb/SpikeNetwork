@@ -68,6 +68,9 @@ pub struct Session {
     link_old: Mutex<Option<link::Pending>>,
     /// Key packages for large groups were topped up since this session started.
     kp_checked: AtomicBool,
+    /// Poked when the large groups we listen to change (joined, left, a mailbox rotated), so the
+    /// listener reconnects and subscribes to the right ones.
+    subs: std::sync::Arc<tokio::sync::Notify>,
 }
 
 // ------------------------------------------------------------------ DTOs
@@ -206,8 +209,12 @@ pub struct GroupDetailDto {
     pub history: String,
     /// An invite from someone who is not a contact: it can be declined *and* the inviter blocked.
     pub can_block: bool,
-    /// A large group (MLS, ADR 0025): no renaming, leaving, files or history choice yet.
+    /// A large group (MLS, ADR 0025): no files or history choice yet.
     pub large: bool,
+    /// Changes every member refused (they broke a rule); they are skipped, the group carries on.
+    pub refused: u64,
+    /// Why the latest one was refused.
+    pub refused_why: Option<String>,
 }
 
 /// What a group change or message reached.
@@ -375,6 +382,7 @@ impl Session {
             link_new: Mutex::new(None),
             link_old: Mutex::new(None),
             kp_checked: AtomicBool::new(false),
+            subs: std::sync::Arc::new(tokio::sync::Notify::new()),
         })
     }
 
@@ -476,6 +484,23 @@ impl Session {
     /// while connecting: any operation that runs later connects too, which makes
     /// the relay drop this one (one live connection per device), and the listener
     /// then waits for the lock before reconnecting.
+    /// What the listener waits on besides the relay: poked when our large groups' mailboxes change.
+    pub fn subscription_signal(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        self.subs.clone()
+    }
+
+    /// Ask the relay to push new entries of our large groups to the listener's connection, so a
+    /// message in one is noticed as fast as a one-to-one message. Best effort: a group that cannot
+    /// be subscribed to (too many, another relay) is still read by the periodic sync.
+    pub async fn listener_subscribe(&self, relay: &mut Relay) {
+        let url = self.settings().url;
+        if let Ok(subs) = large::subscriptions(&self.home, &url) {
+            for (id, key) in subs.into_iter().take(50) {
+                let _ = relay.group_subscribe(&key, &id).await;
+            }
+        }
+    }
+
     pub async fn listener_connect(&self) -> Result<Relay> {
         let me = self.home.load_identity()?;
         let target = self.target();
@@ -776,10 +801,22 @@ impl Session {
         }
         match large::sync(&self.home, self.target()).await {
             Ok(events) => {
+                // A group joined, moved to a new mailbox or lost: listen to the right ones.
+                if events
+                    .iter()
+                    .any(|e| !matches!(e, large::Event::Message { .. }))
+                {
+                    self.subs.notify_one();
+                }
                 for e in events {
                     match e {
                         large::Event::Message { .. } => out.received += 1,
-                        large::Event::Changed { .. } => out.groups += 1,
+                        large::Event::Changed { .. } | large::Event::OwnDevices => out.groups += 1,
+                        large::Event::Left { group, who } => {
+                            out.groups += 1;
+                            out.notes
+                                .push(format!("{who} is leaving {group}; an admin removes them."));
+                        }
                         large::Event::Removed { group } => {
                             out.groups += 1;
                             out.notes.push(format!(
@@ -1458,6 +1495,8 @@ impl Session {
             .into(),
             can_block: r.status == groups::Status::Invited && r.stranger.is_some(),
             large: false,
+            refused: 0,
+            refused_why: None,
             name: s.name,
         })
     }
@@ -1612,21 +1651,33 @@ impl Session {
     }
 
     pub async fn group_make_admin(&self, id: &str, owner: &str) -> Result<GroupSendDto> {
-        self.not_large(id, "making another admin")?;
+        if self.is_large(id) {
+            let _net = self.net.lock().await;
+            large::make_admin(&self.home, self.target(), id, owner).await?;
+            return Ok(Self::large_done(id));
+        }
         let _net = self.net.lock().await;
         let (s, r) = groups::make_admin(&self.home, self.target(), id, owner).await?;
         Ok(Self::sent_dto(&s.group, &r))
     }
 
     pub async fn group_rename(&self, id: &str, name: &str) -> Result<GroupSendDto> {
-        self.not_large(id, "renaming")?;
+        if self.is_large(id) {
+            let _net = self.net.lock().await;
+            large::rename(&self.home, self.target(), id, name).await?;
+            return Ok(Self::large_done(id));
+        }
         let _net = self.net.lock().await;
         let (s, r) = groups::rename(&self.home, self.target(), id, name).await?;
         Ok(Self::sent_dto(&s.group, &r))
     }
 
     pub async fn group_set_add_by(&self, id: &str, any: bool) -> Result<GroupSendDto> {
-        self.not_large(id, "changing who can add")?;
+        if self.is_large(id) {
+            let _net = self.net.lock().await;
+            large::set_members_can_add(&self.home, self.target(), id, any).await?;
+            return Ok(Self::large_done(id));
+        }
         let add_by = if any { AddBy::Any } else { AddBy::Admins };
         let _net = self.net.lock().await;
         let (s, r) = groups::set_add_by(&self.home, self.target(), id, add_by).await?;
@@ -1635,7 +1686,12 @@ impl Session {
 
     /// Leave a group. Your history stays on this computer; nobody can add you back without your OK.
     pub async fn group_leave(&self, id: &str) -> Result<()> {
-        self.not_large(id, "leaving")?;
+        if self.is_large(id) {
+            let _net = self.net.lock().await;
+            large::leave(&self.home, self.target(), id).await?;
+            self.subs.notify_one();
+            return Ok(());
+        }
         let _net = self.net.lock().await;
         groups::leave(&self.home, self.target(), id).await?;
         Ok(())
@@ -1646,6 +1702,7 @@ impl Session {
         if self.is_large(id) {
             let _net = self.net.lock().await;
             large::accept(&self.home, self.target(), id).await?;
+            self.subs.notify_one();
             return Ok(());
         }
         self.invite_decision(id, groups::InviteDecision::Accept)
@@ -1655,7 +1712,7 @@ impl Session {
     /// Decline an invite. The inviter is not told; your other devices decline too.
     pub async fn group_decline(&self, id: &str) -> Result<()> {
         if self.is_large(id) {
-            return large::decline(&self.home, id);
+            return large::decline(&self.home, self.target(), id).await;
         }
         self.invite_decision(id, groups::InviteDecision::Decline)
             .await
@@ -1703,7 +1760,7 @@ fn large_status_word(s: large::Status) -> &'static str {
     match s {
         large::Status::Active => "joined",
         large::Status::Invited => "invited",
-        large::Status::Removed => "left",
+        large::Status::Removed | large::Status::Left => "left",
     }
 }
 
@@ -1717,6 +1774,16 @@ impl Session {
             bail!("{what} is not available for a large group yet");
         }
         Ok(())
+    }
+
+    /// What a change to a large group reports: it has no per-person delivery.
+    fn large_done(id: &str) -> GroupSendDto {
+        GroupSendDto {
+            group: id.to_string(),
+            reached: 0,
+            people: 0,
+            notes: vec![],
+        }
     }
 
     fn large_rows(&self) -> Result<Vec<GroupDto>> {
@@ -1817,21 +1884,31 @@ impl Session {
         let mut members = members;
         members.sort_by(|a, b| b.you.cmp(&a.you).then_with(|| a.name.cmp(&b.name)));
         let me_admin = infos.iter().any(|m| m.owner == me && m.admin);
+        let settings = large::settings(&self.home, id)?;
         Ok(GroupDetailDto {
             id: r.id.clone(),
             name: r.name.clone(),
             status: large_status_word(r.status).into(),
             invited_by: r.invite.as_ref().map(|i| i.from.clone()),
-            can_add: r.status == large::Status::Active && me_admin && members.len() < LARGE_MAX,
+            can_add: r.status == large::Status::Active
+                && (me_admin || settings.members_can_add)
+                && members.len() < LARGE_MAX,
             members,
             me_admin,
-            add_by: "admins".into(),
+            add_by: if settings.members_can_add {
+                "any"
+            } else {
+                "admins"
+            }
+            .into(),
             version: r.cursor,
             max: LARGE_MAX,
             unverified: self.large_unverified(&r.id),
             history: "join".into(),
             can_block: false,
             large: true,
+            refused: settings.refused_total,
+            refused_why: settings.last_refused,
         })
     }
 
@@ -1876,6 +1953,7 @@ impl Session {
         let name = groups::display_name(&self.home, owner);
         let _net = self.net.lock().await;
         large::remove_owner(&self.home, self.target(), id, &key, &name).await?;
+        self.subs.notify_one();
         Ok(GroupSendDto {
             group: id.to_string(),
             reached: 1,
@@ -1897,6 +1975,7 @@ impl Session {
             self.kp_checked.store(true, Ordering::SeqCst);
         }
         let rec = large::create(&self.home, self.target(), name).await?;
+        self.subs.notify_one();
         let mut notes = Vec::new();
         let mut reached = 0;
         for m in members {

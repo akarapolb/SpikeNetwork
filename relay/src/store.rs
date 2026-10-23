@@ -1031,7 +1031,9 @@ mod tests {
             &lim,
         )
         .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // Longer than the system clock's tick (on Windows about 16 ms), or a loaded machine can
+        // purge before the 1 ms lifetime has visibly passed.
+        std::thread::sleep(std::time::Duration::from_millis(100));
         assert_eq!(s.purge_expired().unwrap(), 1, "only the message expired");
         let stats = s.stats().unwrap();
         assert_eq!((stats.group_entries, stats.group_bytes), (1, 50));

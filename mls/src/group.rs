@@ -59,7 +59,10 @@ fn mls<E: std::fmt::Display>(e: E) -> Error {
 fn capabilities() -> Capabilities {
     Capabilities::builder()
         .ciphersuites(vec![CIPHERSUITE])
-        .extensions(vec![ExtensionType::Unknown(POLICY_EXTENSION)])
+        .extensions(vec![
+            ExtensionType::Unknown(POLICY_EXTENSION),
+            ExtensionType::LastResort,
+        ])
         .build()
 }
 
@@ -132,6 +135,20 @@ impl Device {
     pub fn key_package(&self) -> Vec<u8> {
         let kp = KeyPackage::builder()
             .leaf_node_capabilities(capabilities())
+            .build(CIPHERSUITE, &self.provider, &self.signer, self.cwk.clone())
+            .expect("a key package builds")
+            .key_package()
+            .clone();
+        kp.tls_serialize_detached().expect("serializes")
+    }
+
+    /// A key package marked "last resort": the relay hands it out only when the one-time ones have
+    /// run out, and unlike those it can be used again (this device keeps its private half). Weaker,
+    /// because anyone who learns it can replay it, so it is a fallback, not the plan.
+    pub fn last_resort_key_package(&self) -> Vec<u8> {
+        let kp = KeyPackage::builder()
+            .leaf_node_capabilities(capabilities())
+            .mark_as_last_resort()
             .build(CIPHERSUITE, &self.provider, &self.signer, self.cwk.clone())
             .expect("a key package builds")
             .key_package()

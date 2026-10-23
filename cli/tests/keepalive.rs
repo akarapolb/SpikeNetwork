@@ -133,8 +133,7 @@ async fn a_silently_dead_connection_is_noticed_quickly() {
     let err = r
         .next_delivery(Some(Duration::from_secs(60)))
         .await
-        .err()
-        .expect("a dead connection must be an error");
+        .expect_err("a dead connection must be an error");
     assert!(err.to_string().contains("lost the connection"), "{err}");
     assert!(
         t.elapsed() < Duration::from_secs(3),

@@ -488,7 +488,9 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
         | Kind::GroupStateRequest
         | Kind::GroupHistoryRequest
         | Kind::GroupHistory
-        | Kind::LargeWelcome => {}
+        | Kind::LargeWelcome
+        | Kind::LargeLeave
+        | Kind::LargeLists => {}
     }
     Ok(SendReport {
         id: env.id,
@@ -652,6 +654,35 @@ pub(crate) async fn broadcast_own(home: &Home, base: Target, msg: &SyncMsg) -> R
             Err(e) => eprintln!(
                 "note: could not reach your device {}: {e:#}",
                 &d.0.device_id()[..8]
+            ),
+        }
+    }
+    Ok(ok)
+}
+
+/// Send an envelope to every other device of ours, and to no one else. Returns how many accepted it.
+pub(crate) async fn deliver_to_own(home: &Home, base: Target, mut env: Envelope) -> Result<usize> {
+    let me = home.load_identity()?;
+    let mut sessions = home.load_sessions()?;
+    {
+        let mut r = Relay::connect(base.clone(), &me).await?;
+        sync_own_list(&mut r, home).await?;
+    }
+    env.lamport = home.next_lamport()?;
+    let plaintext = env.to_bytes();
+    let mut pool = Pool {
+        base: base.clone(),
+        me: &me,
+        conns: HashMap::new(),
+    };
+    let mut ok = 0;
+    for (card, relay) in own_other_devices(home, &me)? {
+        let url = relay.unwrap_or_else(|| base.url.clone());
+        match send_to_device(&mut pool, home, &mut sessions, &card, &url, &plaintext).await {
+            Ok(_) => ok += 1,
+            Err(e) => eprintln!(
+                "note: could not reach your device {}: {e:#}",
+                &card.device_id()[..8]
             ),
         }
     }
