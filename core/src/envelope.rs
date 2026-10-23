@@ -33,6 +33,10 @@ pub enum Kind {
     GroupState,
     /// Ask a member for the group states after a version (body: `{"after": n}`).
     GroupStateRequest,
+    /// A new member asks the person who added them for the group's last 7 days (body: `{}`).
+    GroupHistoryRequest,
+    /// A batch of that history (body: JSON `{"messages": [...]}`, ADR 0024 section 7).
+    GroupHistory,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -129,7 +133,13 @@ impl Envelope {
 
     /// Group states or a request for them, addressed to one group (ADR 0024).
     pub fn group_control(kind: Kind, group: &str, json: &str) -> Result<Self> {
-        debug_assert!(matches!(kind, Kind::GroupState | Kind::GroupStateRequest));
+        debug_assert!(matches!(
+            kind,
+            Kind::GroupState
+                | Kind::GroupStateRequest
+                | Kind::GroupHistoryRequest
+                | Kind::GroupHistory
+        ));
         let mut e = Self::text(json)?;
         e.kind = kind;
         e.group = Some(group.to_string());
@@ -177,7 +187,10 @@ impl Envelope {
             && e.gstate.as_deref().is_none_or(|h| hex_of(h, 64))
             && match e.kind {
                 // Group control always names its group; private kinds never do.
-                Kind::GroupState | Kind::GroupStateRequest => e.group.is_some(),
+                Kind::GroupState
+                | Kind::GroupStateRequest
+                | Kind::GroupHistoryRequest
+                | Kind::GroupHistory => e.group.is_some(),
                 Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => {
                     e.group.is_none() && e.gstate.is_none()
                 }
@@ -190,7 +203,9 @@ impl Envelope {
             | Kind::AgentRequest
             | Kind::AgentReceipt
             | Kind::GroupState
-            | Kind::GroupStateRequest => e.target.is_none(),
+            | Kind::GroupStateRequest
+            | Kind::GroupHistoryRequest
+            | Kind::GroupHistory => e.target.is_none(),
             Kind::Edit | Kind::Delete => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
@@ -206,7 +221,9 @@ impl Envelope {
             | Kind::AgentRequest
             | Kind::AgentReceipt
             | Kind::GroupState
-            | Kind::GroupStateRequest => e.attachment.is_none() && !e.body.is_empty(),
+            | Kind::GroupStateRequest
+            | Kind::GroupHistoryRequest
+            | Kind::GroupHistory => e.attachment.is_none() && !e.body.is_empty(),
         };
         if e.v != VERSION
             || !id_ok
@@ -267,6 +284,35 @@ mod tests {
                 .contains("group"),
             "absent unless set"
         );
+    }
+
+    #[test]
+    fn history_kinds_name_their_group_and_nothing_else() {
+        let g = "ab".repeat(16);
+        for kind in [Kind::GroupHistoryRequest, Kind::GroupHistory] {
+            let ok = Envelope::group_control(kind, &g, "{}").unwrap();
+            assert!(Envelope::from_bytes(&ok.to_bytes()).is_ok(), "{kind:?}");
+            let mut no_group = ok.clone();
+            no_group.group = None;
+            assert!(Envelope::from_bytes(&no_group.to_bytes()).is_err());
+            let mut with_state = ok.clone();
+            with_state.gstate = Some("cd".repeat(32));
+            // A group message names its state; control messages are not group messages, but a
+            // stray state hash on one is harmless noise, not something to act on.
+            assert!(Envelope::from_bytes(&with_state.to_bytes()).is_ok());
+            let mut with_target = ok.clone();
+            with_target.target = Some("ef".repeat(16));
+            assert!(Envelope::from_bytes(&with_target.to_bytes()).is_err());
+            let mut with_intro = ok.clone();
+            with_intro.intro = Some("spike2:ab".into());
+            assert!(
+                Envelope::from_bytes(&with_intro.to_bytes()).is_err(),
+                "only invites introduce"
+            );
+            let mut empty = ok;
+            empty.body.clear();
+            assert!(Envelope::from_bytes(&empty.to_bytes()).is_err());
+        }
     }
 
     #[test]

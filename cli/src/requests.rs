@@ -386,6 +386,7 @@ pub fn accept(home: &Home, id: &str, name: &str) -> Result<usize> {
             deleted: false,
             changed_at: 0,
             author: None,
+            shared_by: None,
         })? {
             added += 1;
         }

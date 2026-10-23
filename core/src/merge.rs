@@ -65,7 +65,9 @@ pub fn decide(
         | Kind::AgentRequest
         | Kind::AgentReceipt
         | Kind::GroupState
-        | Kind::GroupStateRequest => Action::Ignore,
+        | Kind::GroupStateRequest
+        | Kind::GroupHistoryRequest
+        | Kind::GroupHistory => Action::Ignore,
     }
 }
 

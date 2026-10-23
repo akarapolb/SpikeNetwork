@@ -1061,3 +1061,352 @@ async fn blocking_an_inviter_also_clears_their_other_waiting_invites() {
         }
     }
 }
+
+// ----- files in groups, and the "last 7 days" option for new members -----
+
+fn history_bodies(d: &Dev, group: &str) -> Vec<String> {
+    groups::history(&d.0, group, 100)
+        .unwrap()
+        .1
+        .into_iter()
+        .map(|m| m.body)
+        .collect()
+}
+
+fn group_history_outcome(got: &[Outcome]) -> Option<usize> {
+    got.iter().find_map(|o| match o {
+        Outcome::GroupHistory { added, .. } => Some(*added),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn a_file_sent_to_a_group_reaches_every_member_and_is_checked() {
+    let (url, alice, bob, carol) = pilot().await;
+    // More than one 256 KiB chunk, so reassembly and the integrity check are exercised.
+    let bytes: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    assert!(
+        groups::send_file(&alice.0, url.as_str(), "Pilot", "empty.bin", &[], "")
+            .await
+            .is_err()
+    );
+    let sent = groups::send_file(
+        &alice.0,
+        url.as_str(),
+        "Pilot",
+        "plan.bin",
+        &bytes,
+        "the plan",
+    )
+    .await
+    .unwrap();
+    assert_eq!(sent.reached, 2, "one upload, one message per member device");
+    assert_eq!(
+        alice.0.load_attachment(&sent.id).unwrap().unwrap(),
+        bytes,
+        "sender keeps a copy"
+    );
+
+    for d in [&bob, &carol] {
+        let got = recv(d, &url).await;
+        let [Outcome::GroupMessage { id, body, .. }] = got.as_slice() else {
+            panic!("{got:?}")
+        };
+        assert_eq!(
+            (id.as_str(), body.as_slice()),
+            (sent.id.as_str(), &b"the plan"[..])
+        );
+        let m = d.0.messages().unwrap().get(id).unwrap().unwrap();
+        assert_eq!(m.attachment.as_ref().unwrap().name, "plan.bin");
+        let (att, got_bytes) = ops::fetch_attachment(&d.0, url.as_str(), id).await.unwrap();
+        assert_eq!((att.name.as_str(), got_bytes), ("plan.bin", bytes.clone()));
+    }
+
+    // Bob sends one too; Carol, who does not know Bob, can fetch it.
+    let from_bob = groups::send_file(
+        &bob.0,
+        url.as_str(),
+        "Pilot",
+        "notes.txt",
+        b"bob's notes",
+        "",
+    )
+    .await
+    .unwrap();
+    let got = recv(&carol, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::GroupMessage { .. }]),
+        "{got:?}"
+    );
+    let (_, b) = ops::fetch_attachment(&carol.0, url.as_str(), &from_bob.id)
+        .await
+        .unwrap();
+    assert_eq!(b, b"bob's notes");
+
+    // Deleting the message removes the file on every device that kept it.
+    ops::delete(&alice.0, url.as_str(), &sent.id).await.unwrap();
+    recv(&bob, &url).await;
+    assert!(bob.0.load_attachment(&sent.id).unwrap().is_none());
+    assert!(alice.0.load_attachment(&sent.id).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn new_members_see_the_last_seven_days_when_the_group_says_so() {
+    use spike_cli::messages::{Direction, StoredMessage};
+    use spike_core::group::History;
+    let url = relay().await;
+    let (alice, bob, carol) = (
+        dev("alice", &url).await,
+        dev("bob", &url).await,
+        dev("carol", &url).await,
+    );
+    pair(&alice, "bob", &bob, "alice");
+    pair(&alice, "carol", &carol, "alice");
+    let gid = groups::create_with(
+        &alice.0,
+        url.as_str(),
+        "Pilot",
+        &["bob".into()],
+        AddBy::Admins,
+        History::Week,
+    )
+    .await
+    .unwrap()
+    .0
+    .group;
+    recv(&bob, &url).await;
+
+    groups::send(&alice.0, url.as_str(), &gid, "monday plan")
+        .await
+        .unwrap();
+    recv(&bob, &url).await;
+    groups::send(&bob.0, url.as_str(), &gid, "bob's reply")
+        .await
+        .unwrap();
+    recv(&alice, &url).await;
+    let gone = groups::send(&alice.0, url.as_str(), &gid, "to be deleted")
+        .await
+        .unwrap();
+    recv(&bob, &url).await;
+    ops::delete(&alice.0, url.as_str(), &gone.id).await.unwrap();
+    recv(&bob, &url).await;
+    let file = groups::send_file(
+        &alice.0,
+        url.as_str(),
+        &gid,
+        "old.txt",
+        b"from last week",
+        "",
+    )
+    .await
+    .unwrap();
+    recv(&bob, &url).await;
+    // Something from nine days ago is outside the window.
+    alice
+        .0
+        .messages()
+        .unwrap()
+        .insert(&StoredMessage {
+            id: "ab".repeat(16),
+            peer: gid.clone(),
+            direction: Direction::Out,
+            ts: 1,
+            body: "ancient".into(),
+            attachment: None,
+            lamport: 1,
+            stamp_device: "x".into(),
+            edited: false,
+            deleted: false,
+            changed_at: 0,
+            author: Some(owner(&alice)),
+            shared_by: None,
+        })
+        .unwrap();
+
+    // Alice adds Carol. Carol asks Alice when she joins; Alice answers; Carol reads it.
+    groups::add(&alice.0, url.as_str(), &gid, &["carol".into()])
+        .await
+        .unwrap();
+    let got = recv(&carol, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::GroupJoined { .. }]),
+        "{got:?}"
+    );
+    recv(&alice, &url).await;
+    let got = recv(&carol, &url).await;
+    assert_eq!(group_history_outcome(&got), Some(3), "{got:?}");
+
+    let (_, shown) = groups::history(&carol.0, &gid, 100).unwrap();
+    let bodies: Vec<&str> = shown.iter().map(|m| m.body.as_str()).collect();
+    assert_eq!(
+        bodies,
+        ["monday plan", "bob's reply", ""],
+        "no deleted, no ancient: {bodies:?}"
+    );
+    assert!(shown
+        .iter()
+        .all(|m| m.shared_by.as_deref() == Some(owner(&alice).as_str())));
+    assert_eq!(shown[0].author.as_deref(), Some(owner(&alice).as_str()));
+    assert_eq!(
+        shown[1].author.as_deref(),
+        Some(owner(&bob).as_str()),
+        "as claimed by the sharer"
+    );
+    // The file comes with a fresh copy on the relay, not the original upload.
+    let (_, bytes) = ops::fetch_attachment(&carol.0, url.as_str(), &shown[2].id)
+        .await
+        .unwrap();
+    assert_eq!(bytes, b"from last week");
+    assert_eq!(shown[2].id, file.id);
+
+    // She cannot ask again for a while, and nobody can push history she did not ask for.
+    let mut again =
+        Envelope::group_control(spike_core::envelope::Kind::GroupHistoryRequest, &gid, "{}")
+            .unwrap();
+    again.lamport = 1;
+    ops::deliver_envelope(&carol.0, url.as_str(), "alice", again)
+        .await
+        .unwrap();
+    recv(&alice, &url).await;
+    let got = recv(&carol, &url).await;
+    assert_eq!(
+        group_history_outcome(&got),
+        None,
+        "answered once per day: {got:?}"
+    );
+}
+
+#[tokio::test]
+async fn history_is_not_shared_unless_the_group_says_so_and_never_unasked() {
+    use spike_core::envelope::Kind;
+    use spike_core::group::History;
+    let (url, alice, bob, carol) = pilot().await; // History::Join
+    groups::send(&alice.0, url.as_str(), "Pilot", "before dana")
+        .await
+        .unwrap();
+    recv(&bob, &url).await;
+    recv(&carol, &url).await;
+    let dana = dev("dana", &url).await;
+    pair(&alice, "dana", &dana, "alice");
+    groups::add(&alice.0, url.as_str(), "Pilot", &["dana".into()])
+        .await
+        .unwrap();
+    recv(&dana, &url).await;
+    recv(&alice, &url).await;
+    let got = recv(&dana, &url).await;
+    assert_eq!(group_history_outcome(&got), None);
+    assert!(
+        history_bodies(&dana, "Pilot").is_empty(),
+        "joined from now on"
+    );
+
+    // Alice (a member Dana trusts) sends a history Dana never asked for: dropped.
+    let gid = groups::find(&dana.0, "Pilot").unwrap().id().to_string();
+    let forged = serde_json::json!({ "messages": [{
+        "id": "cd".repeat(16), "ts": 4_000_000_000_000u64, "author": owner(&bob),
+        "body": "forged", "edited": false
+    }]})
+    .to_string();
+    let env = Envelope::group_control(Kind::GroupHistory, &gid, &forged).unwrap();
+    ops::deliver_envelope(&alice.0, url.as_str(), "dana", env)
+        .await
+        .unwrap();
+    let got = recv(&dana, &url).await;
+    assert_eq!(group_history_outcome(&got), None, "{got:?}");
+    assert!(history_bodies(&dana, "Pilot").is_empty());
+
+    // Switching the setting to the last 7 days is a group change every member sees.
+    groups::set_history(&alice.0, url.as_str(), "Pilot", History::Week)
+        .await
+        .unwrap();
+    recv(&bob, &url).await;
+    assert_eq!(
+        groups::find(&bob.0, "Pilot")
+            .unwrap()
+            .current()
+            .unwrap()
+            .history,
+        History::Week
+    );
+    // Even when the group now offers it, Dana never asked (she joined before it did), so a history
+    // pushed at her is refused: asking is what opens the door, and only for the person asked.
+    recv(&dana, &url).await;
+    assert_eq!(
+        groups::find(&dana.0, "Pilot")
+            .unwrap()
+            .current()
+            .unwrap()
+            .history,
+        History::Week
+    );
+    let env = Envelope::group_control(Kind::GroupHistory, &gid, &forged).unwrap();
+    ops::deliver_envelope(&alice.0, url.as_str(), "dana", env)
+        .await
+        .unwrap();
+    let got = recv(&dana, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::Rejected { reason }] if reason.contains("did not ask")),
+        "{got:?}"
+    );
+    assert!(history_bodies(&dana, "Pilot").is_empty());
+
+    groups::set_history(&alice.0, url.as_str(), "Pilot", History::Join)
+        .await
+        .unwrap();
+    assert!(
+        groups::set_history(&bob.0, url.as_str(), "Pilot", History::Week)
+            .await
+            .is_err(),
+        "admins only"
+    );
+}
+
+#[tokio::test]
+async fn accepting_an_invite_asks_for_the_history_the_group_offers() {
+    use spike_core::group::History;
+    let url = relay().await;
+    let (alice, bob, eve) = (
+        dev("alice", &url).await,
+        dev("bob", &url).await,
+        dev("eve", &url).await,
+    );
+    pair(&alice, "bob", &bob, "alice");
+    alice
+        .0
+        .add_contact("eve", &eve.0.identity_card().unwrap(), false)
+        .unwrap();
+    let gid = groups::create_with(
+        &alice.0,
+        url.as_str(),
+        "Pilot",
+        &["bob".into()],
+        AddBy::Admins,
+        History::Week,
+    )
+    .await
+    .unwrap()
+    .0
+    .group;
+    recv(&bob, &url).await;
+    groups::send(&alice.0, url.as_str(), &gid, "before eve")
+        .await
+        .unwrap();
+
+    // Eve does not know Alice: an invite, nothing shown, nothing asked yet.
+    groups::add(&alice.0, url.as_str(), &gid, &["eve".into()])
+        .await
+        .unwrap();
+    assert_eq!(invites(&recv(&eve, &url).await), 1);
+    recv(&alice, &url).await;
+    assert!(group_history_outcome(&recv(&eve, &url).await).is_none());
+    assert!(history_bodies(&eve, &gid).is_empty());
+
+    // Accepting is what asks; the answer arrives; the earlier message shows, marked as shared.
+    groups::decide_invite(&eve.0, url.as_str(), &gid, groups::InviteDecision::Accept)
+        .await
+        .unwrap();
+    recv(&alice, &url).await;
+    let got = recv(&eve, &url).await;
+    assert_eq!(group_history_outcome(&got), Some(1), "{got:?}");
+    assert_eq!(history_bodies(&eve, &gid), ["before eve"]);
+}

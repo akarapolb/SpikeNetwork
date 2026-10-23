@@ -164,7 +164,7 @@ function chatsList() {
   const entries = [...cs.map((c) => ({ ts: c.last_ts || 0, name: c.name, row: contactRow(c) })), ...gs.map((g) => ({ ts: g.last_ts || 0, name: g.name, row: groupRow(g) }))]
     .sort((x, y) => y.ts - x.ts || x.name.localeCompare(y.name));
   return [h("div", { class: "listhead" }, h("div", { class: "title" }, h("h1", {}, "Chats"),
-      h("button", { class: "iconbtn", type: "button", "aria-label": "New group", title: "New group", onclick: () => { if (!cs.length) return toast("Add a contact first: a group is made from your contacts."); st.newGroup = { name: "", members: [], anyCanAdd: false }; st.screen = "newgroup"; render(); } }, icon("newgroup")),
+      h("button", { class: "iconbtn", type: "button", "aria-label": "New group", title: "New group", onclick: () => { if (!cs.length) return toast("Add a contact first: a group is made from your contacts."); st.newGroup = { name: "", members: [], anyCanAdd: false, week: false }; st.screen = "newgroup"; render(); } }, icon("newgroup")),
       h("button", { class: "iconbtn", type: "button", "aria-label": "Add a contact", title: "Add a contact", onclick: () => { st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson")))),
     h("nav", { class: "rows", "aria-label": "Conversations" },
       st.ov.requests ? h("button", { class: "reqrow", type: "button", onclick: () => { st.screen = "requests"; st.naming = null; render(); } }, icon("addperson"),
@@ -234,10 +234,10 @@ function threadItems(inGroup) {
   for (const m of st.msgs) {
     const d = dayOf(m.ts); if (d !== day) { day = d; items.push(h("div", { class: "day" }, d)); }
     items.push(h("div", { class: "msg" + (m.out ? " out" : "") },
-      inGroup && !m.out && m.from ? h("span", { class: "sender" }, m.from, m.from_verified ? null : h("span", { class: "tag bad", style: "margin-left:6px" }, "Not verified")) : null,
+      inGroup && !m.out && m.from ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag bad", style: "margin-left:6px" }, "Not verified")) : null,
       m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, m.body) : null),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
-      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
+      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
   }
   return items;
 }
@@ -510,6 +510,19 @@ const GROUP_MAX = 20;
 const unreadTotal = () => st.ov.contacts.reduce((a, c) => a + c.unread, 0) + st.ov.groups.reduce((a, g) => a + g.unread, 0);
 const invitesCount = () => st.ov.groups.filter((g) => g.status === "invited").length;
 const memLetter = (m) => (m.you ? "Y" : m.name.startsWith("~") ? "?" : ini(m.name));
+async function sendGroupFile(id, file, caption) {
+  if (file.size === 0) return toast("That file is empty.");
+  if (file.size > MAX_FILE) return toast("Files are limited to 100 MB.");
+  toast(`Encrypting and uploading ${file.name}…`);
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const enc = encodeURIComponent;
+    const r = await invoke("group_send_file", bytes, { headers: { "x-group": id, "x-filename": enc(file.name), "x-caption": enc(caption || "") } });
+    const t = $("main").querySelector("textarea"); if (t) t.value = "";
+    toast(r.reached < r.people ? `Sent to ${r.reached} of ${r.people} people. The others could not be reached yet.` : "File sent to the group.");
+    r.notes.forEach(toast); await refresh(); scrollEnd();
+  } catch (e) { toast(String(e)); }
+}
 const groupTile = (sm) => h("span", { class: `tile${sm ? " sm" : ""} c-neutral`, "aria-hidden": "true" }, icon("group"));
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 async function loadGroup() {
@@ -552,14 +565,19 @@ function groupMain() {
     } catch (e) { toast(String(e)); }
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
+  const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendGroupFile(d.id, f, ta.value); } });
   const composer = left ? h("div", { class: "composer" }, h("span", { class: "note" }, "You are not in this group. Your history stays on this computer; nobody can add you back without your OK."))
-    : h("div", { class: "composer" }, h("div", { class: "bar" }, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
-      h("span", { class: "note" }, `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices.`));
+    : h("div", { class: "composer" }, h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
+      h("span", { class: "note" }, `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
   return [head, warn, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : h("p", { class: "empty" }, "No messages yet.")), composer].filter(Boolean);
 }
+const HISTORY_CHOICES = [["join", "Messages from when they join"], ["week", "The last 7 days"]];
+const historyNote = (v) => v === "week"
+  ? "When someone joins, they ask whoever added them for the last 7 days of messages and files. That person shares it: nobody can prove who wrote those messages, so they are marked as shared. Deleted messages are not included."
+  : "Earlier messages stay with the people who were here. This is the default.";
 function unverifiedText(d) {
   const others = d.members.length - 1;
-  if (d.unverified === others) return others === 1 ? "The other person is not verified." : `None of the other ${others} people is verified.`;
+  if (d.unverified === others) return others === 1 ? "The other person is not verified." : `None of the other ${others} people are verified.`;
   return `${d.unverified} of the other ${others} ${d.unverified === 1 ? "is" : "are"} not verified.`;
 }
 function inviteScreen() {
@@ -641,7 +659,8 @@ function groupScreen() {
     picker,
     joined ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Group settings"), d.me_admin ? null : h("span", { class: "note" }, "Only admins can change these."),
       segChoice("Who can add people", d.add_by, [["admins", "Admins only"], ["any", "Any member"]], (v) => act("group_set_add_by", { any: v === "any" }, v === "any" ? "Any member can add people now." : "Only admins can add people now."), !d.me_admin),
-      h("span", { class: "note" }, "New members see messages from when they join. Earlier messages stay with the people who were here.")) : null,
+      segChoice("New members see", d.history, HISTORY_CHOICES, (v) => act("group_set_history", { week: v === "week" }, v === "week" ? "New members can ask for the last 7 days." : "New members see messages from when they join."), !d.me_admin),
+      h("span", { class: "note" }, historyNote(d.history))) : null,
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "How this group is encrypted"),
       h("span", {}, "Each message is encrypted separately for every device of every member, over your one-to-one sessions. The relay sees separate messages, not a group, and not who is in it."),
       h("span", { class: "note" }, "The member list is signed by whoever changes it. If two admins change it at once, every app picks the same winner. Someone you remove keeps what they already received. Bigger groups with stronger guarantees (MLS) are planned.")),
@@ -665,10 +684,12 @@ function newGroupScreen() {
       }))),
     unv.length ? h("div", { class: "status soft" }, h("span", {}, h("b", {}, unv.map((c) => c.name).join(", ")), unv.length > 1 ? " are" : " is", " not verified. You can still add them; everyone in the group will see it.")) : null,
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Settings (you will be admin)"),
-      segChoice("Who can add people", f.anyCanAdd ? "any" : "admins", [["admins", "Admins only"], ["any", "Any member"]], (v) => { f.anyCanAdd = v === "any"; render(); })),
+      segChoice("Who can add people", f.anyCanAdd ? "any" : "admins", [["admins", "Admins only"], ["any", "Any member"]], (v) => { f.anyCanAdd = v === "any"; render(); }),
+      segChoice("New members see", f.week ? "week" : "join", HISTORY_CHOICES, (v) => { f.week = v === "week"; render(); }),
+      h("span", { class: "note" }, historyNote(f.week ? "week" : "join"))),
     h("button", { id: "createGroup", class: "btn primary big", type: "button", disabled: !ok() || null, onclick: async () => {
       try {
-        const r = await invoke("group_create", { name: f.name, members: f.members, anyCanAdd: f.anyCanAdd });
+        const r = await invoke("group_create", { name: f.name, members: f.members, anyCanAdd: f.anyCanAdd, historyWeek: f.week });
         st.newGroup = null; st.screen = null; await refresh(); await openGroup(r.group); toast(`Group created. Reached ${r.reached} of ${r.people} people.`); r.notes.forEach(toast);
       } catch (e) { toast(String(e)); }
     } }, "Create group")))];

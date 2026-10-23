@@ -1275,3 +1275,73 @@ async fn blocking_an_inviter_from_the_app_drops_their_later_invites() {
     eve.s.unblock(&blocked[0].owner).unwrap();
     assert!(eve.s.blocked().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn files_and_the_week_of_history_work_through_the_app() {
+    let url = relay().await;
+    let (alice, bob, carol) = (dev("alice", &url), dev("bob", &url), dev("carol", &url));
+    for d in [&alice, &bob, &carol] {
+        d.s.sync(IDLE).await.unwrap();
+    }
+    for (name, d) in [("Bob", &bob), ("Carol", &carol)] {
+        alice.s.add_contact(name, &card(d)).unwrap();
+        d.s.add_contact("Alice", &card(&alice)).unwrap();
+    }
+    // A group that offers new members the last 7 days.
+    let made = alice
+        .s
+        .group_create_with("Pilot", &["Bob".into()], false, true)
+        .await
+        .unwrap();
+    let gid = made.group;
+    bob.s.sync(IDLE).await.unwrap();
+    assert_eq!(alice.s.group(&gid).unwrap().history, "week");
+
+    // A file goes to the group once and every member can save it.
+    let bytes = vec![7u8; 300_000];
+    assert!(alice
+        .s
+        .group_send_file(&gid, "e.bin", &[], "")
+        .await
+        .is_err());
+    alice
+        .s
+        .group_send_file(&gid, "plan.bin", &bytes, "the plan")
+        .await
+        .unwrap();
+    assert_eq!(
+        alice.s.overview().unwrap().groups[0].last.as_deref(),
+        Some("You: the plan (file)")
+    );
+    bob.s.sync(IDLE).await.unwrap();
+    let thread = bob.s.group_conversation(&gid, 50).unwrap();
+    let file = thread[0].file.as_ref().expect("a file came with it");
+    assert_eq!((file.name.as_str(), file.size), ("plan.bin", 300_000));
+    let (name, got) = bob.s.attachment(&thread[0].id).await.unwrap();
+    assert_eq!((name.as_str(), got.len()), ("plan.bin", 300_000));
+
+    // Carol is added later. She joins, asks, Alice answers, and Carol sees the earlier message,
+    // marked as shared, with its file.
+    alice.s.group_add(&gid, &["Carol".into()]).await.unwrap();
+    carol.s.sync(IDLE).await.unwrap();
+    alice.s.sync(IDLE).await.unwrap();
+    let r = carol.s.sync(IDLE).await.unwrap();
+    assert!(r.groups >= 1, "the screen is told: {r:?}");
+    let t = carol.s.group_conversation(&gid, 50).unwrap();
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert_eq!(t[0].shared_by.as_deref(), Some("Alice"));
+    assert_eq!(t[0].body, "the plan");
+    let (_, got) = carol.s.attachment(&t[0].id).await.unwrap();
+    assert_eq!(got, bytes);
+    assert!(
+        bob.s.group_conversation(&gid, 50).unwrap()[0]
+            .shared_by
+            .is_none(),
+        "what you received live is not marked"
+    );
+
+    // Admins change the setting; everyone sees it. A non-admin cannot.
+    assert!(bob.s.group_set_history(&gid, false).await.is_err());
+    alice.s.group_set_history(&gid, false).await.unwrap();
+    assert_eq!(alice.s.group(&gid).unwrap().history, "join");
+}

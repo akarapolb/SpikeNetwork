@@ -21,7 +21,7 @@ use spike_cli::transport::{validate_ca_pem, Target, TransportOpts};
 use spike_cli::{ops, Outcome};
 use spike_core::action;
 use spike_core::agent::{DecidedBy, Decision};
-use spike_core::group::{AddBy, GroupState, MAX_MEMBERS};
+use spike_core::group::{AddBy, GroupState, History, MAX_MEMBERS};
 use spike_core::link::LinkSession;
 use spike_core::owner::IdentityCard;
 use spike_core::vault::KdfParams;
@@ -197,6 +197,8 @@ pub struct GroupDetailDto {
     pub version: u64,
     pub max: usize,
     pub unverified: usize,
+    /// What new members see: `join` (messages from when they join) or `week` (the last 7 days).
+    pub history: String,
     /// An invite from someone who is not a contact: it can be declined *and* the inviter blocked.
     pub can_block: bool,
 }
@@ -261,6 +263,9 @@ pub struct MessageDto {
     pub from: Option<String>,
     /// In a group: the author is a verified contact. Always true in a one-to-one chat.
     pub from_verified: bool,
+    /// In a group: this came as history from someone else when you joined (their name), so the
+    /// author shown is only as reliable as they are.
+    pub shared_by: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -704,6 +709,7 @@ impl Session {
                 Outcome::GroupInvite { .. } => out.message_requests += 1,
                 Outcome::GroupJoined { .. }
                 | Outcome::GroupChanged { .. }
+                | Outcome::GroupHistory { .. }
                 | Outcome::GroupInviteSettled { .. } => out.groups += 1,
                 Outcome::GroupRemoved { group, .. } => {
                     out.groups += 1;
@@ -1229,6 +1235,7 @@ fn message_dto(
         deleted: m.deleted,
         from,
         from_verified,
+        shared_by: None,
     }
 }
 
@@ -1305,7 +1312,10 @@ impl Session {
                             (_, Some(a)) => groups::display_name(&self.home, a),
                             _ => "?".to_string(),
                         };
-                        format!("{who}: {}", preview(&m.body, None))
+                        format!(
+                            "{who}: {}",
+                            preview(&m.body, m.attachment.as_ref().map(|a| a.name.as_str()))
+                        )
                     }
                 }),
                 last_ts: last.map(|m| m.ts),
@@ -1370,6 +1380,12 @@ impl Session {
             version: s.version,
             max: MAX_MEMBERS,
             unverified: self.unverified_members(&s),
+            history: if s.history == History::Week {
+                "week"
+            } else {
+                "join"
+            }
+            .into(),
             can_block: r.status == groups::Status::Invited && r.stranger.is_some(),
             name: s.name,
         })
@@ -1389,7 +1405,13 @@ impl Session {
                         self.author_verified(&author),
                     )
                 };
-                message_dto(m, from, verified)
+                let shared = m
+                    .shared_by
+                    .as_deref()
+                    .map(|o| groups::display_name(&self.home, o));
+                let mut dto = message_dto(m, from, verified);
+                dto.shared_by = shared;
+                dto
             })
             .collect())
     }
@@ -1410,6 +1432,19 @@ impl Session {
         members: &[String],
         any_can_add: bool,
     ) -> Result<GroupSendDto> {
+        self.group_create_with(name, members, any_can_add, false)
+            .await
+    }
+
+    /// [`Session::group_create`], also choosing what new members see: messages from when they
+    /// join, or (`history_week`) the last 7 days.
+    pub async fn group_create_with(
+        &self,
+        name: &str,
+        members: &[String],
+        any_can_add: bool,
+        history_week: bool,
+    ) -> Result<GroupSendDto> {
         if members.is_empty() {
             bail!("choose at least one person to add");
         }
@@ -1419,7 +1454,13 @@ impl Session {
             AddBy::Admins
         };
         let _net = self.net.lock().await;
-        let (s, r) = groups::create(&self.home, self.target(), name, members, add_by).await?;
+        let history = if history_week {
+            History::Week
+        } else {
+            History::Join
+        };
+        let (s, r) =
+            groups::create_with(&self.home, self.target(), name, members, add_by, history).await?;
         Ok(Self::sent_dto(&s.group, &r))
     }
 
@@ -1435,6 +1476,37 @@ impl Session {
         let _net = self.net.lock().await;
         let r = groups::send(&self.home, self.target(), &gid, text).await?;
         Ok(Self::sent_dto(&gid, &r))
+    }
+
+    /// Send a file to a group: encrypted once, uploaded once, every member fetches the same blob.
+    pub async fn group_send_file(
+        &self,
+        id: &str,
+        file_name: &str,
+        bytes: &[u8],
+        caption: &str,
+    ) -> Result<GroupSendDto> {
+        let gid = groups::find(&self.home, id)?.id().to_string();
+        let file_name = spike_core::attachment::safe_file_name(file_name);
+        let _net = self.net.lock().await;
+        let r = groups::send_file(
+            &self.home,
+            self.target(),
+            &gid,
+            &file_name,
+            bytes,
+            caption.trim_end(),
+        )
+        .await?;
+        Ok(Self::sent_dto(&gid, &r))
+    }
+
+    /// Choose what new members see: messages from when they join, or the last 7 days.
+    pub async fn group_set_history(&self, id: &str, week: bool) -> Result<GroupSendDto> {
+        let history = if week { History::Week } else { History::Join };
+        let _net = self.net.lock().await;
+        let (s, r) = groups::set_history(&self.home, self.target(), id, history).await?;
+        Ok(Self::sent_dto(&s.group, &r))
     }
 
     pub async fn group_add(&self, id: &str, names: &[String]) -> Result<GroupSendDto> {

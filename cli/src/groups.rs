@@ -21,7 +21,8 @@ use crate::transport::Target;
 use crate::{MergeAction, Outcome};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use spike_core::envelope::{Envelope, Kind};
+use spike_core::attachment::{safe_file_name, Attachment, MAX_FILE};
+use spike_core::envelope::{Envelope, Kind, MAX_TEXT};
 use spike_core::group::{AddBy, Added, Chain, Draft, GroupState, History, Member, MessageCheck};
 use spike_core::identity::{DeviceCard, Identity};
 use spike_core::owner::{IdentityCard, Update};
@@ -35,6 +36,16 @@ const DECISIONS: &str = "invite-decisions.enc";
 /// How long a decision from another of your devices waits for its invite to arrive here.
 const DECISION_TTL_MS: u64 = 30 * 24 * 3600 * 1000;
 const MAX_DECISIONS: usize = 50;
+/// "The last 7 days" for a new member (ADR 0024, section 7).
+const HISTORY_WINDOW_MS: u64 = 7 * 24 * 3600 * 1000;
+const DAY_MS: u64 = 24 * 3600 * 1000;
+/// A member may ask for the history once a day; more would only repeat it.
+const HISTORY_COOLDOWN_MS: u64 = DAY_MS;
+const MAX_HISTORY_MESSAGES: usize = 500;
+const HISTORY_BATCH_BYTES: usize = 40_000;
+/// Files re-uploaded for a new member: a handful, up to a total size.
+const MAX_HISTORY_FILES: usize = 20;
+const MAX_HISTORY_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// Messages held per group while the state they name is fetched.
 pub const MAX_HELD: usize = 50;
 /// Groups waiting for you to accept, from people who are not contacts.
@@ -109,6 +120,13 @@ pub struct Record {
     pub stranger: Option<(String, String)>,
     #[serde(default)]
     pub held: Vec<HeldMsg>,
+    /// Whom we asked for the group's last 7 days when we joined, and when: history is accepted
+    /// only from them, only for a week after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_asked: Option<(String, u64)>,
+    /// When each member last asked us for the history (owner key to ms): answered once a day.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub served: BTreeMap<String, u64>,
 }
 
 impl Record {
@@ -129,6 +147,10 @@ impl Record {
 /// A reply owed to another member.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 enum Reply {
+    /// Ask the person who added us for the group's last 7 days.
+    AskHistory { group: String, to: String },
+    /// Send them the group's last 7 days (they asked and the group offers it).
+    ShareHistory { group: String, to: String },
     /// Send them our states after this version.
     Send {
         group: String,
@@ -555,6 +577,18 @@ pub async fn create(
     with: &[String],
     add_by: AddBy,
 ) -> Result<(GroupState, GroupSend)> {
+    create_with(home, relay, name, with, add_by, History::Join).await
+}
+
+/// [`create`], also choosing what new members see: messages from when they join, or the last 7 days.
+pub async fn create_with(
+    home: &Home,
+    relay: impl Into<Target>,
+    name: &str,
+    with: &[String],
+    add_by: AddBy,
+    history: History,
+) -> Result<(GroupState, GroupSend)> {
     let base: Target = relay.into();
     let contacts = home.load_contacts()?;
     let members: Vec<Member> = with
@@ -568,7 +602,7 @@ pub async fn create(
         name,
         members,
         add_by,
-        History::Join,
+        history,
     )?;
     let chain = Chain::new(state.clone())?;
     let mut rec = Record {
@@ -577,6 +611,8 @@ pub async fn create(
         invited_by: None,
         stranger: None,
         held: vec![],
+        history_asked: None,
+        served: BTreeMap::new(),
     };
     rec.set_chain(&chain);
     update_record(home, &rec)?;
@@ -732,6 +768,49 @@ pub async fn set_add_by(
     .await
 }
 
+/// Choose what new members see: messages from when they join, or the last 7 days.
+pub async fn set_history(
+    home: &Home,
+    relay: impl Into<Target>,
+    group: &str,
+    history: History,
+) -> Result<(GroupState, GroupSend)> {
+    change(home, relay.into(), group, |d| {
+        d.history = history;
+        Ok(())
+    })
+    .await
+}
+
+/// Send a file to a group: encrypted once under one key, uploaded once to your relay, and the
+/// descriptor goes to every member inside the same encrypted message as a caption.
+pub async fn send_file(
+    home: &Home,
+    relay: impl Into<Target>,
+    group: &str,
+    file_name: &str,
+    bytes: &[u8],
+    caption: &str,
+) -> Result<GroupSend> {
+    if bytes.is_empty() {
+        bail!("that file is empty");
+    }
+    if bytes.len() as u64 > MAX_FILE {
+        bail!("files are limited to {} MiB", MAX_FILE / (1024 * 1024));
+    }
+    if find(home, group)?.status != Status::Joined {
+        bail!("you are not in this group (see `spike group list`)");
+    }
+    let base: Target = relay.into();
+    let att = ops::upload_file(home, &base, &safe_file_name(file_name), bytes).await?;
+    let mut env = Envelope::text(caption)?;
+    env.attachment = Some(att);
+    let report = send_env(home, &base, group, env).await?;
+    // The sender keeps its own copy, so its history never needs the relay.
+    home.save_attachment(&report.id, bytes)?;
+    Ok(report)
+}
+
 /// Leave a group. Your history stays on this device; nobody can add you back without your OK.
 pub async fn leave(home: &Home, relay: impl Into<Target>, group: &str) -> Result<GroupSend> {
     let rec = find(home, group)?;
@@ -834,9 +913,13 @@ pub async fn decide_invite(
         decision,
         card: card.filter(|_| decision == InviteDecision::Block),
     };
-    Ok(ops::broadcast_own(home, relay.into(), &msg)
+    let base: Target = relay.into();
+    let told = ops::broadcast_own(home, base.clone(), &msg)
         .await
-        .unwrap_or(0))
+        .unwrap_or(0);
+    // Joining may have queued a request for the group's history: send it now, not at the next sync.
+    let _ = flush_outbox(home, base).await;
+    Ok(told)
 }
 
 /// Apply a decision another of your devices made (from `apply_sync`). An invite that has not
@@ -931,9 +1014,13 @@ pub fn accept_into(home: &Home, group: &str, main: &mut Sessions) -> Result<Grou
         home.save_json(MEMBERS, &cards)?;
     }
     rec.status = Status::Joined;
-    rec.invited_by = None;
+    let inviter = rec.invited_by.take();
+    let state = rec.current()?;
+    if let Some(from) = inviter {
+        queue_history_ask(home, &mut rec, &state, &from)?;
+    }
     update_record(home, &rec)?;
-    rec.current()
+    Ok(state)
 }
 
 /// Decline an invite. The inviter is not told; a later add is a new invite.
@@ -1100,6 +1187,7 @@ fn store_message(
         deleted: false,
         changed_at: 0,
         author: Some(author.to_string()),
+        shared_by: None,
     };
     // A tombstone left by someone else for this id must not suppress the real message:
     // in a group, other members see a message before you might and could "delete" it first.
@@ -1183,6 +1271,65 @@ pub fn on_envelope(home: &Home, sender: Sender<'_>, env: &Envelope) -> Result<Ou
                 )?;
             }
             Ok(Outcome::Ignored)
+        }
+        Kind::GroupHistoryRequest => {
+            let Some(mut rec) = rec else {
+                return Ok(Outcome::Ignored);
+            };
+            // Own devices share through catch-up; only members of a group that offers it may ask.
+            if rec.status != Status::Joined || sender.own {
+                return Ok(Outcome::Ignored);
+            }
+            let cur = rec.current()?;
+            let now = now_ms();
+            let again = rec
+                .served
+                .get(sender.owner)
+                .is_some_and(|t| now < t + HISTORY_COOLDOWN_MS);
+            if cur.history != History::Week || !cur.is_member(sender.owner) || again {
+                return Ok(Outcome::Ignored);
+            }
+            rec.served.insert(sender.owner.to_string(), now);
+            update_record(home, &rec)?;
+            push_reply(
+                home,
+                Reply::ShareHistory {
+                    group: gid,
+                    to: sender.owner.to_string(),
+                },
+            )?;
+            Ok(Outcome::Ignored)
+        }
+        Kind::GroupHistory => {
+            let Some(rec) = rec else {
+                return Ok(Outcome::Ignored);
+            };
+            if rec.status != Status::Joined || sender.own {
+                return Ok(Outcome::Ignored);
+            }
+            let cur = rec.current()?;
+            let now = now_ms();
+            let asked = rec
+                .history_asked
+                .as_ref()
+                .is_some_and(|(who, at)| who == sender.owner && now < at + HISTORY_WINDOW_MS);
+            if cur.history != History::Week || !cur.is_member(sender.owner) || !asked {
+                return Ok(Outcome::Rejected {
+                    reason: format!(
+                        "{} sent group history you did not ask for",
+                        display_name(home, sender.owner)
+                    ),
+                });
+            }
+            let Ok(batch) = serde_json::from_str::<HistoryBatch>(&env.body) else {
+                return Ok(Outcome::Invalid);
+            };
+            let added = import_history(home, &gid, sender.owner, &me, &batch)?;
+            Ok(Outcome::GroupHistory {
+                group: cur.name,
+                from: display_name(home, sender.owner),
+                added,
+            })
         }
         Kind::Text | Kind::Edit | Kind::Delete => {
             let Some(mut rec) = rec else {
@@ -1352,8 +1499,13 @@ fn on_states(
             invited_by: (status == Status::Invited).then(|| sender.owner.to_string()),
             stranger: None,
             held: vec![],
+            history_asked: None,
+            served: BTreeMap::new(),
         };
         r.set_chain(&chain);
+        if status == Status::Joined && !sender.own {
+            queue_history_ask(home, &mut r, chain.current(), sender.owner)?;
+        }
         update_record(home, &r)?;
         let group = chain.current().name.clone();
         if status == Status::Invited {
@@ -1521,6 +1673,8 @@ pub fn on_stranger_invite(
         invited_by: Some(owner.to_string()),
         stranger: Some((device_key.to_string(), card.to_string())),
         held: vec![],
+        history_asked: None,
+        served: BTreeMap::new(),
     };
     r.set_chain(&chain);
     update_record(home, &r)?;
@@ -1561,6 +1715,153 @@ pub fn is_invite_key(home: &Home, device_key: &str) -> Result<bool> {
     }))
 }
 
+/// One message in a history a member shares with someone who just joined. The author is only as
+/// reliable as the person sharing it: pairwise sessions cannot prove who wrote what.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct HistoryMsg {
+    pub id: String,
+    pub ts: u64,
+    /// Owner key of the author, as claimed by the person sharing.
+    pub author: String,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<Attachment>,
+    #[serde(default)]
+    pub edited: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct HistoryBatch {
+    pub messages: Vec<HistoryMsg>,
+}
+
+/// Remember that we asked `from` for the group's last 7 days, and queue the request, if the group offers it.
+fn queue_history_ask(home: &Home, rec: &mut Record, state: &GroupState, from: &str) -> Result<()> {
+    if state.history != History::Week {
+        return Ok(());
+    }
+    rec.history_asked = Some((from.to_string(), now_ms()));
+    push_reply(
+        home,
+        Reply::AskHistory {
+            group: state.group.clone(),
+            to: from.to_string(),
+        },
+    )
+}
+
+/// The group's last 7 days as batches that each fit an envelope. Messages we were only shown as
+/// history ourselves are not passed on (that would chain claims nobody can check), deleted ones
+/// are left out, and a file is re-uploaded under a fresh key when we hold it (within a cap).
+async fn history_envelopes(home: &Home, base: &Target, group: &str) -> Result<Vec<Envelope>> {
+    let cutoff = now_ms().saturating_sub(HISTORY_WINDOW_MS);
+    let mut msgs = home.messages()?.conversation(group, usize::MAX)?;
+    msgs.retain(|m| {
+        !m.deleted && !is_ghost(m) && m.shared_by.is_none() && m.author.is_some() && m.ts >= cutoff
+    });
+    let skip = msgs.len().saturating_sub(MAX_HISTORY_MESSAGES);
+    let (mut files, mut file_bytes) = (0usize, 0u64);
+    let mut out = Vec::new();
+    for m in msgs.split_off(skip) {
+        let mut body = m.body.clone();
+        let mut attachment = None;
+        if let Some(a) = &m.attachment {
+            match home.load_attachment(&m.id)? {
+                Some(bytes)
+                    if files < MAX_HISTORY_FILES
+                        && file_bytes + bytes.len() as u64 <= MAX_HISTORY_FILE_BYTES =>
+                {
+                    attachment = Some(ops::upload_file(home, base, &a.name, &bytes).await?);
+                    files += 1;
+                    file_bytes += bytes.len() as u64;
+                }
+                _ => body.push_str(&format!(
+                    "\n[A file named \"{}\" was not included.]",
+                    a.name
+                )),
+            }
+        }
+        out.push(HistoryMsg {
+            id: m.id,
+            ts: m.ts,
+            author: m.author.unwrap_or_default(),
+            body,
+            attachment,
+            edited: m.edited,
+        });
+    }
+    let mut batches: Vec<HistoryBatch> = vec![HistoryBatch::default()];
+    for m in out {
+        let last = batches.last_mut().expect("never empty");
+        let size = serde_json::to_vec(&*last).map_or(0, |v| v.len());
+        if size > HISTORY_BATCH_BYTES && !last.messages.is_empty() {
+            batches.push(HistoryBatch::default());
+        }
+        batches.last_mut().expect("never empty").messages.push(m);
+    }
+    batches.retain(|b| !b.messages.is_empty());
+    batches
+        .iter()
+        .map(|b| {
+            Ok(Envelope::group_control(
+                Kind::GroupHistory,
+                group,
+                &serde_json::to_string(b)?,
+            )?)
+        })
+        .collect()
+}
+
+/// Keep the messages of a history we asked for. They are marked with who shared them; a message we
+/// already have, a message "from you", and anything outside the last week is skipped.
+fn import_history(
+    home: &Home,
+    gid: &str,
+    sharer: &str,
+    me: &str,
+    batch: &HistoryBatch,
+) -> Result<usize> {
+    let now = now_ms();
+    let (oldest, newest) = (now.saturating_sub(HISTORY_WINDOW_MS + DAY_MS), now + DAY_MS);
+    let hex = |s: &str, n: usize| {
+        s.len() == n && s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    let store = home.messages()?;
+    let mut added = 0;
+    for m in batch.messages.iter().take(MAX_HISTORY_MESSAGES) {
+        let bad = !hex(&m.id, 32)
+            || !hex(&m.author, 64)
+            || m.author == me
+            || m.ts < oldest
+            || m.ts > newest
+            || m.body.len() > MAX_TEXT
+            || m.attachment.as_ref().is_some_and(|a| a.validate().is_err());
+        if bad || store.get(&m.id)?.is_some() {
+            continue;
+        }
+        let stored = StoredMessage {
+            id: m.id.clone(),
+            peer: gid.to_string(),
+            direction: Direction::In,
+            ts: m.ts,
+            body: m.body.clone(),
+            attachment: m.attachment.clone(),
+            // Zero, so a real edit or delete from the author (a later clock) always wins.
+            lamport: 0,
+            stamp_device: "shared".into(),
+            edited: m.edited,
+            deleted: false,
+            changed_at: 0,
+            author: Some(m.author.clone()),
+            shared_by: Some(sharer.to_string()),
+        };
+        if store.insert(&stored)? {
+            added += 1;
+        }
+    }
+    Ok(added)
+}
+
 /// Send the replies other members are owed. Called by `recv` after it acknowledged what it
 /// received; replies that fail stay queued for next time. Returns how many replies were
 /// tried: when it is not 0, ratchet state on disk has changed and callers must reload theirs.
@@ -1573,9 +1874,10 @@ pub async fn flush_outbox(home: &Home, base: Target) -> Result<usize> {
     let mut left = vec![];
     for r in pending {
         let (group, to) = match &r {
-            Reply::Send { group, to, .. } | Reply::Ask { group, to, .. } => {
-                (group.clone(), to.clone())
-            }
+            Reply::Send { group, to, .. }
+            | Reply::Ask { group, to, .. }
+            | Reply::AskHistory { group, to }
+            | Reply::ShareHistory { group, to } => (group.clone(), to.clone()),
         };
         let Some(rec) = list(home)?.into_iter().find(|x| x.id() == group) else {
             continue;
@@ -1593,6 +1895,14 @@ pub async fn flush_outbox(home: &Home, base: Target) -> Result<usize> {
                 &group,
                 &serde_json::json!({ "after": after }).to_string(),
             )?],
+            Reply::AskHistory { .. } => {
+                vec![Envelope::group_control(
+                    Kind::GroupHistoryRequest,
+                    &group,
+                    "{}",
+                )?]
+            }
+            Reply::ShareHistory { .. } => history_envelopes(home, &base, &group).await?,
         };
         let mut ok = true;
         for mut env in envs {

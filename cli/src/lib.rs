@@ -133,6 +133,13 @@ pub enum Outcome {
     },
     /// You were removed from a group. Its history stays on this device.
     GroupRemoved { group: String, by: String },
+    /// You asked for a group's last 7 days when you joined, and someone shared it: `added` messages
+    /// were new to you. They are marked as shared: the sharer cannot prove who wrote them.
+    GroupHistory {
+        group: String,
+        from: String,
+        added: usize,
+    },
     /// Another of your devices accepted, declined or blocked an invite that this device also held,
     /// and it is settled here too. `decision` is "accepted", "declined" or "blocked".
     GroupInviteSettled { group: String, decision: String },
@@ -205,6 +212,7 @@ pub fn apply_change(
                 deleted: true,
                 changed_at: 0,
                 author: None,
+                shared_by: None,
             })?;
         }
         _ => {}
@@ -354,6 +362,7 @@ pub fn process(
                         deleted: false,
                         changed_at: 0,
                         author: None,
+                        shared_by: None,
                     })?;
                     persist(sessions, me)?;
                     if !fresh {
@@ -411,6 +420,7 @@ pub fn process(
                         deleted: false,
                         changed_at: 0,
                         author: None,
+                        shared_by: None,
                     })?;
                     persist(sessions, me)?;
                     if !fresh {

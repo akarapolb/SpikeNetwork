@@ -224,6 +224,26 @@ pub async fn send(
     deliver(home, relay.into(), name, Envelope::text(text)?).await
 }
 
+/// Encrypt a file under a fresh key and upload its chunks to our home relay. The descriptor it
+/// returns (key included) belongs inside an encrypted message, never anywhere else.
+pub(crate) async fn upload_file(
+    home: &Home,
+    base: &Target,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<Attachment> {
+    let (mut att, chunks) = seal_file(file_name, bytes)?;
+    att.relay = Some(base.url.clone());
+    let me = home.load_identity()?;
+    let mut r = Relay::connect(base.clone(), &me).await?;
+    for (i, c) in chunks.iter().enumerate() {
+        r.put_blob_chunk(&att.blob, i as u32, att.chunks, c)
+            .await
+            .context("uploading attachment")?;
+    }
+    Ok(att)
+}
+
 /// Encrypt a file, upload its chunks to our home relay, then send the message
 /// carrying its descriptor (and `caption`) to every device, like any message.
 pub async fn send_file(
@@ -235,17 +255,7 @@ pub async fn send_file(
     caption: &str,
 ) -> Result<SendReport> {
     let base: Target = relay.into();
-    let (mut att, chunks) = seal_file(file_name, bytes)?;
-    att.relay = Some(base.url.clone());
-    {
-        let me = home.load_identity()?;
-        let mut r = Relay::connect(base.clone(), &me).await?;
-        for (i, c) in chunks.iter().enumerate() {
-            r.put_blob_chunk(&att.blob, i as u32, att.chunks, c)
-                .await
-                .context("uploading attachment")?;
-        }
-    }
+    let att = upload_file(home, &base, file_name, bytes).await?;
     let mut env = Envelope::text(caption)?;
     env.attachment = Some(att);
     let report = deliver(home, base, name, env).await?;
@@ -458,6 +468,7 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
                 deleted: false,
                 changed_at: 0,
                 author: None,
+                shared_by: None,
             })?;
         }
         Kind::Edit | Kind::Delete => {
@@ -468,7 +479,9 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
         | Kind::AgentRequest
         | Kind::AgentReceipt
         | Kind::GroupState
-        | Kind::GroupStateRequest => {}
+        | Kind::GroupStateRequest
+        | Kind::GroupHistoryRequest
+        | Kind::GroupHistory => {}
     }
     Ok(SendReport {
         id: env.id,

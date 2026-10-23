@@ -363,9 +363,42 @@ async fn group_create(
     name: String,
     members: Vec<String>,
     any_can_add: bool,
+    history_week: bool,
 ) -> Result<GroupSendDto, String> {
     session(&state)?
-        .group_create(&name, &members, any_can_add)
+        .group_create_with(&name, &members, any_can_add, history_week)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn group_set_history(
+    state: State<'_, AppState>,
+    id: String,
+    week: bool,
+) -> Result<GroupSendDto, String> {
+    session(&state)?
+        .group_set_history(&id, week)
+        .await
+        .map_err(err)
+}
+
+/// A file for a group: its bytes are the raw request body; the group, file name and caption are headers.
+#[tauri::command]
+async fn group_send_file(
+    state: State<'_, AppState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<GroupSendDto, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the file's bytes".into());
+    };
+    let (id, file, caption) = (
+        header(&request, "x-group"),
+        header(&request, "x-filename"),
+        header(&request, "x-caption"),
+    );
+    session(&state)?
+        .group_send_file(&id, &file, bytes, &caption)
         .await
         .map_err(err)
 }
@@ -714,6 +747,8 @@ pub fn run() {
             group,
             group_conversation,
             group_create,
+            group_set_history,
+            group_send_file,
             group_send,
             group_add,
             group_remove,

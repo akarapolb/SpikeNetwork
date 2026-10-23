@@ -162,6 +162,7 @@ mod tests {
             deleted: false,
             changed_at: 0,
             author: None,
+            shared_by: None,
         }
     }
 
@@ -233,6 +234,7 @@ mod tests {
             messages: vec![StoredMessage {
                 peer: group.clone(),
                 author: Some(owner.clone()),
+                shared_by: None,
                 ..msg(1, 1)
             }],
             last: true,

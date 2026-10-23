@@ -55,6 +55,10 @@ pub struct StoredMessage {
     /// group id. `None` in one-to-one conversations, where `direction` says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    /// For a group message that came as history from someone else when you joined: who shared it
+    /// (owner key). The author is then only as reliable as they are: nothing can prove it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_by: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -376,6 +380,7 @@ mod tests {
             deleted: false,
             changed_at: 0,
             author: None,
+            shared_by: None,
             id: id.into(),
             peer: peer.into(),
             direction: d,

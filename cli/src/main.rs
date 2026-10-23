@@ -328,6 +328,9 @@ enum GroupCmd {
         /// Let any member add people (default: admins only).
         #[arg(long)]
         any_can_add: bool,
+        /// What new members see: `join` (messages from when they join, the default) or `week` (the last 7 days).
+        #[arg(long, default_value = "join")]
+        history: String,
         #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
         relay: String,
     },
@@ -339,6 +342,23 @@ enum GroupCmd {
     Send {
         group: String,
         message: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Send a file to a group (up to 100 MB; encrypted once, every member can fetch it).
+    SendFile {
+        group: String,
+        path: PathBuf,
+        /// Text to send with it.
+        #[arg(long, default_value = "")]
+        caption: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Choose what new members see: `join` or `week` (the last 7 days, asked from whoever added them).
+    NewMembersSee {
+        group: String,
+        what: String,
         #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
         relay: String,
     },
@@ -408,6 +428,14 @@ enum GroupCmd {
         #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
         relay: String,
     },
+}
+
+fn parse_history(s: &str) -> Result<spike_core::group::History> {
+    match s {
+        "join" => Ok(spike_core::group::History::Join),
+        "week" => Ok(spike_core::group::History::Week),
+        _ => bail!("say `join` or `week`"),
+    }
 }
 
 fn print_group_send(r: &spike_cli::groups::GroupSend) {
@@ -670,6 +698,7 @@ async fn run() -> Result<()> {
                     name,
                     with,
                     any_can_add,
+                    history,
                     relay,
                 } => {
                     let add_by = if any_can_add {
@@ -677,7 +706,10 @@ async fn run() -> Result<()> {
                     } else {
                         spike_core::group::AddBy::Admins
                     };
-                    let (s, r) = groups::create(&home, target(relay), &name, &with, add_by).await?;
+                    let history = parse_history(&history)?;
+                    let (s, r) =
+                        groups::create_with(&home, target(relay), &name, &with, add_by, history)
+                            .await?;
                     println!("created {} ({})", s.name, &s.group[..12]);
                     print_group_send(&r);
                 }
@@ -720,6 +752,29 @@ async fn run() -> Result<()> {
                     let r = groups::send(&home, target(relay), &group, &message).await?;
                     print_group_send(&r);
                 }
+                GroupCmd::SendFile {
+                    group,
+                    path,
+                    caption,
+                    relay,
+                } => {
+                    let bytes = std::fs::read(&path)
+                        .with_context(|| format!("reading {}", path.display()))?;
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "file".into());
+                    let r =
+                        groups::send_file(&home, target(relay), &group, &name, &bytes, &caption)
+                            .await?;
+                    print_group_send(&r);
+                }
+                GroupCmd::NewMembersSee { group, what, relay } => {
+                    let (_, r) =
+                        groups::set_history(&home, target(relay), &group, parse_history(&what)?)
+                            .await?;
+                    print_group_send(&r);
+                }
                 GroupCmd::History { group, limit } => {
                     let (rec, msgs) = groups::history(&home, &group, limit)?;
                     if msgs.is_empty() {
@@ -736,7 +791,27 @@ async fn run() -> Result<()> {
                             println!("{}  {who}: [message deleted]  ({short})", fmt_utc(m.ts));
                         } else {
                             let edited = if m.edited { " (edited)" } else { "" };
-                            println!("{}  {who}: {}{edited}  ({short})", fmt_utc(m.ts), m.body);
+                            let shared = m
+                                .shared_by
+                                .as_deref()
+                                .map(|s| {
+                                    format!(
+                                        " [shared by {} when you joined]",
+                                        groups::display_name(&home, s)
+                                    )
+                                })
+                                .unwrap_or_default();
+                            println!(
+                                "{}  {who}: {}{edited}{shared}  ({short})",
+                                fmt_utc(m.ts),
+                                m.body
+                            );
+                            if let Some(a) = &m.attachment {
+                                println!(
+                                    "          a file: {} ({} bytes) · `spike fetch {short}`",
+                                    a.name, a.size
+                                );
+                            }
                         }
                     }
                 }
@@ -1339,9 +1414,12 @@ async fn run() -> Result<()> {
                 }
                 Outcome::FileReady { id } => println!("[your other device re-supplied a file: `spike fetch {}`]", &id[..8]),
                 Outcome::SyncRequest { .. } => println!("[answered a request from your other device]"),
-                Outcome::GroupMessage { group, from, verified, body, out_of_date, .. } => {
+                Outcome::GroupMessage { group, from, verified, body, out_of_date, id } => {
                     let tag = if verified { "" } else { " (UNVERIFIED)" };
                     let note = if out_of_date { " [sent with an out-of-date member list; yours was sent back]" } else { "" };
+                    if let Ok(Some(a)) = home.messages().and_then(|s| Ok(s.find(&id)?.attachment)) {
+                        println!("[{group}] [{from}{tag}] sent a file: {} ({} bytes) · `spike fetch {}`", a.name, a.size, &id[..8]);
+                    }
                     println!("[{group}] [{from}{tag}] {}{note}", String::from_utf8_lossy(&body));
                     n += 1;
                 }
@@ -1353,6 +1431,7 @@ async fn run() -> Result<()> {
                     "[{by} changed the group {group} (version {version}){}]",
                     if released > 0 { format!("; {released} waiting message(s) shown") } else { String::new() }
                 ),
+                Outcome::GroupHistory { group, from, added } => println!("[{from} shared the last 7 days of {group}: {added} message(s) added, marked as shared]"),
                 Outcome::GroupInviteSettled { group, decision } => println!("[your other device {decision} the invite to {group}; settled here too]"),
                 Outcome::GroupRemoved { group, by } => println!("[{by} removed you from {group}; its history stays here]"),
                 Outcome::SentCopy { to, body, .. } => {
