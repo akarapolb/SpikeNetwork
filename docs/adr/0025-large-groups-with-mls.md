@@ -135,5 +135,16 @@ The `spike-mls` crate (`mls/`), openmls 0.9.2 and its companion crates pinned ex
 - **Licence:** openmls pulls in `hpke-rs` (MPL-2.0). `deny.toml` carries three per-crate exceptions. **Accepted by the project owner, 2026-10-23.**
 - **Rejected commits stall a device.** A commit every member refuses still occupies a relay position; what a client does then (skip it, mark the group broken) is slice 2's problem and is not decided.
 - **Nothing here is used by a client.** Welcome and tree transport, the key-package flow, "needs to rejoin", leaving, and the dependency shape (the relay test makes `spike-mls` depend on the CLI in tests; slice 2 will have to invert that) are all slice 2.
-- **Scale not measured.** Everything ran with 2 to 4 members. Commit and join cost at 500 members, tree size, and snapshot cost are unmeasured.
+- **Scale, measured once (below); other conditions are not.**
+
+**Scale measurement (2026-10-23).** `mls/tests/scale.rs`, release build, one machine, no network, one device per person, a group grown by adding people and then one more person added and one removed at each size (run by hand with `--ignored --nocapture`):
+
+| members | add one: build commit | commit size | Welcome size | observer applies it | newcomer joins | remove one: build commit / size | observer applies | sealed device state |
+|---|---|---|---|---|---|---|---|---|
+| 20 | 1.8 ms | 2.5 KB | 6.7 KB | 1.4 ms | 6.5 ms | 1.4 ms / 2.1 KB | 1.1 ms | 117 KB |
+| 100 | 4.2 ms | 9.2 KB | 30 KB | 2.7 ms | 29 ms | 2.9 ms / 8.8 KB | 2.6 ms | 617 KB |
+| 250 | 7.8 ms | 21.5 KB | 74 KB | 7.5 ms | 75 ms | 7.5 ms / 21 KB | 5.7 ms | 1.7 MB |
+| 500 | 15 ms | 42 KB | 147 KB | 13 ms | 141 ms | 14 ms / 42 KB | 12 ms | 3.6 MB |
+
+Everything grows roughly linearly and is cheap in time: a change at 500 members costs about 15 ms of work per device, so the snapshot taken before each commit (a copy of the same storage that is sealed to 3.6 MB, which takes 16 ms including encryption) is not a problem at this size. **Sizes are the finding.** A single-change commit at 500 members is 42 KB, under the relay's 64 KiB message limit, but a Welcome is 147 KB and a batch of adds would be larger, so the blob route in section 4 is needed (Welcome at about 250 members, commits earlier for batches), not optional. Still unmeasured: debug builds, a real network or a slow disk, devices with several leaves per person, a tree that has had many removals (blanked nodes), and phones.
 - Fuzz targets unrun, as above.
