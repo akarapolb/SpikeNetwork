@@ -9,6 +9,10 @@ ignore = [
     # (glib-macros 0.18), so it is not compiled into the Windows build. Upstream issue (gtk-rs / Tauri);
     # re-check when Tauri moves off GTK3.
     { id = "RUSTSEC-2024-0370", reason = "unmaintained, only via Tauri's Linux GTK3 stack" },
+    # 2026-10-23: proc-macro-error2 is unmaintained and has no safe upgrade. It is a compile-time proc-macro only
+    # (hax-lib-macros, from the formal-verification annotations in libcrux, which hpke-rs uses), reached through
+    # openmls (ADR 0025, crate `spike-mls`). It is not in the compiled program. Re-check when openmls or hpke-rs move.
+    { id = "RUSTSEC-2026-0173", reason = "unmaintained compile-time proc-macro, only via openmls -> hpke-rs -> libcrux" },
 ]
 
 [licenses]
@@ -38,6 +42,13 @@ exceptions = [
     { allow = ["MPL-2.0"], crate = "dtoa-short" },
     { allow = ["MPL-2.0"], crate = "option-ext" },
     { allow = ["MPL-2.0"], crate = "selectors" },
+    # 2026-10-23: hpke-rs (the HPKE implementation behind openmls, both its RustCrypto and libcrux providers) is
+    # MPL-2.0. Provisional: added with ADR 0025 slice 1 so the build and CI stay checkable, and it needs the same
+    # review as the entries above, because it is a property of using openmls at all. File-level copyleft: fine to
+    # use unmodified in any licence; changes to these files themselves would have to be published.
+    { allow = ["MPL-2.0"], crate = "hpke-rs" },
+    { allow = ["MPL-2.0"], crate = "hpke-rs-crypto" },
+    { allow = ["MPL-2.0"], crate = "hpke-rs-rust-crypto" },
 ]
 
 # Our own crates are `publish = false` and carry no licence yet (no LICENSE file on purpose:

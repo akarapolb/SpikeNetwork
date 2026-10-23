@@ -1,0 +1,48 @@
+[package]
+name = "spike-mls-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+spike-mls = { path = ".." }
+spike-core = { path = "../../core" }
+openmls = { version = "=0.9.2", default-features = false }
+hex = "0.4"
+
+# Not part of the main workspace: cargo-fuzz needs a nightly toolchain.
+[workspace]
+
+[[bin]]
+name = "process"
+path = "fuzz_targets/process.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "join"
+path = "fuzz_targets/join.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "key_package"
+path = "fuzz_targets/key_package.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "policy"
+path = "fuzz_targets/policy.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "credential"
+path = "fuzz_targets/credential.rs"
+test = false
+doc = false

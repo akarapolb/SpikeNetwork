@@ -45,6 +45,17 @@ impl OwnerKey {
     }
 }
 
+/// Check a raw Ed25519 signature made with [`OwnerKey::sign_raw`] (or any Ed25519 key).
+pub fn verify_raw(public: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> bool {
+    let (Ok(pk), Ok(s)) = (
+        Ed25519PublicKey::from_slice(public),
+        Ed25519Signature::from_slice(sig),
+    ) else {
+        return false;
+    };
+    pk.verify(msg, &s).is_ok()
+}
+
 /// One device in a list: its device card (`spike1:`) and, optionally, the relay it reads from.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct DeviceEntry {

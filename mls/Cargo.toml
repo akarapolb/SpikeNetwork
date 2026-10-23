@@ -1,0 +1,36 @@
+[package]
+name = "spike-mls"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Spike Connect large groups: MLS (openmls) bound to the owner-key identity model (ADR 0025)"
+
+[features]
+# Lets tests build commits the honest API refuses to, to show every receiver refuses them too.
+test-hooks = []
+
+[dev-dependencies]
+spike-mls = { path = ".", features = ["test-hooks"] }
+spike-cli = { path = "../cli" }
+spike-relay = { path = "../relay" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+
+[dependencies]
+spike-core = { path = "../core" }
+# openmls is pinned EXACTLY (ADR 0025 section 2): it is unaudited, has had High advisories, and breaks
+# its API in most minor releases. Upgrading is a deliberate chore with the advisory list read first.
+openmls = { version = "=0.9.2", default-features = false }
+openmls_rust_crypto = "=0.6.0"
+openmls_basic_credential = "=0.6.0"
+openmls_traits = "=0.6.0"
+openmls_memory_storage = "=0.6.0"
+tls_codec = "=0.5.0"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+rand = "0.8"
+zeroize = "1"

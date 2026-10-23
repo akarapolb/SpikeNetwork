@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "relay", "cli"]
+members = ["core", "relay", "cli", "mls"]
 # The desktop app has its own workspace (webview toolchain); build it with `cargo build` in desktop/src-tauri.
 exclude = ["desktop"]
 
