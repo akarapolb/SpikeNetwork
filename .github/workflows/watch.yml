@@ -1,0 +1,72 @@
+name: Watch
+
+# Things that must be looked at regularly, not only when someone pushes (ADR 0025, slice 4):
+# new openmls advisories (cargo-deny cannot see them: they are GitHub advisories, not RustSec ones),
+# and fuzzing time for the large-group parsing boundary.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1" # Mondays
+  pull_request:
+    paths:
+      - "mls/Cargo.toml"
+      - "mls/advisories-reviewed.txt"
+      - "scripts/openmls_advisories.py"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  openmls-advisories:
+    name: openmls advisories
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: The checker's own tests
+        run: python3 scripts/test_openmls_advisories.py
+      - name: Ask GitHub
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          python3 scripts/openmls_advisories.py
+          code=$?
+          if [ "$code" = "2" ]; then
+            echo "::warning::could not read the openmls advisories from GitHub this time"
+            exit 0
+          fi
+          exit "$code"
+
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    # Not on pull requests: it takes minutes and wants a nightly toolchain.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [process, join, key_package, policy, credential]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: nightly
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: mls/fuzz
+      - name: Fuzz for five minutes
+        working-directory: mls/fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=300 -max_len=70000
+      - name: Show the crashing input, if any
+        if: failure()
+        working-directory: mls/fuzz
+        run: |
+          for f in artifacts/${{ matrix.target }}/*; do echo "== $f"; xxd "$f" | head -50; done

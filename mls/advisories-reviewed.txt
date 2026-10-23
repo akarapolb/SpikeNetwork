@@ -1,0 +1,12 @@
+# openmls security advisories a person has read, with what it means for us. One per line: the GHSA id,
+# then a note. scripts/openmls_advisories.py fails on any published advisory not listed here, and on any
+# advisory that affects the exact version mls/Cargo.toml pins (0.9.2 on 2026-10-23).
+#
+# Read on 2026-10-23 against openmls 0.9.2 (GitHub: https://github.com/openmls/openmls/security/advisories).
+GHSA-94v4-rg25-x625 medium; external commit regrows the tree, removed leaves reappear. Fixed 0.8.3. We refuse external commits (ADR 0025 decision 5), so the path is not reachable.
+GHSA-p276-g3f3-wwgh low; a rejected private message advances the sender ratchet. Fixed in 0.9.2, the version we pin. Our processing also restores stored state when a commit is refused (spike-mls group.rs).
+GHSA-gc79-23g3-8g52 high; unbounded recursion decoding nested extensions can abort the process. Fixed 0.8.2. The process fuzz target feeds mutated commits and Welcomes; parsing is the exposure.
+GHSA-w62v-gv48-63rh medium; quadratic duplicate detection in pre-auth extension decoding. Fixed 0.9.0.
+GHSA-rrmv-c79f-cf5r medium; out-of-bounds panic in manual deserializers, remotely triggerable DoS. Fixed 0.9.0. Fuzzed; a panic on hostile input is the failure mode to watch for.
+GHSA-8x3w-qj7j-gqhf high; improper tag validation. Fixed 0.7.2.
+GHSA-qr9h-x63w-vqfm medium; secret tree not persisted properly during message processing. Fixed 0.7.1.

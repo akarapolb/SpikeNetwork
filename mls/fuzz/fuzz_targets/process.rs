@@ -1,31 +1,27 @@
-//! Anything the relay hands a member: must never panic, and a refusal must leave the group as it was.
+//! Anything the relay hands a member: must never panic; a refusal must leave the group as it was;
+//! nothing altered may read as a different message.
 #![no_main]
-use libfuzzer_sys::fuzz_target;
-use spike_core::identity::Identity;
-use spike_core::owner::{DeviceEntry, DeviceList, OwnerKey};
-use spike_mls::credential::MapDirectory;
-use spike_mls::group::{Device, Group};
-use spike_mls::policy::Policy;
+#[path = "../common.rs"]
+mod common;
 
-fn device_id(i: &Identity) -> [u8; 16] {
-    hex::decode(i.device_id()).unwrap().try_into().unwrap()
-}
+use libfuzzer_sys::fuzz_target;
+use spike_mls::group::Processed;
 
 fuzz_target!(|data: &[u8]| {
-    let (oa, ob) = (OwnerKey::generate(), OwnerKey::generate());
-    let (ia, ib) = (Identity::generate().unwrap(), Identity::generate().unwrap());
-    let entry = |i: &Identity| DeviceEntry { card: i.card().encode(), relay: None };
-    let mut dir = MapDirectory::default();
-    dir.insert(DeviceList::sign(&oa, 1, vec![entry(&ia)]).unwrap());
-    dir.insert(DeviceList::sign(&ob, 1, vec![entry(&ib)]).unwrap());
-    let (da, db) = (Device::new(&oa, device_id(&ia), 1).unwrap(), Device::new(&ob, device_id(&ib), 1).unwrap());
-    let mut ga = Group::create(&da, Policy::new(vec![oa.public()])).unwrap();
-    let out = ga.add(&da, &dir, &[db.key_package()]).unwrap();
-    ga.confirm(&da).unwrap();
-    let mut gb = Group::join(&db, &dir, out.welcome.as_ref().unwrap(), out.join_bundle.as_ref().unwrap()).unwrap();
-    let (epoch, members) = (gb.epoch(), gb.members().len());
-    if gb.process(&db, &dir, data).is_err() {
-        assert_eq!(gb.epoch(), epoch);
-        assert_eq!(gb.members().len(), members);
+    let w = common::world();
+    let (bob, mut group) = w.bob();
+    let input = common::pick(data, &[&w.commit, &w.message]);
+    let (epoch, members) = (group.epoch(), group.members().len());
+    match group.process(&bob, &w.dir, &input) {
+        Err(_) => {
+            assert_eq!(group.epoch(), epoch);
+            assert_eq!(group.members().len(), members);
+        }
+        Ok(Processed::Message(body, _)) => {
+            assert_eq!(body, b"a real message", "a forged message was read")
+        }
+        // The real commit (or an edit that changed nothing that matters): one more member.
+        Ok(Processed::Commit { .. }) => assert_eq!(group.members().len(), members + 1),
+        Ok(Processed::Own) => {}
     }
 });

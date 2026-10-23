@@ -11,6 +11,7 @@ MUTS = [
     ("mls/src/group.rs", "        let rotates = pending.remove_proposals().next().is_some();\n", "        let rotates = false;\n", "no rotation on removal (committer)"),
     ("mls/src/group.rs", "        if result.is_err() {\n            dev.restore(before);\n        }\n        result\n    }\n\n    fn join_inner", "        result\n    }\n\n    fn join_inner", "no restore after refused welcome"),
     ("mls/src/group.rs", "            let id = credential::verify_leaf(dir, &m.credential, &m.signature_key)?;\n            roster.insert(id.owner, id.device);", "            let id = credential::parse(&m.credential)?.0;\n            roster.insert(id.owner, id.device);", "welcome members not verified"),
+    ("mls/src/group.rs", "        credential::verify_leaf(dir, &member.credential, &member.signature_key)?;\n", "        let _ = &member;\n", "committer's own credential not checked"),
     ("mls/src/policy.rs", "            if after.has_device(device) {", "            if false && after.has_device(device) {", "duplicate devices allowed"),
     ("mls/src/policy.rs", "            Change::Update { old, new } if old != new => return Err(PolicyError::IdentityChanged),", "", "identity change allowed"),
 ]

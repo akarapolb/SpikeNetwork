@@ -50,7 +50,7 @@ Replay of the mailbox log is the normal path. If the log was trimmed before a de
 Messages inside the group are the same envelopes (text, edit, delete, attachment): editing, deleting, files (one encrypted blob for all) and own-device catch-up work unchanged, and one's own other devices simply receive messages as members (no "sent copy" needed). New-member history ("the last 7 days") is the same request and answer, now over MLS application messages, with the same "shared by" marking: MLS gives a new member no past messages either. Members who are not contacts, invites, blocking and consent (ADR 0024 sections 5 and 6) are unchanged in meaning. Group calls (ADR 0018, item 5) become possible: the MLS exporter secret gives the shared group key that SFrame needs.
 
 ### 8. Storage and hygiene
-`openmls` needs a `StorageProvider`; ours is built on the vault's sealed storage (an SQLite provider exists to learn from; the effort is not measured). The new crate gets a fuzz target for message and extension parsing (two of the advisories are parsing denial-of-service), a CI check that fails on any new `openmls` advisory (`cargo-deny` already runs), and the exact pin.
+`openmls` needs a `StorageProvider`; ours is built on the vault's sealed storage (an SQLite provider exists to learn from; the effort is not measured). The new crate gets a fuzz target for message and extension parsing (two of the advisories are parsing denial-of-service), a CI check that fails on any new `openmls` advisory (`cargo-deny` already runs; **slice 4 found that this does not cover openmls**, see below), and the exact pin.
 
 ## What this does not give you (honest list)
 - **No independent audit** of `openmls`. The README's "do not use for real secrets" stays; large groups add a dependency that is fast-moving and has had High advisories this year.
@@ -185,3 +185,27 @@ Large groups sit in the same chat list and use the same screens as small ones, m
 **How it was tested.** 4 new desktop API tests against a real relay (create, invitation and consent, decline, messages with names and unread, removal and re-adding, refusals for what is not built), plus the CLI mutation checks again after the refactor. **The real app was driven:** `desktop/drive_large.mjs` starts a relay and three desktop windows (alice, bob, carol) and drives them over the Chrome DevTools protocol: Alice makes a large group from the screen, the others see and accept the invitation, messages go all ways (Carol reads Bob's under a "~" name, since she does not know him), Alice removes Carol, Carol is told and cannot write, Bob and Alice carry on. 18 checks, all pass, with screenshots of the new screens. Windows only.
 
 **What it does not do.** Everything the CLI section lists as missing is missing here too, and: no desktop notification or instant delivery for large groups; no way to see that an invitation was never accepted; no per-person delivery status (everyone reads one copy); a person with several devices appears once and "Your devices" is not itemised; and the Large tag, wording and layout were looked at on one machine and one window size only.
+
+## Slice 4: hardening (2026-10-23)
+
+What could be done on one machine without a reviewer or phones. The independent review itself is still the gate before any real use; this slice prepares it.
+
+**A gap found by reading the code again, and fixed.** `validate` checked every leaf a commit *introduces* but not the *sender's own* leaf. Commits made by the honest API always carry an update path (which contains a fresh leaf, so a revoked sender was caught by accident), but MLS allows a commit that only adds people to have no path. A device that was revoked but not yet removed from the tree could therefore have kept committing with its owner's admin rights. Now the sender's own credential is checked against the directory first. Test: `a_commit_from_a_revoked_device_is_refused_even_when_it_only_adds_people`, using a new test hook that builds a path-less add; with the check removed that test fails (13th mutation-checked protection).
+
+**Advisory watch, and a wrong assumption corrected.** The ADR assumed `cargo-deny` would catch new openmls advisories. It cannot: openmls publishes its advisories only as GitHub security advisories, and the RustSec database has no openmls entries. So `scripts/openmls_advisories.py` asks GitHub and fails if the exact pinned version is affected by any advisory, or if any advisory is not listed in `mls/advisories-reviewed.txt` (a person must read a new one and add it with a note). At pin 0.9.2 all seven published advisories are fixed (the newest, a ratchet-advance bug, exactly in 0.9.2, which we happened to pin), and each has a one-line note on whether it is reachable for us. `.github/workflows/watch.yml` runs the check weekly and on changes to the pin; a Rust test (`mls/tests/pin.rs`) fails if any openmls crate is not pinned exactly or the lock file holds a version other than the one reviewed. The checker has its own unit tests (`scripts/test_openmls_advisories.py`). Not done: nothing alerts you outside CI.
+
+**Fuzzing, actually run.** Installed the nightly toolchain and cargo-fuzz; the five targets from slice 1 were rebuilt so that each input is an *edit of a real message* (random bytes almost never parse) applied to a fresh copy of a small world. 25 minutes each, run side by side on one machine, ASAN on:
+
+| Target | Runs | Result |
+|---|---|---|
+| `process` (commits and messages a member receives) | 31,000 | no crash, no invariant broken |
+| `join` (Welcome and join bundle) | 57,000 | none |
+| `key_package` | 25,500 | none |
+| `policy` (the extension decoder) | 4.4 million | none |
+| `credential` | 9.2 million | none |
+
+The invariants asserted on every run: no panic; a refused commit leaves epoch and members unchanged; nothing altered is read as a different message; an altered Welcome, bundle or key package is never accepted. **The limits are large:** the three MLS targets did only 7 to 38 runs a second (a sanitiser build, state restored each run), so 25,000 to 57,000 runs is shallow next to what fuzzing usually needs; a pass says nothing was found in that time, not that nothing is there. The relay's own parsing of group messages and the client's handling of the *outer* layer are not fuzzed. `mls/fuzz/run_parallel.sh` repeats the run; the weekly workflow runs five minutes per target on a Linux runner. Windows needs the sanitiser runtime on `PATH` (noted in the script). (Installing the nightly toolchain printed a harmless rustup self-update link error; the toolchain installed.)
+
+**Review brief.** `docs/review/large-groups-review-brief.md`: what to review and what not, where the code is, the design in a page, the invariants with the test that pins each, what we already know is weak, the evidence and its limits, how to run everything, and what we would like back.
+
+**Still not done in slice 4:** phone benchmarks (no phone here), the independent review itself, a longer fuzzing campaign (hours, ideally with a corpus kept between runs), fuzzing the relay's group message handling, and a decision on the refused-entry policy.

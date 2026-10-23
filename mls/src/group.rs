@@ -658,6 +658,13 @@ impl Group {
             return Err(PolicyError::Forbidden("external").into());
         };
         let committer = self.identity_at(*index)?;
+        // The sender's own leaf too: a commit that only adds people carries no new leaf of theirs,
+        // and a device that has since been revoked must not keep its rights until someone removes it.
+        let member = self
+            .mls
+            .member_at(*index)
+            .ok_or(Error::Malformed("no such leaf"))?;
+        credential::verify_leaf(dir, &member.credential, &member.signature_key)?;
         let verify = |leaf: &LeafNode| {
             credential::verify_leaf(dir, leaf.credential(), leaf.signature_key().as_slice())
         };

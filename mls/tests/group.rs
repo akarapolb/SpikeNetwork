@@ -650,3 +650,53 @@ fn a_welcome_with_a_member_nobody_vouches_for_is_refused_and_can_be_retried() {
     let r = Group::join(&b.dev, &dir2, &welcome, &[0u8; 80]);
     assert!(matches!(r, Err(Error::Bundle)), "{:?}", r.err());
 }
+
+#[test]
+fn a_commit_from_a_revoked_device_is_refused_even_when_it_only_adds_people() {
+    // Alice's second device is lost and she revokes it, but it is still in the group's tree until
+    // someone removes it, and it still holds her admin rights through its credential.
+    let (mut alice, bob, carol) = (Person::new(2), Person::new(1), Person::new(1));
+    let dir = directory(&[&alice, &bob, &carol]);
+    let (mut a0, mut a1, mut b) = (
+        Member::new(&alice, 0),
+        Member::new(&alice, 1),
+        Member::new(&bob, 0),
+    );
+    let c = Member::new(&carol, 0);
+    grow(&mut a0, &mut [&mut a1, &mut b], &dir, policy_for(&alice));
+    alice.revoke(1);
+    let dir_now = directory(&[&alice, &bob, &carol]);
+
+    // The thief adds Carol. A commit that only adds has no new leaf of the sender's to check, so
+    // the sender's own credential has to be checked too.
+    let bad = unchecked_add(&mut a1, &c.kp());
+    let err = assert_refused(&mut b, &dir_now, &bad);
+    assert!(
+        matches!(err, Error::Credential(CredentialError::Revoked)),
+        "{err:?}"
+    );
+    assert!(matches!(
+        assert_refused(&mut a0, &dir_now, &bad),
+        Error::Credential(CredentialError::Revoked)
+    ));
+    // The same with no update path at all (legal when a commit only adds): nothing in the commit
+    // belongs to the thief except the sender's place in the tree, which is what gets checked.
+    let bad = spike_mls::testing::unchecked_add_without_path(
+        &a1.dev,
+        a1.group.as_mut().unwrap(),
+        &c.kp(),
+    );
+    let err = assert_refused(&mut b, &dir_now, &bad);
+    assert!(
+        matches!(err, Error::Credential(CredentialError::Revoked)),
+        "{err:?}"
+    );
+    // Alice removes the lost device; the group carries on without it.
+    let out = a0.remove(&[alice.device_bytes(1)]).unwrap();
+    a0.confirm();
+    assert!(matches!(
+        b.process(&dir_now, &out.commit).unwrap(),
+        Processed::Commit { .. }
+    ));
+    assert_eq!(b.g().members().len(), 2);
+}

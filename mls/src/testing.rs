@@ -82,3 +82,30 @@ pub fn unchecked_add_many(
         welcome.tls_serialize_detached().unwrap(),
     )
 }
+
+/// Add a key package in a commit with **no update path** (legal in MLS when a commit only adds),
+/// which the honest API never makes. Leaves the commit pending.
+pub fn unchecked_add_without_path(dev: &Device, group: &mut Group, key_package: &[u8]) -> Vec<u8> {
+    clear_pending(dev, group);
+    let kp = KeyPackageIn::tls_deserialize_exact(key_package)
+        .unwrap()
+        .validate(dev.provider.crypto(), ProtocolVersion::Mls10)
+        .unwrap();
+    let bundle = group
+        .mls
+        .commit_builder()
+        .propose_adds([kp])
+        .force_self_update(false)
+        .load_psks(dev.provider.storage())
+        .unwrap()
+        .build(
+            dev.provider.rand(),
+            dev.provider.crypto(),
+            &dev.signer,
+            |_| true,
+        )
+        .unwrap()
+        .stage_commit(&dev.provider)
+        .unwrap();
+    bundle.commit().tls_serialize_detached().unwrap()
+}
