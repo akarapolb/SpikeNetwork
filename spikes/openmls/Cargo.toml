@@ -1,0 +1,23 @@
+[package]
+name = "openmls-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone: NOT part of the repository workspace.
+[workspace]
+
+[dependencies]
+openmls = { version = "=0.9.2", default-features = false }
+openmls_rust_crypto = "=0.6.0"
+openmls_basic_credential = "=0.6.0"
+openmls_traits = "=0.6.0"
+tls_codec = "=0.5.0"
+ed25519-dalek = "=2.2.0"
+rand = "0.9"
+# Baseline for message-size comparison (same version the repo core uses).
+vodozemac = "=0.11.1"
+
+[profile.release]
+lto = true
+opt-level = 3

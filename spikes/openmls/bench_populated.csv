@@ -1,0 +1,5 @@
+size,state,kp_B,add_commit_B,welcome_B,tree_B,remove_commit_B,app_msg_B,create_ms,add_ms,remove_ms,member_process_add_ms,member_process_remove_ms,join_ms,keypkg_gen_ms,bulk_commit_B,bulk_welcome_B
+20,populated,385,1453,378,7565,1153,177,0.2,1.5,0.9,0.8,0.6,1.9,0.11,8022,3114
+100,populated,385,1687,378,37091,1387,177,0.1,2.3,1.9,2.9,1.3,9.2,0.10,39134,15274
+320,populated,385,1921,378,118267,1621,177,0.2,3.8,4.1,3.7,4.6,28.1,0.12,124562,48716
+500,populated,385,1921,378,184703,1621,177,0.1,6.4,8.6,5.2,6.0,46.3,0.12,194402,76076
