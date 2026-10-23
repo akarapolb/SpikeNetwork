@@ -1345,3 +1345,200 @@ async fn files_and_the_week_of_history_work_through_the_app() {
     alice.s.group_set_history(&gid, false).await.unwrap();
     assert_eq!(alice.s.group(&gid).unwrap().history, "join");
 }
+
+// ------------------------------------------------------------------ large groups (ADR 0025)
+
+/// Alice (admin) made "Org" with Bob and Carol, who accepted. Bob and Carol do not know each other.
+async fn org() -> (String, Dev, Dev, Dev, String) {
+    let url = relay().await;
+    let (alice, bob, carol) = (dev("alice", &url), dev("bob", &url), dev("carol", &url));
+    // The first sync also publishes this device's key packages, so it can be added to large groups.
+    for d in [&alice, &bob, &carol] {
+        d.s.sync(IDLE).await.unwrap();
+    }
+    for (name, d) in [("Bob", &bob), ("Carol", &carol)] {
+        alice.s.add_contact(name, &card(d)).unwrap();
+        d.s.add_contact("Alice", &card(&alice)).unwrap();
+    }
+    let made = alice
+        .s
+        .group_create_large("Org", &["Bob".into(), "Carol".into()])
+        .await
+        .unwrap();
+    assert_eq!((made.reached, made.people), (2, 2));
+    for d in [&bob, &carol] {
+        assert_eq!(d.s.sync(IDLE).await.unwrap().groups, 1);
+        let row = d.s.overview().unwrap().groups.remove(0);
+        assert_eq!(
+            (row.status.as_str(), row.large, row.invited_by.as_deref()),
+            ("invited", true, Some("Alice"))
+        );
+        let detail = d.s.group(&made.group).unwrap();
+        assert_eq!((detail.status.as_str(), detail.large), ("invited", true));
+        assert_eq!(
+            d.s.attention().unwrap(),
+            1,
+            "an open invitation asks for attention"
+        );
+        d.s.group_accept(&made.group).await.unwrap();
+    }
+    for d in [&alice, &bob, &carol] {
+        d.s.sync(IDLE).await.unwrap();
+    }
+    (url, alice, bob, carol, made.group)
+}
+
+#[tokio::test]
+async fn a_large_group_is_made_joined_and_written_in_from_the_app() {
+    let (_url, alice, bob, carol, gid) = org().await;
+    for d in [&alice, &bob, &carol] {
+        let g = &d.s.overview().unwrap().groups;
+        assert_eq!(g.len(), 1);
+        assert_eq!(
+            (g[0].name.as_str(), g[0].members, g[0].unread),
+            ("Org", 3, 0)
+        );
+        assert_eq!((g[0].status.as_str(), g[0].large), ("joined", true));
+    }
+    let detail = alice.s.group(&gid).unwrap();
+    assert_eq!(
+        (detail.me_admin, detail.can_add, detail.max, detail.large),
+        (true, true, 500, true)
+    );
+    assert_eq!(detail.members.len(), 3);
+    let carol_detail = carol.s.group(&gid).unwrap();
+    assert_eq!(
+        (carol_detail.me_admin, carol_detail.can_add),
+        (false, false)
+    );
+
+    // A message arrives with its author's name, unread, and in the preview.
+    let sent = alice.s.group_send(&gid, "agenda is above").await.unwrap();
+    assert_eq!((sent.reached, sent.people), (2, 2));
+    assert_eq!(bob.s.sync(IDLE).await.unwrap().received, 1);
+    let row = &bob.s.overview().unwrap().groups[0];
+    assert_eq!(
+        (row.unread, row.last.as_deref()),
+        (1, Some("Alice: agenda is above"))
+    );
+    assert_eq!(bob.s.attention().unwrap(), 1);
+    let thread = bob.s.group_conversation(&gid, 50).unwrap();
+    assert_eq!(thread.len(), 1);
+    assert_eq!(
+        (thread[0].from.as_deref(), thread[0].out),
+        (Some("Alice"), false)
+    );
+    bob.s.group_mark_read(&gid).await.unwrap();
+    assert_eq!(bob.s.overview().unwrap().groups[0].unread, 0);
+    assert_eq!(bob.s.attention().unwrap(), 0);
+
+    // Bob writes to Carol, whom he has never met: she sees a name she can recognise by its code.
+    bob.s.group_send(&gid, "hi carol, bob here").await.unwrap();
+    carol.s.sync(IDLE).await.unwrap();
+    let msgs = carol.s.group_conversation(&gid, 50).unwrap();
+    assert!(msgs
+        .last()
+        .unwrap()
+        .from
+        .as_deref()
+        .unwrap()
+        .starts_with('~'));
+    // Her own messages are marked as hers.
+    carol.s.group_send(&gid, "hello all").await.unwrap();
+    assert!(
+        carol
+            .s
+            .group_conversation(&gid, 50)
+            .unwrap()
+            .last()
+            .unwrap()
+            .out
+    );
+}
+
+#[tokio::test]
+async fn a_large_group_can_be_declined_and_leaves_nothing_behind() {
+    let url = relay().await;
+    let (alice, bob) = (dev("alice", &url), dev("bob", &url));
+    for d in [&alice, &bob] {
+        d.s.sync(IDLE).await.unwrap();
+    }
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    bob.s.add_contact("Alice", &card(&alice)).unwrap();
+    let made = alice
+        .s
+        .group_create_large("Org", &["Bob".into()])
+        .await
+        .unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    bob.s.group_decline(&made.group).await.unwrap();
+    assert!(bob.s.overview().unwrap().groups.is_empty());
+    assert!(bob.s.group(&made.group).is_err());
+    assert!(bob.s.group_send(&made.group, "hi").await.is_err());
+}
+
+#[tokio::test]
+async fn the_admin_removes_and_adds_people_and_the_removed_one_is_told() {
+    let (_url, alice, bob, carol, gid) = org().await;
+    let carol_key = alice
+        .s
+        .group(&gid)
+        .unwrap()
+        .members
+        .into_iter()
+        .find(|m| m.name == "Carol")
+        .unwrap()
+        .owner;
+    // Something to keep: a group left with no history is not listed at all.
+    alice.s.group_send(&gid, "before").await.unwrap();
+    carol.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    // Only an admin may.
+    assert!(bob.s.group_remove(&gid, &carol_key).await.is_err());
+    alice.s.group_remove(&gid, &carol_key).await.unwrap();
+    assert_eq!(alice.s.group(&gid).unwrap().members.len(), 2);
+
+    // Bob follows; Carol is told, keeps her history and can no longer write.
+    assert_eq!(bob.s.sync(IDLE).await.unwrap().groups, 1);
+    let r = carol.s.sync(IDLE).await.unwrap();
+    assert!(
+        r.notes.iter().any(|n| n.contains("removed")),
+        "{:?}",
+        r.notes
+    );
+    let row = &carol.s.overview().unwrap().groups[0];
+    assert_eq!(row.status, "left");
+    assert!(carol.s.group_send(&gid, "let me in").await.is_err());
+    alice.s.group_send(&gid, "just us").await.unwrap();
+    assert_eq!(bob.s.sync(IDLE).await.unwrap().received, 1);
+    assert_eq!(carol.s.sync(IDLE).await.unwrap().received, 0);
+
+    // Alice can bring someone else in later.
+    let dave = dev("dave", &_url);
+    dave.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Dave", &card(&dave)).unwrap();
+    dave.s.add_contact("Alice", &card(&alice)).unwrap();
+    alice.s.group_add(&gid, &["Dave".into()]).await.unwrap();
+    dave.s.sync(IDLE).await.unwrap();
+    dave.s.group_accept(&gid).await.unwrap();
+    assert_eq!(dave.s.group(&gid).unwrap().members.len(), 3);
+}
+
+#[tokio::test]
+async fn controls_a_large_group_does_not_have_yet_say_so_instead_of_pretending() {
+    let (_url, alice, _bob, _carol, gid) = org().await;
+    for e in [
+        alice.s.group_rename(&gid, "New").await.err(),
+        alice.s.group_leave(&gid).await.err(),
+        alice.s.group_set_add_by(&gid, true).await.err(),
+        alice.s.group_set_history(&gid, true).await.err(),
+        alice.s.group_make_admin(&gid, "ab").await.err(),
+        alice.s.group_block(&gid).await.err(),
+        alice.s.group_send_file(&gid, "a.txt", b"x", "").await.err(),
+    ] {
+        let msg = e.expect("refused").to_string();
+        assert!(msg.contains("large group"), "{msg}");
+    }
+    // Small groups are unaffected by any of this.
+    assert!(alice.s.group_create("Small", &[], false).await.is_err());
+}

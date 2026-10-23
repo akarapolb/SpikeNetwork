@@ -13,6 +13,7 @@ use serde::Serialize;
 use spike_cli::agent::{self, Status};
 use spike_cli::client::Relay;
 use spike_cli::groups;
+use spike_cli::large;
 use spike_cli::link;
 use spike_cli::messages::Direction;
 use spike_cli::requests;
@@ -65,6 +66,8 @@ pub struct Session {
     link_new: Mutex<Option<(link::Waiting, Option<LinkSession>)>>,
     /// This (existing) device compared codes with a new device and is about to share.
     link_old: Mutex<Option<link::Pending>>,
+    /// Key packages for large groups were topped up since this session started.
+    kp_checked: AtomicBool,
 }
 
 // ------------------------------------------------------------------ DTOs
@@ -165,6 +168,8 @@ pub struct GroupDto {
     pub invited_by: Option<String>,
     /// Members (not you) who are not verified contacts.
     pub unverified: usize,
+    /// A large group (MLS, ADR 0025) rather than a small one.
+    pub large: bool,
     pub last: Option<String>,
     pub last_ts: Option<u64>,
 }
@@ -201,6 +206,8 @@ pub struct GroupDetailDto {
     pub history: String,
     /// An invite from someone who is not a contact: it can be declined *and* the inviter blocked.
     pub can_block: bool,
+    /// A large group (MLS, ADR 0025): no renaming, leaving, files or history choice yet.
+    pub large: bool,
 }
 
 /// What a group change or message reached.
@@ -367,6 +374,7 @@ impl Session {
             paused: AtomicBool::new(false),
             link_new: Mutex::new(None),
             link_old: Mutex::new(None),
+            kp_checked: AtomicBool::new(false),
         })
     }
 
@@ -501,7 +509,21 @@ impl Session {
             .iter()
             .filter(|r| r.status == groups::Status::Invited)
             .count();
-        Ok(unread + group_unread + invites + waiting + requests::list(&self.home)?.len())
+        let large_unread: usize = large::unread_counts(&self.home)?
+            .iter()
+            .map(|(_, n)| n)
+            .sum();
+        let large_invites = large::list(&self.home)?
+            .iter()
+            .filter(|r| r.status == large::Status::Invited)
+            .count();
+        Ok(unread
+            + group_unread
+            + large_unread
+            + invites
+            + large_invites
+            + waiting
+            + requests::list(&self.home)?.len())
     }
 
     // ------------------------------------------------------------ read side
@@ -732,7 +754,49 @@ impl Session {
             }
         })
         .await?;
+        self.sync_large(&mut out, &mut progress).await;
         Ok(out)
+    }
+
+    /// Large groups (ADR 0025) are polled from their own mailboxes after the one-to-one queue.
+    /// A failure here becomes a note: it must not hide what the queue just delivered.
+    async fn sync_large(&self, out: &mut SyncDto, progress: &mut impl FnMut(&SyncDto, usize)) {
+        if large::list(&self.home).map_or(true, |l| l.is_empty())
+            && self.kp_checked.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        if !self.kp_checked.swap(true, Ordering::SeqCst) {
+            // Once per session: make sure people can add this device to large groups.
+            if let Err(e) = large::top_up_key_packages(&self.home, self.target(), 20).await {
+                out.notes
+                    .push(format!("Could not publish keys for large groups: {e:#}"));
+                self.kp_checked.store(false, Ordering::SeqCst);
+            }
+        }
+        match large::sync(&self.home, self.target()).await {
+            Ok(events) => {
+                for e in events {
+                    match e {
+                        large::Event::Message { .. } => out.received += 1,
+                        large::Event::Changed { .. } => out.groups += 1,
+                        large::Event::Removed { group } => {
+                            out.groups += 1;
+                            out.notes.push(format!(
+                                "You were removed from {group}. Its history stays on this computer."
+                            ));
+                        }
+                        large::Event::Refused { group, why, .. } => out
+                            .notes
+                            .push(format!("Ignored a change to {group}: {why}")),
+                    }
+                    progress(out, self.attention().unwrap_or(0));
+                }
+            }
+            Err(e) => out
+                .notes
+                .push(format!("Could not read your large groups: {e:#}")),
+        }
     }
 
     /// Mark a conversation read here, and on your other devices if reachable.
@@ -1304,6 +1368,7 @@ impl Session {
                     .as_deref()
                     .map(|o| groups::display_name(&self.home, o)),
                 unverified: self.unverified_members(&s),
+                large: false,
                 last: last.as_ref().map(|m| {
                     if m.deleted {
                         "Message deleted".into()
@@ -1323,11 +1388,15 @@ impl Session {
                 name: s.name,
             });
         }
+        out.extend(self.large_rows()?);
         Ok(out)
     }
 
     /// Members, settings and your rights in one group.
     pub fn group(&self, id: &str) -> Result<GroupDetailDto> {
+        if self.is_large(id) {
+            return self.large_detail(id);
+        }
         let r = groups::find(&self.home, id)?;
         let s = r.current()?;
         let me = self.my_owner()?;
@@ -1388,12 +1457,17 @@ impl Session {
             }
             .into(),
             can_block: r.status == groups::Status::Invited && r.stranger.is_some(),
+            large: false,
             name: s.name,
         })
     }
 
     pub fn group_conversation(&self, id: &str, limit: usize) -> Result<Vec<MessageDto>> {
-        let (_, msgs) = groups::history(&self.home, id, limit.clamp(1, 500))?;
+        let msgs = if self.is_large(id) {
+            large::history(&self.home, id, limit.clamp(1, 500))?.1
+        } else {
+            groups::history(&self.home, id, limit.clamp(1, 500))?.1
+        };
         Ok(msgs
             .into_iter()
             .map(|m| {
@@ -1473,6 +1547,9 @@ impl Session {
         if text.len() > MAX_MESSAGE {
             bail!("messages are limited to {} KiB", MAX_MESSAGE / 1024);
         }
+        if self.is_large(id) {
+            return self.large_send(id, text).await;
+        }
         let gid = groups::find(&self.home, id)?.id().to_string();
         let _net = self.net.lock().await;
         let r = groups::send(&self.home, self.target(), &gid, text).await?;
@@ -1487,6 +1564,7 @@ impl Session {
         bytes: &[u8],
         caption: &str,
     ) -> Result<GroupSendDto> {
+        self.not_large(id, "sending files")?;
         let gid = groups::find(&self.home, id)?.id().to_string();
         let file_name = spike_core::attachment::safe_file_name(file_name);
         let _net = self.net.lock().await;
@@ -1504,6 +1582,7 @@ impl Session {
 
     /// Choose what new members see: messages from when they join, or the last 7 days.
     pub async fn group_set_history(&self, id: &str, week: bool) -> Result<GroupSendDto> {
+        self.not_large(id, "choosing what new members see")?;
         let history = if week { History::Week } else { History::Join };
         let _net = self.net.lock().await;
         let (s, r) = groups::set_history(&self.home, self.target(), id, history).await?;
@@ -1514,6 +1593,9 @@ impl Session {
         if names.is_empty() {
             bail!("choose at least one person to add");
         }
+        if self.is_large(id) {
+            return self.large_add(id, names).await;
+        }
         let _net = self.net.lock().await;
         let (s, r) = groups::add(&self.home, self.target(), id, names).await?;
         Ok(Self::sent_dto(&s.group, &r))
@@ -1521,24 +1603,30 @@ impl Session {
 
     /// Remove a member by owner key (from [`MemberDto::owner`]).
     pub async fn group_remove(&self, id: &str, owner: &str) -> Result<GroupSendDto> {
+        if self.is_large(id) {
+            return self.large_remove(id, owner).await;
+        }
         let _net = self.net.lock().await;
         let (s, r) = groups::remove(&self.home, self.target(), id, owner).await?;
         Ok(Self::sent_dto(&s.group, &r))
     }
 
     pub async fn group_make_admin(&self, id: &str, owner: &str) -> Result<GroupSendDto> {
+        self.not_large(id, "making another admin")?;
         let _net = self.net.lock().await;
         let (s, r) = groups::make_admin(&self.home, self.target(), id, owner).await?;
         Ok(Self::sent_dto(&s.group, &r))
     }
 
     pub async fn group_rename(&self, id: &str, name: &str) -> Result<GroupSendDto> {
+        self.not_large(id, "renaming")?;
         let _net = self.net.lock().await;
         let (s, r) = groups::rename(&self.home, self.target(), id, name).await?;
         Ok(Self::sent_dto(&s.group, &r))
     }
 
     pub async fn group_set_add_by(&self, id: &str, any: bool) -> Result<GroupSendDto> {
+        self.not_large(id, "changing who can add")?;
         let add_by = if any { AddBy::Any } else { AddBy::Admins };
         let _net = self.net.lock().await;
         let (s, r) = groups::set_add_by(&self.home, self.target(), id, add_by).await?;
@@ -1547,6 +1635,7 @@ impl Session {
 
     /// Leave a group. Your history stays on this computer; nobody can add you back without your OK.
     pub async fn group_leave(&self, id: &str) -> Result<()> {
+        self.not_large(id, "leaving")?;
         let _net = self.net.lock().await;
         groups::leave(&self.home, self.target(), id).await?;
         Ok(())
@@ -1554,18 +1643,27 @@ impl Session {
 
     /// Accept an invite. Your other devices that hold the same invite join too.
     pub async fn group_accept(&self, id: &str) -> Result<()> {
+        if self.is_large(id) {
+            let _net = self.net.lock().await;
+            large::accept(&self.home, self.target(), id).await?;
+            return Ok(());
+        }
         self.invite_decision(id, groups::InviteDecision::Accept)
             .await
     }
 
     /// Decline an invite. The inviter is not told; your other devices decline too.
     pub async fn group_decline(&self, id: &str) -> Result<()> {
+        if self.is_large(id) {
+            return large::decline(&self.home, id);
+        }
         self.invite_decision(id, groups::InviteDecision::Decline)
             .await
     }
 
     /// Decline an invite and block the inviter (someone who is not a contact), on all your devices.
     pub async fn group_block(&self, id: &str) -> Result<()> {
+        self.not_large(id, "blocking an inviter")?;
         self.invite_decision(id, groups::InviteDecision::Block)
             .await
     }
@@ -1579,6 +1677,9 @@ impl Session {
 
     /// Mark a group read here, and on your other devices if reachable.
     pub async fn group_mark_read(&self, id: &str) -> Result<()> {
+        if self.is_large(id) {
+            return large::mark_read(&self.home, id);
+        }
         groups::find(&self.home, id)?;
         let _net = self.net.lock().await;
         // The marker moves on this device first; telling the others may fail while offline.
@@ -1595,6 +1696,226 @@ impl Session {
         self.add_contact(name, &card)
     }
 }
+
+// ------------------------------------------------------- large groups (ADR 0025)
+
+fn large_status_word(s: large::Status) -> &'static str {
+    match s {
+        large::Status::Active => "joined",
+        large::Status::Invited => "invited",
+        large::Status::Removed => "left",
+    }
+}
+
+impl Session {
+    fn is_large(&self, id: &str) -> bool {
+        large::list(&self.home).is_ok_and(|l| l.iter().any(|r| r.id == id))
+    }
+
+    fn not_large(&self, id: &str, what: &str) -> Result<()> {
+        if self.is_large(id) {
+            bail!("{what} is not available for a large group yet");
+        }
+        Ok(())
+    }
+
+    fn large_rows(&self) -> Result<Vec<GroupDto>> {
+        let unread: BTreeMap<String, usize> =
+            large::unread_counts(&self.home)?.into_iter().collect();
+        let store = self.home.messages()?;
+        let mut out = Vec::new();
+        for r in large::list(&self.home)? {
+            let last = store
+                .conversation(&r.id, usize::MAX)?
+                .into_iter()
+                .next_back();
+            if r.status == large::Status::Removed && last.is_none() {
+                continue;
+            }
+            out.push(GroupDto {
+                unread: unread.get(&r.id).copied().unwrap_or(0),
+                status: large_status_word(r.status).into(),
+                invited_by: r.invite.as_ref().map(|i| i.from.clone()),
+                unverified: self.large_unverified(&r.id),
+                large: true,
+                last: last.as_ref().map(|m| {
+                    if m.deleted {
+                        "Message deleted".into()
+                    } else {
+                        let who = match (m.direction, m.author.as_deref()) {
+                            (Direction::Out, _) => "You".to_string(),
+                            (_, Some(a)) => groups::display_name(&self.home, a),
+                            _ => "?".to_string(),
+                        };
+                        format!("{who}: {}", preview(&m.body, None))
+                    }
+                }),
+                last_ts: last.map(|m| m.ts),
+                members: r.members,
+                name: r.name,
+                id: r.id,
+            });
+        }
+        Ok(out)
+    }
+
+    /// People in the group (not you) who are not verified contacts.
+    fn large_unverified(&self, id: &str) -> usize {
+        let me = self.my_owner().unwrap_or_default();
+        let contacts = self.home.load_contacts().unwrap_or_default();
+        large::members(&self.home, id)
+            .map(|ms| {
+                ms.iter()
+                    .filter(|m| m.owner != me)
+                    .filter(|m| {
+                        !contacts.iter().any(|c| {
+                            c.verified
+                                && c.conversation_key().ok().as_deref() == Some(m.owner.as_str())
+                        })
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    fn large_detail(&self, id: &str) -> Result<GroupDetailDto> {
+        let r = large::find(&self.home, id)?;
+        let me = self.my_owner()?;
+        let contacts = self.home.load_contacts()?;
+        let cards = groups::member_cards(&self.home)?;
+        let infos = if r.status == large::Status::Active {
+            large::members(&self.home, id)?
+        } else {
+            vec![]
+        };
+        let members: Vec<MemberDto> = infos
+            .iter()
+            .map(|m| {
+                let contact = contacts
+                    .iter()
+                    .find(|c| c.conversation_key().ok().as_deref() == Some(m.owner.as_str()));
+                let fingerprint = contact
+                    .and_then(|c| c.identity().ok())
+                    .or_else(|| {
+                        cards
+                            .get(&m.owner)
+                            .and_then(|c| IdentityCard::decode(c).ok())
+                    })
+                    .map(|c| c.fingerprint());
+                MemberDto {
+                    owner: m.owner.clone(),
+                    name: groups::display_name(&self.home, &m.owner),
+                    you: m.owner == me,
+                    admin: m.admin,
+                    contact: contact.is_some(),
+                    verified: contact.is_some_and(|c| c.verified),
+                    fingerprint,
+                }
+            })
+            .collect();
+        // You first, then by name: the owner keys they come in have no useful order.
+        let mut members = members;
+        members.sort_by(|a, b| b.you.cmp(&a.you).then_with(|| a.name.cmp(&b.name)));
+        let me_admin = infos.iter().any(|m| m.owner == me && m.admin);
+        Ok(GroupDetailDto {
+            id: r.id.clone(),
+            name: r.name.clone(),
+            status: large_status_word(r.status).into(),
+            invited_by: r.invite.as_ref().map(|i| i.from.clone()),
+            can_add: r.status == large::Status::Active && me_admin && members.len() < LARGE_MAX,
+            members,
+            me_admin,
+            add_by: "admins".into(),
+            version: r.cursor,
+            max: LARGE_MAX,
+            unverified: self.large_unverified(&r.id),
+            history: "join".into(),
+            can_block: false,
+            large: true,
+        })
+    }
+
+    async fn large_send(&self, id: &str, text: &str) -> Result<GroupSendDto> {
+        let _net = self.net.lock().await;
+        large::send(&self.home, self.target(), id, text).await?;
+        let people = large::find(&self.home, id)?.members.saturating_sub(1);
+        // Everyone reads the one stored copy; there is no per-person delivery to report.
+        Ok(GroupSendDto {
+            group: id.to_string(),
+            reached: people,
+            people,
+            notes: vec![],
+        })
+    }
+
+    async fn large_add(&self, id: &str, names: &[String]) -> Result<GroupSendDto> {
+        let _net = self.net.lock().await;
+        let mut notes = Vec::new();
+        let mut added = 0;
+        for n in names {
+            match large::add(&self.home, self.target(), id, n).await {
+                Ok(_) => added += 1,
+                Err(e) => notes.push(format!("{n}: {e:#}")),
+            }
+        }
+        if added == 0 {
+            bail!("{}", notes.join("; "));
+        }
+        Ok(GroupSendDto {
+            group: id.to_string(),
+            reached: added,
+            people: names.len(),
+            notes,
+        })
+    }
+
+    async fn large_remove(&self, id: &str, owner: &str) -> Result<GroupSendDto> {
+        let key: [u8; 32] = hex::decode(owner)?
+            .try_into()
+            .map_err(|_| anyhow!("that is not a member's key"))?;
+        let name = groups::display_name(&self.home, owner);
+        let _net = self.net.lock().await;
+        large::remove_owner(&self.home, self.target(), id, &key, &name).await?;
+        Ok(GroupSendDto {
+            group: id.to_string(),
+            reached: 1,
+            people: 1,
+            notes: vec![],
+        })
+    }
+
+    /// Create a large group (MLS, up to 500 people) and invite some of your contacts. They join
+    /// when they accept.
+    pub async fn group_create_large(&self, name: &str, members: &[String]) -> Result<GroupSendDto> {
+        if members.is_empty() {
+            bail!("choose at least one person to add");
+        }
+        let _net = self.net.lock().await;
+        if !self.kp_checked.load(Ordering::SeqCst) {
+            // Our own keys do not matter to create, but a person added later will need them.
+            let _ = large::top_up_key_packages(&self.home, self.target(), 20).await;
+            self.kp_checked.store(true, Ordering::SeqCst);
+        }
+        let rec = large::create(&self.home, self.target(), name).await?;
+        let mut notes = Vec::new();
+        let mut reached = 0;
+        for m in members {
+            match large::add(&self.home, self.target(), &rec.id, m).await {
+                Ok(_) => reached += 1,
+                Err(e) => notes.push(format!("{m}: {e:#}")),
+            }
+        }
+        Ok(GroupSendDto {
+            group: rec.id,
+            reached,
+            people: members.len(),
+            notes,
+        })
+    }
+}
+
+/// The first-release cap for a large group (ADR 0025).
+const LARGE_MAX: usize = 500;
 
 fn status_word(s: groups::Status) -> &'static str {
     match s {

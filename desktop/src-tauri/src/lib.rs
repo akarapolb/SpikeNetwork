@@ -372,6 +372,18 @@ async fn group_create(
 }
 
 #[tauri::command]
+async fn group_create_large(
+    state: State<'_, AppState>,
+    name: String,
+    members: Vec<String>,
+) -> Result<GroupSendDto, String> {
+    session(&state)?
+        .group_create_large(&name, &members)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
 async fn group_set_history(
     state: State<'_, AppState>,
     id: String,
@@ -747,6 +759,7 @@ pub fn run() {
             group,
             group_conversation,
             group_create,
+            group_create_large,
             group_set_history,
             group_send_file,
             group_send,

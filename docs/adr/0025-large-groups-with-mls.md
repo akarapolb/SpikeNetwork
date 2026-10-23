@@ -170,3 +170,18 @@ Everything grows roughly linearly and is cheap in time: a change at 500 members 
 - **A device in a group that never accepts** is a member who cannot read anything; removing it is manual.
 - **Several relays:** all of a group's mailbox traffic is on the relay it was created on, and key packages are claimed from each device's own relay.
 - Desktop screens are slice 3. Review, advisory watch and the independent review (slice 4) are still ahead; nothing here has been reviewed.
+
+## Slice 3: what was built (2026-10-23), the desktop screens
+
+Large groups sit in the same chat list and use the same screens as small ones, marked **Large**; the app decides by the group's id.
+
+- **Create:** the New group screen has a Small / Large switch. A large group takes any number of your contacts, shows that people join by accepting and that it is experimental and not independently reviewed, and asks for confirmation above 20 people. The creator is the only admin and the policy is fixed (admins add and remove).
+- **Invitations:** the same consent screen, with the member list hidden (you cannot see who is in it until you join) and no Block button. Declining affects this device only.
+- **Thread and members:** one encrypted copy for everyone, with the same marks for people you have not verified and the same "~" names for people who are not contacts. Admins add people (up to 500) and remove them; removal moves the group to a new mailbox. The window title and unread counts include large groups and open invitations.
+- **Not offered, and the app says so rather than pretending:** renaming, leaving, a second admin, "who can add", new-member history, files, blocking an inviter. The same commands refuse with "... is not available for a large group yet".
+- **Sync:** the app's normal sync reads the one-to-one queue, then the large-group mailboxes (every 60 seconds and on wake-ups; there is no push for large groups yet). A failure reading them becomes a note and does not hide what the queue delivered. Once per run it tops up this device's key packages to 20 so people can add it.
+- **Code:** `Session` (`desktop/src-tauri/src/api.rs`) dispatches each group call on whether the id is a large group; one new command, `group_create_large`; helpers in `cli/src/large.rs` (members, unread, mark read, remove by owner key, key package top-up).
+
+**How it was tested.** 4 new desktop API tests against a real relay (create, invitation and consent, decline, messages with names and unread, removal and re-adding, refusals for what is not built), plus the CLI mutation checks again after the refactor. **The real app was driven:** `desktop/drive_large.mjs` starts a relay and three desktop windows (alice, bob, carol) and drives them over the Chrome DevTools protocol: Alice makes a large group from the screen, the others see and accept the invitation, messages go all ways (Carol reads Bob's under a "~" name, since she does not know him), Alice removes Carol, Carol is told and cannot write, Bob and Alice carry on. 18 checks, all pass, with screenshots of the new screens. Windows only.
+
+**What it does not do.** Everything the CLI section lists as missing is missing here too, and: no desktop notification or instant delivery for large groups; no way to see that an invitation was never accepted; no per-person delivery status (everyone reads one copy); a person with several devices appears once and "Your devices" is not itemised; and the Large tag, wording and layout were looked at on one machine and one window size only.

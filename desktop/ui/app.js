@@ -164,7 +164,7 @@ function chatsList() {
   const entries = [...cs.map((c) => ({ ts: c.last_ts || 0, name: c.name, row: contactRow(c) })), ...gs.map((g) => ({ ts: g.last_ts || 0, name: g.name, row: groupRow(g) }))]
     .sort((x, y) => y.ts - x.ts || x.name.localeCompare(y.name));
   return [h("div", { class: "listhead" }, h("div", { class: "title" }, h("h1", {}, "Chats"),
-      h("button", { class: "iconbtn", type: "button", "aria-label": "New group", title: "New group", onclick: () => { if (!cs.length) return toast("Add a contact first: a group is made from your contacts."); st.newGroup = { name: "", members: [], anyCanAdd: false, week: false }; st.screen = "newgroup"; render(); } }, icon("newgroup")),
+      h("button", { class: "iconbtn", type: "button", "aria-label": "New group", title: "New group", onclick: () => { if (!cs.length) return toast("Add a contact first: a group is made from your contacts."); st.newGroup = { name: "", members: [], anyCanAdd: false, week: false, large: false }; st.screen = "newgroup"; render(); } }, icon("newgroup")),
       h("button", { class: "iconbtn", type: "button", "aria-label": "Add a contact", title: "Add a contact", onclick: () => { st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson")))),
     h("nav", { class: "rows", "aria-label": "Conversations" },
       st.ov.requests ? h("button", { class: "reqrow", type: "button", onclick: () => { st.screen = "requests"; st.naming = null; render(); } }, icon("addperson"),
@@ -540,7 +540,7 @@ function openMembers() { st.screen = "group"; st.picked = []; st.picking = false
 function groupRow(g) {
   const invited = g.status === "invited", left = g.status === "left";
   return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.group === g.id), onclick: () => openGroup(g.id) }, groupTile(false),
-    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, g.name), invited ? h("span", { class: "tag waiting" }, "Invite") : left ? h("span", { class: "tag plain" }, "left") : g.unverified ? h("span", { class: "tag bad" }, `${g.unverified} not verified`) : null),
+    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, g.name), invited ? h("span", { class: "tag waiting" }, "Invite") : left ? h("span", { class: "tag plain" }, "left") : g.unverified ? h("span", { class: "tag bad" }, `${g.unverified} not verified`) : null, g.large ? h("span", { class: "tag plain" }, "Large") : null),
       h("span", { class: "preview" }, invited ? `Invite from ${g.invited_by || "someone"}` : g.last || `${plural(g.members, "person", "people")} · no messages yet`)),
     h("span", { class: "meta" }, g.last_ts ? clock(g.last_ts) : "", g.unread ? h("span", { class: "count" }, g.unread) : null));
 }
@@ -549,7 +549,7 @@ function groupMain() {
   if (!g || !d) return [h("div", { class: "head" }, h("h1", {}, "Chats")), h("p", { class: "empty" }, "Choose a conversation.")];
   if (d.status === "invited") return inviteScreen();
   const left = d.status !== "joined";
-  const head = h("div", { class: "head" }, groupTile(true), h("span", { class: "who" }, h("b", {}, d.name), h("span", {}, left ? "You are not in this group" : `${plural(d.members.length, "person", "people")} · end-to-end encrypted`)),
+  const head = h("div", { class: "head" }, groupTile(true), h("span", { class: "who" }, h("b", {}, d.name), h("span", {}, left ? "You are not in this group" : `${plural(d.members.length, "person", "people")} · end-to-end encrypted${d.large ? " · large group" : ""}`)),
     h("button", { class: "btn", type: "button", onclick: openMembers }, icon("group"), "Members"));
   const warn = !left && d.unverified ? h("div", { class: "sysline attention", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
     h("span", { style: "flex:1" }, `${unverifiedText(d)} Messages from them are marked.`),
@@ -567,8 +567,8 @@ function groupMain() {
   }
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendGroupFile(d.id, f, ta.value); } });
   const composer = left ? h("div", { class: "composer" }, h("span", { class: "note" }, "You are not in this group. Your history stays on this computer; nobody can add you back without your OK."))
-    : h("div", { class: "composer" }, h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
-      h("span", { class: "note" }, `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
+    : h("div", { class: "composer" }, h("div", { class: "bar" }, d.large ? null : h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), d.large ? null : picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
+      h("span", { class: "note" }, d.large ? `One encrypted copy for all ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}. Files are not available in large groups yet.` : `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
   return [head, warn, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : h("p", { class: "empty" }, "No messages yet.")), composer].filter(Boolean);
 }
 const HISTORY_CHOICES = [["join", "Messages from when they join"], ["week", "The last 7 days"]];
@@ -582,7 +582,7 @@ function unverifiedText(d) {
 }
 function inviteScreen() {
   const d = st.gdetail, back = () => { st.group = null; st.gdetail = null; st.screen = null; render(); };
-  const stranger = (d.invited_by || "").startsWith("~") || !d.invited_by;
+  const stranger = !d.large && ((d.invited_by || "").startsWith("~") || !d.invited_by);
   const decide = async (kind) => {
     if (kind === "block" && !confirm(`Block ${d.invited_by || "this person"}?
 
@@ -592,12 +592,12 @@ This declines the invite, and anything they send you from now on is dropped, on 
       if (kind !== "accept") { st.group = null; st.gdetail = null; }
       if (kind === "block") st.blockedLoaded = false;
       await refresh();
-      toast(kind === "accept" ? `You joined ${d.name}. Your other devices join too.` : kind === "block" ? "Declined and blocked. They are not told." : "Declined. They are not told.");
+      toast(kind === "accept" ? (d.large ? `You joined ${d.name}.` : `You joined ${d.name}. Your other devices join too.`) : kind === "block" ? "Declined and blocked. They are not told." : "Declined. They are not told.");
     } catch (e) { toast(String(e)); }
   };
   return [header("Group invite", back), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
-    h("p", { class: "lead" }, `${stranger ? "Someone who is not in your contacts" : d.invited_by} added you to “${d.name}”. Nothing from the group is shown until you accept.`),
-    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, `${plural(d.members.length, "person", "people")} in it`),
+    h("p", { class: "lead" }, `${stranger ? "Someone who is not in your contacts" : d.invited_by} ${d.large ? "invited you to" : "added you to"} “${d.name}”. Nothing from the group is shown until you accept.`),
+    d.large ? h("div", { class: "status soft" }, h("span", {}, h("b", {}, "A large group. "), "You will see who is in it once you join. Large groups are experimental and have not been independently reviewed yet.")) : h("section", { class: "card" }, h("h2", { class: "eyebrow" }, `${plural(d.members.length, "person", "people")} in it`),
       d.members.map((m) => h("div", { class: "member" }, h("span", { class: "tile sm c-neutral", "aria-hidden": "true" }, memLetter(m)),
         h("span", { class: "body" }, h("b", { style: "font-weight:600" }, m.you ? "You" : m.name, m.name === d.invited_by ? h("span", { class: "tag plain", style: "margin-left:8px" }, "added you") : null), h("span", { class: "note" }, m.you ? "" : m.contact ? (m.verified ? "In your contacts · verified" : "In your contacts · not verified") : "Not in your contacts"))))),
     stranger ? h("div", { class: "status warn" }, h("b", {}, "You do not know who added you."), h("span", {}, "Join only if you expect this. Members you do not know are shown as not verified.")) : null,
@@ -605,7 +605,7 @@ This declines the invite, and anything they send you from now on is dropped, on 
       d.can_block ? h("button", { class: "btn big danger", type: "button", onclick: () => decide("block") }, "Block") : null,
       h("button", { class: "btn big", type: "button", onclick: () => decide("decline") }, "Decline"),
       h("button", { class: "btn primary big", type: "button", onclick: () => decide("accept") }, "Join the group")),
-    h("p", { class: "note" }, d.can_block ? "Decline: they are not told, and anyone can invite you again. Block also drops anything this person sends you from now on. Your decision reaches your other devices." : "If you decline, they are not told, and anyone can invite you again. Your decision reaches your other devices.")))];
+    h("p", { class: "note" }, d.can_block ? "Decline: they are not told, and anyone can invite you again. Block also drops anything this person sends you from now on. Your decision reaches your other devices." : d.large ? "If you decline, they are not told, and anyone can invite you again. This device only: your other devices are not asked." : "If you decline, they are not told, and anyone can invite you again. Your decision reaches your other devices.")))];
 }
 function segChoice(label, value, opts, onpick, disabled) {
   return h("div", { class: "optrow" }, h("b", { style: "font-weight:600" }, label),
@@ -635,13 +635,13 @@ function groupScreen() {
     joined && !m.you ? h("span", { style: "display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end" },
       m.contact && !m.verified ? h("button", { class: "btn", type: "button", onclick: () => { st.verifyFor = m.name; st.verifyDone = null; st.screen = "verify"; render(); } }, "Verify") : null,
       !m.contact ? h("button", { class: "btn", type: "button", onclick: () => { st.nameMember = m.owner; render(); } }, "Add as contact") : null,
-      d.me_admin && !m.admin ? h("button", { class: "btn quiet", type: "button", onclick: () => act("group_make_admin", { owner: m.owner }, `${m.name} is an admin now.`) }, "Make admin") : null,
-      d.me_admin ? h("button", { class: "btn danger", type: "button", onclick: () => { if (confirm(`Remove ${m.name}?\n\nNew messages stop being encrypted for their devices. They keep what they already received.`)) act("group_remove", { owner: m.owner }, `${m.name} removed.`); } }, "Remove") : null) : null);
+      d.me_admin && !m.admin && !d.large ? h("button", { class: "btn quiet", type: "button", onclick: () => act("group_make_admin", { owner: m.owner }, `${m.name} is an admin now.`) }, "Make admin") : null,
+      d.me_admin ? h("button", { class: "btn danger", type: "button", onclick: () => { if (confirm(`Remove ${m.name}?\n\n${d.large ? "The group moves to a mailbox they cannot reach." : "New messages stop being encrypted for their devices."} They keep what they already received.`)) act("group_remove", { owner: m.owner }, `${m.name} removed.`); } }, "Remove") : null) : null);
   const room = d.max - d.members.length;
   const addable = st.ov.contacts.filter((c) => !d.members.some((m) => m.name === c.name));
   const picker = st.picking ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Add people"),
     addable.length ? addable.map((c) => pickRow(c, st.picked.includes(c.name), (e) => {
-      if (e.target.checked && st.picked.length >= room) { e.target.checked = false; return toast(`Small groups are limited to ${d.max} people.`); }
+      if (e.target.checked && st.picked.length >= room) { e.target.checked = false; return toast(`${d.large ? "Large" : "Small"} groups are limited to ${d.max} people.`); }
       st.picked = e.target.checked ? [...st.picked, c.name] : st.picked.filter((x) => x !== c.name);
     })) : h("p", { class: "note", style: "margin:0" }, "Everyone in your contacts is already in this group."),
     h("div", { style: "display:flex;gap:8px" },
@@ -650,21 +650,24 @@ function groupScreen() {
   return [header(d.name, back), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
     h("section", { class: "card", style: "flex-direction:row;align-items:center;gap:14px" }, groupTile(false),
       h("span", { style: "flex:1;min-width:0;display:flex;flex-direction:column;gap:6px" },
-        d.me_admin && joined ? h("div", { class: "field" }, h("input", { "aria-label": "Group name", value: d.name, onchange: (e) => { const v = e.target.value.trim(); if (v && v !== d.name) act("group_rename", { name: v }, `Renamed to “${v}”.`); else e.target.value = d.name; } })) : h("b", { style: "font-size:18px" }, d.name),
+        d.me_admin && joined && !d.large ? h("div", { class: "field" }, h("input", { "aria-label": "Group name", value: d.name, onchange: (e) => { const v = e.target.value.trim(); if (v && v !== d.name) act("group_rename", { name: v }, `Renamed to “${v}”.`); else e.target.value = d.name; } })) : h("b", { style: "font-size:18px" }, d.name),
         h("span", { class: "note" }, `${d.members.length} of up to ${d.max} people · ${d.unverified ? d.unverified + " not verified" : "everyone verified"}`))),
     h("section", { class: "card", style: "gap:0" },
       h("div", { style: "display:flex;align-items:center;padding-bottom:6px" }, h("h2", { class: "eyebrow", style: "flex:1" }, `Members (${d.members.length})`),
-        joined ? (d.can_add ? h("button", { class: "btn", type: "button", onclick: () => { st.picking = !st.picking; st.picked = []; render(); } }, icon("addperson"), "Add people") : h("span", { class: "note" }, d.members.length >= d.max ? `A small group holds up to ${d.max} people` : "Only admins can add people")) : null),
+        joined ? (d.can_add ? h("button", { class: "btn", type: "button", onclick: () => { st.picking = !st.picking; st.picked = []; render(); } }, icon("addperson"), "Add people") : h("span", { class: "note" }, d.members.length >= d.max ? `A ${d.large ? "large" : "small"} group holds up to ${d.max} people` : "Only admins can add people")) : null),
       d.members.map(memberRow)),
     picker,
-    joined ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Group settings"), d.me_admin ? null : h("span", { class: "note" }, "Only admins can change these."),
+    joined && !d.large ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Group settings"), d.me_admin ? null : h("span", { class: "note" }, "Only admins can change these."),
       segChoice("Who can add people", d.add_by, [["admins", "Admins only"], ["any", "Any member"]], (v) => act("group_set_add_by", { any: v === "any" }, v === "any" ? "Any member can add people now." : "Only admins can add people now."), !d.me_admin),
       segChoice("New members see", d.history, HISTORY_CHOICES, (v) => act("group_set_history", { week: v === "week" }, v === "week" ? "New members can ask for the last 7 days." : "New members see messages from when they join."), !d.me_admin),
       h("span", { class: "note" }, historyNote(d.history))) : null,
+    d.large ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "How this group is encrypted"),
+      h("span", {}, "A large group uses MLS (RFC 9420). Each message is encrypted once for the whole group and stored once on the relay. The relay sees that a group exists, its size and timing, and which devices read it, but not its name, members or content."),
+      h("span", { class: "note" }, "Only admins add or remove people. When someone is removed the group moves to a new mailbox they cannot reach; they keep what they already received. Large groups are experimental: they have not been independently reviewed, and renaming, leaving, files, history for new members and more than one admin are not available yet.")) :
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "How this group is encrypted"),
       h("span", {}, "Each message is encrypted separately for every device of every member, over your one-to-one sessions. The relay sees separate messages, not a group, and not who is in it."),
-      h("span", { class: "note" }, "The member list is signed by whoever changes it. If two admins change it at once, every app picks the same winner. Someone you remove keeps what they already received. Bigger groups with stronger guarantees (MLS) are planned.")),
-    joined ? h("button", { class: "btn danger", style: "align-self:flex-start", type: "button", onclick: async () => {
+      h("span", { class: "note" }, "The member list is signed by whoever changes it. If two admins change it at once, every app picks the same winner. Someone you remove keeps what they already received. For more than 20 people, make a large group.")),
+    joined && !d.large ? h("button", { class: "btn danger", style: "align-self:flex-start", type: "button", onclick: async () => {
       if (!confirm(`Leave ${d.name}?\n\nYour history stays on this computer. Nobody can add you back without your OK.`)) return;
       try { await invoke("group_leave", { id: d.id }); st.screen = null; await refresh(); toast(`You left ${d.name}.`); } catch (e) { toast(String(e)); }
     } }, "Leave group") : null))];
@@ -675,22 +678,24 @@ function newGroupScreen() {
   const ok = () => f.name.trim() && f.members.length;
   const nameIn = h("input", { "aria-label": "Group name", placeholder: "e.g. Pilot team", value: f.name, maxlength: "100", oninput: (e) => { f.name = e.target.value; const b = $("createGroup"); if (b) b.disabled = !ok(); } });
   return [header("New group", back), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
-    h("p", { class: "lead" }, `A small group: up to ${GROUP_MAX} people. Every message is encrypted separately for each member's devices.`),
+    segChoice("Size", f.large ? "large" : "small", [["small", `Small (up to ${GROUP_MAX})`], ["large", "Large (up to 500)"]], (v) => { f.large = v === "large"; render(); }),
+    h("p", { class: "lead" }, f.large ? "A large group: up to 500 people, one encrypted copy of each message for everyone. People you add get an invitation and join when they accept. Experimental: not independently reviewed yet." : `A small group: up to ${GROUP_MAX} people. Every message is encrypted separately for each member's devices.`),
     h("label", { class: "lbl", style: "font-weight:600" }, "Group name"), h("div", { class: "field" }, nameIn),
     h("section", { class: "card", style: "gap:2px" }, h("h2", { class: "eyebrow", style: "padding-bottom:6px" }, `Members · ${sel.length} selected`),
       st.ov.contacts.map((c) => pickRow(c, f.members.includes(c.name), (e) => {
-        if (e.target.checked && f.members.length >= GROUP_MAX - 1) { e.target.checked = false; return toast(`Small groups are limited to ${GROUP_MAX} people, including you.`); }
+        if (!f.large && e.target.checked && f.members.length >= GROUP_MAX - 1) { e.target.checked = false; return toast(`Small groups are limited to ${GROUP_MAX} people, including you.`); }
         f.members = e.target.checked ? [...f.members, c.name] : f.members.filter((x) => x !== c.name); render();
       }))),
     unv.length ? h("div", { class: "status soft" }, h("span", {}, h("b", {}, unv.map((c) => c.name).join(", ")), unv.length > 1 ? " are" : " is", " not verified. You can still add them; everyone in the group will see it.")) : null,
-    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Settings (you will be admin)"),
+    f.large ? h("div", { class: "status soft" }, h("span", {}, "You will be the only admin. Only admins add or remove people. Everyone you add needs to have opened this app at least once.")) : h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Settings (you will be admin)"),
       segChoice("Who can add people", f.anyCanAdd ? "any" : "admins", [["admins", "Admins only"], ["any", "Any member"]], (v) => { f.anyCanAdd = v === "any"; render(); }),
       segChoice("New members see", f.week ? "week" : "join", HISTORY_CHOICES, (v) => { f.week = v === "week"; render(); }),
       h("span", { class: "note" }, historyNote(f.week ? "week" : "join"))),
     h("button", { id: "createGroup", class: "btn primary big", type: "button", disabled: !ok() || null, onclick: async () => {
       try {
-        const r = await invoke("group_create", { name: f.name, members: f.members, anyCanAdd: f.anyCanAdd, historyWeek: f.week });
-        st.newGroup = null; st.screen = null; await refresh(); await openGroup(r.group); toast(`Group created. Reached ${r.reached} of ${r.people} people.`); r.notes.forEach(toast);
+        if (f.large && f.members.length > GROUP_MAX - 1 && !confirm(`Make a large group with ${f.members.length + 1} people?\n\nLarge groups are experimental and have not been independently reviewed.`)) return;
+        const r = f.large ? await invoke("group_create_large", { name: f.name, members: f.members }) : await invoke("group_create", { name: f.name, members: f.members, anyCanAdd: f.anyCanAdd, historyWeek: f.week });
+        st.newGroup = null; st.screen = null; await refresh(); await openGroup(r.group); toast(f.large ? `Large group created. Invited ${r.reached} of ${r.people} people; they join when they accept.` : `Group created. Reached ${r.reached} of ${r.people} people.`); r.notes.forEach(toast);
       } catch (e) { toast(String(e)); }
     } }, "Create group")))];
 }

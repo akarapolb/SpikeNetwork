@@ -22,8 +22,8 @@ use spike_mls::group::{Device, Error as MlsError, Group, Processed};
 use spike_mls::outer::{self, Kind as OuterKind};
 use spike_mls::policy::Policy;
 use spike_mls::state as mls_state;
-use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Mutex;
 
 const STATE: &str = "large-mls.enc";
 const RECORDS: &str = "large-groups.enc";
@@ -175,8 +175,8 @@ fn save_mls(home: &Home, mls: &Mls) -> Result<()> {
 
 /// Device lists for checking credentials: our contacts', our own, and any fetched from relays.
 struct HomeDir {
-    lists: RefCell<HashMap<[u8; 32], DeviceList>>,
-    missed: RefCell<BTreeSet<[u8; 32]>>,
+    lists: Mutex<HashMap<[u8; 32], DeviceList>>,
+    missed: Mutex<BTreeSet<[u8; 32]>>,
 }
 
 fn owner_bytes(list: &DeviceList) -> Option<[u8; 32]> {
@@ -206,13 +206,13 @@ impl HomeDir {
             put(&l);
         }
         Ok(Self {
-            lists: RefCell::new(lists),
-            missed: RefCell::new(BTreeSet::new()),
+            lists: Mutex::new(lists),
+            missed: Mutex::new(BTreeSet::new()),
         })
     }
 
     fn take_missed(&self) -> Vec<[u8; 32]> {
-        std::mem::take(&mut *self.missed.borrow_mut())
+        std::mem::take(&mut *self.missed.lock().expect("lock"))
             .into_iter()
             .collect()
     }
@@ -229,16 +229,17 @@ impl HomeDir {
             }
             let newer = self
                 .lists
-                .borrow()
+                .lock()
+                .expect("lock")
                 .get(o)
                 .is_none_or(|have| have.version < list.version);
             if newer {
-                self.lists.borrow_mut().insert(*o, list);
+                self.lists.lock().expect("lock").insert(*o, list);
                 changed += 1;
             }
         }
         if changed > 0 {
-            let all: Vec<DeviceList> = self.lists.borrow().values().cloned().collect();
+            let all: Vec<DeviceList> = self.lists.lock().expect("lock").values().cloned().collect();
             home.save_json(LISTS, &all)?;
         }
         Ok(changed)
@@ -247,10 +248,10 @@ impl HomeDir {
 
 impl Directory for HomeDir {
     fn device_list(&self, owner: &[u8; 32]) -> Option<DeviceList> {
-        self.lists.borrow().get(owner).cloned()
+        self.lists.lock().expect("lock").get(owner).cloned()
     }
     fn missed(&self, owner: &[u8; 32]) {
-        self.missed.borrow_mut().insert(*owner);
+        self.missed.lock().expect("lock").insert(*owner);
     }
 }
 
@@ -293,6 +294,92 @@ pub async fn publish_key_packages(
     save_mls(home, &mls)?;
     let mut r = connect(home, relay.into()).await?;
     r.publish_key_packages(&packages).await
+}
+
+/// One person in a large group: all their devices count as one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberInfo {
+    /// Owner key, hex.
+    pub owner: String,
+    pub devices: usize,
+    pub admin: bool,
+}
+
+/// The people in a group, from its current state.
+pub fn members(home: &Home, group: &str) -> Result<Vec<MemberInfo>> {
+    let rec = find(home, group)?;
+    let mls = load_mls(home)?;
+    let g = mls
+        .groups
+        .get(&rec.id)
+        .ok_or_else(|| anyhow!("you are not in '{}'", rec.name))?;
+    let mut by_owner: std::collections::BTreeMap<String, usize> = Default::default();
+    for m in g.members() {
+        *by_owner.entry(hex::encode(m.owner)).or_default() += 1;
+    }
+    Ok(by_owner
+        .into_iter()
+        .map(|(owner, devices)| MemberInfo {
+            admin: g.policy().admins.contains(&owner),
+            owner,
+            devices,
+        })
+        .collect())
+}
+
+/// Incoming messages after the read marker, per active group.
+pub fn unread_counts(home: &Home) -> Result<Vec<(String, usize)>> {
+    let store = home.messages()?;
+    let mut out = Vec::new();
+    for r in list(home)? {
+        if r.status != Status::Active {
+            continue;
+        }
+        let marker = home.read_marker(&r.id)?;
+        let n = store
+            .conversation(&r.id, usize::MAX)?
+            .iter()
+            .filter(|m| m.direction == Direction::In && !m.deleted && m.ts > marker)
+            .count();
+        out.push((r.id, n));
+    }
+    Ok(out)
+}
+
+/// Mark a group read up to its newest incoming message on this device.
+pub fn mark_read(home: &Home, group: &str) -> Result<()> {
+    let rec = find(home, group)?;
+    let upto = home
+        .messages()?
+        .conversation(&rec.id, usize::MAX)?
+        .iter()
+        .filter(|m| m.direction == Direction::In)
+        .map(|m| m.ts)
+        .max()
+        .unwrap_or(0);
+    home.advance_read_marker(&rec.id, upto)?;
+    Ok(())
+}
+
+/// Keep at least `target` key packages published, so people can add this device. Returns how many
+/// the relay holds afterwards.
+pub async fn top_up_key_packages(
+    home: &Home,
+    relay: impl Into<Target>,
+    target: usize,
+) -> Result<usize> {
+    let mls = load_mls(home)?;
+    let mut r = connect(home, relay.into()).await?;
+    // Publishing one tells us how many the relay holds.
+    let one = vec![mls.dev.key_package()];
+    save_mls(home, &mls)?;
+    let held = r.publish_key_packages(&one).await?;
+    if held >= target {
+        return Ok(held);
+    }
+    let more: Vec<Vec<u8>> = (held..target).map(|_| mls.dev.key_package()).collect();
+    save_mls(home, &mls)?;
+    r.publish_key_packages(&more).await
 }
 
 // --- creating, adding, removing -----------------------------------------------------------------
@@ -487,11 +574,6 @@ async fn invite(
 
 /// Remove every device of the contact `who`. The group moves to a new mailbox they cannot reach.
 pub async fn remove(home: &Home, relay: impl Into<Target>, group: &str, who: &str) -> Result<()> {
-    let base: Target = relay.into();
-    let mut rec = find(home, group)?;
-    if rec.status != Status::Active {
-        bail!("you are not in '{}' any more", rec.name);
-    }
     let contact = home
         .load_contacts()?
         .into_iter()
@@ -500,7 +582,22 @@ pub async fn remove(home: &Home, relay: impl Into<Target>, group: &str, who: &st
     let owner: [u8; 32] = hex::decode(contact.identity()?.owner_hex())?
         .try_into()
         .map_err(|_| anyhow!("owner key"))?;
+    remove_owner(home, relay, group, &owner, who).await
+}
 
+/// Remove every device of the person with this owner key (who need not be a contact).
+pub async fn remove_owner(
+    home: &Home,
+    relay: impl Into<Target>,
+    group: &str,
+    owner: &[u8; 32],
+    who: &str,
+) -> Result<()> {
+    let base: Target = relay.into();
+    let mut rec = find(home, group)?;
+    if rec.status != Status::Active {
+        bail!("you are not in '{}' any more", rec.name);
+    }
     let mut mls = load_mls(home)?;
     let dir = HomeDir::load(home)?;
     let mut r = connect(home, at(&rec, &base)).await?;
@@ -516,7 +613,7 @@ pub async fn remove(home: &Home, relay: impl Into<Target>, group: &str, who: &st
         let devices: Vec<[u8; 16]> = g
             .members()
             .iter()
-            .filter(|m| m.owner == owner)
+            .filter(|m| m.owner == *owner)
             .map(|m| m.device)
             .collect();
         if devices.is_empty() {
