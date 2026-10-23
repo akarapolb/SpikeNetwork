@@ -613,7 +613,7 @@ async fn push_sync(
 }
 
 /// Send `msg` to every other device of ours. Returns how many accepted it.
-async fn broadcast_own(home: &Home, base: Target, msg: &SyncMsg) -> Result<usize> {
+pub(crate) async fn broadcast_own(home: &Home, base: Target, msg: &SyncMsg) -> Result<usize> {
     let me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
     {

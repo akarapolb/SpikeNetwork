@@ -465,6 +465,117 @@ async fn a_message_naming_a_state_we_missed_waits_for_it() {
     assert!(msgs.iter().any(|m| m.body == "named with version 2"));
 }
 
+#[tokio::test]
+async fn a_delete_for_a_message_you_never_had_leaves_no_visible_trace() {
+    let (url, alice, bob, _carol) = pilot().await;
+    let old = groups::send(&alice.0, url.as_str(), "Pilot", "sent before erin joined")
+        .await
+        .unwrap();
+    recv(&bob, &url).await;
+    let erin = dev("erin", &url).await;
+    pair(&alice, "erin", &erin, "alice");
+    groups::add(&alice.0, url.as_str(), "Pilot", &["erin".into()])
+        .await
+        .unwrap();
+    assert!(matches!(
+        recv(&erin, &url).await.as_slice(),
+        [Outcome::GroupJoined { .. }]
+    ));
+
+    // Alice deletes it: Erin never had it, so her app keeps only a marker that stops a late copy.
+    ops::delete(&alice.0, url.as_str(), &old.id).await.unwrap();
+    let got = recv(&erin, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::Deleted { .. }]),
+        "{got:?}"
+    );
+    let marker = erin.0.messages().unwrap().get(&old.id).unwrap().unwrap();
+    assert!(marker.deleted && groups::is_ghost(&marker));
+    assert!(groups::history(&erin.0, "Pilot", 50).unwrap().1.is_empty());
+
+    // Real messages after it show normally, and a deleted message she did have is still listed.
+    let keep = groups::send(&alice.0, url.as_str(), "Pilot", "welcome erin")
+        .await
+        .unwrap();
+    assert_eq!(texts(&recv(&erin, &url).await).len(), 1);
+    ops::delete(&alice.0, url.as_str(), &keep.id).await.unwrap();
+    recv(&erin, &url).await;
+    let (_, shown) = groups::history(&erin.0, "Pilot", 50).unwrap();
+    assert_eq!(shown.len(), 1);
+    assert!(
+        shown[0].deleted && !groups::is_ghost(&shown[0]),
+        "a known message shows as deleted"
+    );
+}
+
+#[tokio::test]
+async fn a_device_linked_later_gets_your_groups_and_can_use_them() {
+    use spike_cli::link::{self, History};
+    let (url, alice, bob, carol) = pilot().await;
+    groups::send(&bob.0, url.as_str(), "Pilot", "before the laptop existed")
+        .await
+        .unwrap();
+    recv(&alice, &url).await;
+    recv(&carol, &url).await; // Carol keeps Bob as a member who is not a contact
+
+    // Alice links a new laptop, bringing all history.
+    let laptop = dev("alice-laptop", &url).await;
+    let t = Duration::from_secs(5);
+    let w = link::offer(&laptop.0, url.as_str()).unwrap();
+    let new_side = async {
+        let s = link::await_hello(&laptop.0, &w, t).await.unwrap();
+        link::receive(&laptop.0, &w, &s, t).await.unwrap()
+    };
+    let old_side = async {
+        let p = link::begin(&alice.0, url.as_str(), &w.code).await.unwrap();
+        link::finish(&alice.0, url.as_str(), p, History::All)
+            .await
+            .unwrap()
+    };
+    let (installed, _linked) = tokio::join!(new_side, old_side);
+    assert_eq!(
+        installed.messages, 1,
+        "the group message came with the history"
+    );
+
+    // The laptop knows the group, its history with authors, and can write to it as Alice.
+    let rec = groups::find(&laptop.0, "Pilot").unwrap();
+    assert_eq!(rec.status, Status::Joined);
+    assert_eq!(rec.current().unwrap().members.len(), 3);
+    let (_, hist) = groups::history(&laptop.0, "Pilot", 50).unwrap();
+    assert!(hist
+        .iter()
+        .any(|m| m.body == "before the laptop existed" && m.author.is_some()));
+    groups::send(
+        &laptop.0,
+        url.as_str(),
+        "Pilot",
+        "hello from the new laptop",
+    )
+    .await
+    .unwrap();
+    assert_eq!(texts(&recv(&bob, &url).await).last().unwrap().0, "alice");
+    // Bob answers; the laptop (which learned Bob's card from the bundle) can read it.
+    groups::send(&bob.0, url.as_str(), "Pilot", "welcome, laptop")
+        .await
+        .unwrap();
+    let got = texts(&recv(&laptop, &url).await);
+    assert_eq!(got.last().unwrap().1, "welcome, laptop", "{got:?}");
+
+    // An invite that waits for you stays on the device that holds its session.
+    let erin = dev("erin", &url).await;
+    alice
+        .0
+        .add_contact("erin", &erin.0.identity_card().unwrap(), false)
+        .unwrap();
+    groups::add(&alice.0, url.as_str(), "Pilot", &["erin".into()])
+        .await
+        .unwrap();
+    recv(&erin, &url).await;
+    let (recs, _) = groups::export_for_link(&erin.0).unwrap();
+    assert!(recs.is_empty(), "an unaccepted invite is not exported");
+}
+
 /// A person with a laptop and a phone under one owner key.
 async fn two_devices(tag: &str, url: &str) -> (Dev, Dev) {
     let (laptop, phone) = (
@@ -485,6 +596,49 @@ async fn two_devices(tag: &str, url: &str) -> (Dev, Dev) {
         ops::publish_keys(&d.0, url).await.unwrap();
     }
     (laptop, phone)
+}
+
+#[tokio::test]
+async fn catching_up_from_your_other_device_accepts_group_messages() {
+    let url = relay().await;
+    let (laptop, phone) = two_devices("alice", &url).await;
+    let bob = dev("bob", &url).await;
+    for d in [&laptop, &phone] {
+        pair(d, "bob", &bob, "alice");
+    }
+    groups::create(
+        &laptop.0,
+        url.as_str(),
+        "Family",
+        &["bob".into()],
+        AddBy::Admins,
+    )
+    .await
+    .unwrap();
+    recv(&bob, &url).await;
+    groups::send(&bob.0, url.as_str(), "Family", "dinner at 7?")
+        .await
+        .unwrap();
+    // Alongside an ordinary chat message, so one batch carries both kinds of record.
+    ops::send(&laptop.0, url.as_str(), "bob", b"and a private word")
+        .await
+        .unwrap();
+    recv(&laptop, &url).await;
+
+    // The phone asks the laptop for what it missed; the laptop answers when it next receives.
+    ops::request_catch_up(&phone.0, url.as_str()).await.unwrap();
+    recv(&laptop, &url).await;
+    let got = recv(&phone, &url).await;
+    assert!(
+        got.iter().any(|o| matches!(o, Outcome::CaughtUp { .. })),
+        "the batch was accepted: {got:?}"
+    );
+    assert!(
+        !got.iter().any(|o| matches!(o, Outcome::Invalid)),
+        "{got:?}"
+    );
+    let (_, hist) = groups::history(&phone.0, "Family", 50).unwrap();
+    assert!(hist.iter().any(|m| m.body == "dinner at 7?"));
 }
 
 #[tokio::test]
@@ -520,6 +674,20 @@ async fn a_group_follows_you_to_your_other_devices() {
             [("bob".into(), "dinner at 7?".into())]
         );
     }
+    // Reading it on the laptop clears it on the phone too.
+    let unread = |d: &Dev| groups::unread_counts(&d.0).unwrap()[0].1;
+    assert_eq!((unread(&laptop), unread(&phone)), (1, 1));
+    groups::mark_read(&laptop.0, url.as_str(), "Family")
+        .await
+        .unwrap();
+    assert_eq!(unread(&laptop), 0);
+    let got = recv(&phone, &url).await;
+    assert!(
+        matches!(got.as_slice(), [Outcome::ReadSynced { .. }]),
+        "{got:?}"
+    );
+    assert_eq!(unread(&phone), 0);
+
     let r = groups::send(&laptop.0, url.as_str(), "Family", "yes")
         .await
         .unwrap();

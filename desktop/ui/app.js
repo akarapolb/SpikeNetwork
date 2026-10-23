@@ -37,6 +37,8 @@ const PATHS = {
   devices: '<rect x="3" y="5" width="12" height="9" rx="1.5"/><path d="M1.5 17h15"/><rect x="17" y="8" width="5.5" height="12" rx="1.2"/>',
   clip: '<path d="M21 12l-8.5 8.5a5 5 0 0 1-7-7L14 5a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 8"/>',
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+  group: '<circle cx="9" cy="8" r="3"/><circle cx="16.5" cy="9.5" r="2.5"/><path d="M3 19c.7-3 3-4.8 6-4.8s5.3 1.8 6 4.8"/><path d="M15 14.6c2.6.1 4.6 1.6 5.2 4.4"/>',
+  newgroup: '<circle cx="8" cy="8" r="3"/><path d="M2.5 19c.7-3 3-4.8 5.5-4.8s4.8 1.8 5.5 4.8"/><circle cx="15" cy="9" r="2.3"/><path d="M19 13v6M16 16h6"/>',
 };
 function icon(name) { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("class", "i"); s.setAttribute("aria-hidden", "true"); s.innerHTML = PATHS[name]; return s; }
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 4200); }
@@ -48,7 +50,7 @@ const ini = (n) => (n.trim()[0] || "?").toUpperCase();
 async function call(cmd, args) { try { return await invoke(cmd, args); } catch (e) { if (e === "locked") { gate("unlock"); } else toast(String(e)); throw e; } }
 
 /* ---------- state ---------- */
-const st = { reqs: [], blocked: [], showReq: {}, naming: null, editing: null, confirmDelete: null, linkNew: false, linking: false, linkStep: 0, linkCode: "", linkSafety: "", linkMode: "all", linkErr: "", grantForm: null, section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
+const st = { seenNotes: new Map(), group: null, gdetail: null, verifyFor: null, newGroup: null, picked: [], picking: false, nameMember: null, reqs: [], blocked: [], showReq: {}, naming: null, editing: null, confirmDelete: null, linkNew: false, linking: false, linkStep: 0, linkCode: "", linkSafety: "", linkMode: "all", linkErr: "", grantForm: null, section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
 
 /* ---------- gate ---------- */
 async function gate(mode) {
@@ -78,14 +80,14 @@ async function gate(mode) {
     h("p", { class: "note" }, "Unreviewed prototype software: do not use it for real secrets yet.")));
   pass.focus();
 }
-async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.screen = null; await refresh(); if (st.linkNew) { st.linkNew = false; st.section = "devices"; st.screen = "linknew"; render(); startLinkNew(); } else syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 60000); armAutoLock(); }
-function stop() { clearInterval(st.polling); st.polling = null; clearTimeout(st.idleTimer); st.ov = st.agents = null; st.msgs = []; st.editing = st.confirmDelete = null; }
+async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.group = null; st.screen = null; await refresh(); if (st.linkNew) { st.linkNew = false; st.section = "devices"; st.screen = "linknew"; render(); startLinkNew(); } else syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 60000); armAutoLock(); }
+function stop() { clearInterval(st.polling); st.polling = null; clearTimeout(st.idleTimer); st.ov = st.agents = st.gdetail = null; st.msgs = []; st.editing = st.confirmDelete = null; }
 
 /* The backend holds one connection to the relay and tells us the moment something arrives; the slow poll above is only a safety net. */
 function listenToBackend() {
   const ev = window.__TAURI__ && window.__TAURI__.event;
   if (!ev) return;
-  ev.listen("synced", async () => { if (!st.ov) return; st.offline = false; await refresh(); await markOpenRead(); scrollEnd(); });
+  ev.listen("synced", async (e) => { if (!st.ov) return; st.offline = false; for (const n of (e.payload && e.payload.notes) || []) { const t = st.seenNotes.get(n); if (!t || Date.now() - t > 10000) toast(n); st.seenNotes.set(n, Date.now()); } await refresh(); await markOpenRead(); scrollEnd(); });
   ev.listen("relay-status", (e) => { if (!st.ov) return; const off = !e.payload.online; if (off !== st.offline) { st.offline = off; render(); } });
 }
 
@@ -107,9 +109,10 @@ async function refresh() {
     st.agents = await invoke("agents");
     if (st.ov.requests) st.reqs = await invoke("message_requests"); else st.reqs = [];
     if (st.chat) st.msgs = await invoke("conversation", { name: st.chat });
+    if (st.group) await loadGroup();
   } catch (e) { if (e === "locked") return gate("unlock"); toast(String(e)); }
   render();
-  if (st.ov) invoke("set_attention", { count: st.ov.contacts.reduce((a, c) => a + c.unread, 0) + st.ov.waiting + st.ov.requests }).catch(() => {});
+  if (st.ov) invoke("set_attention", { count: unreadTotal() + invitesCount() + st.ov.waiting + st.ov.requests }).catch(() => {});
 }
 async function syncNow() {
   if (st.busy || st.linking) return; st.busy = true;
@@ -117,7 +120,7 @@ async function syncNow() {
     const r = await invoke("sync");
     st.offline = false;
     r.notes.forEach(toast);
-    if (r.received || r.agent_requests) await refresh(); else render();
+    if (r.received || r.agent_requests || r.groups || r.message_requests) await refresh(); else render();
     await markOpenRead();
   } catch (e) { if (e === "locked") return gate("unlock"); st.offline = true; render(); }
   finally { st.busy = false; }
@@ -126,7 +129,7 @@ async function syncNow() {
 /* ---------- shell ---------- */
 function go(section) { st.section = section; st.screen = null; render(); }
 function renderRail() {
-  const unread = st.ov ? st.ov.contacts.reduce((a, c) => a + c.unread, 0) : 0, w = st.ov ? st.ov.waiting : 0;
+  const unread = st.ov ? unreadTotal() + invitesCount() : 0, w = st.ov ? st.ov.waiting : 0;
   const keys = { chats: 1, agents: 2, devices: 3, settings: 4 };
   const item = (k, label, n, warn) => h("button", { type: "button", "aria-current": st.section === k ? "page" : null, "aria-label": n ? `${label}, ${n} ${warn ? "waiting" : "unread"}` : label, onclick: () => go(k) },
     icon(k), h("span", { class: "tip", "aria-hidden": "true" }, `${label}  ${MOD}${keys[k]}`), n ? h("span", { class: "badge" + (warn ? " warn" : ""), "aria-hidden": "true" }, n) : null);
@@ -156,16 +159,24 @@ function tile(c, sm) { return h("span", { class: `tile${sm ? " sm" : ""}${c.agen
 
 /* ---------- chats ---------- */
 function chatsList() {
-  const cs = st.ov.contacts;
-  return [h("div", { class: "listhead" }, h("div", { class: "title" }, h("h1", {}, "Chats"), h("button", { class: "iconbtn", type: "button", "aria-label": "Add a contact", title: "Add a contact", onclick: () => { st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson")))),
+  const cs = st.ov.contacts, gs = st.ov.groups;
+  // One list, newest activity first; contacts without messages stay alphabetical after the active ones.
+  const entries = [...cs.map((c) => ({ ts: c.last_ts || 0, name: c.name, row: contactRow(c) })), ...gs.map((g) => ({ ts: g.last_ts || 0, name: g.name, row: groupRow(g) }))]
+    .sort((x, y) => y.ts - x.ts || x.name.localeCompare(y.name));
+  return [h("div", { class: "listhead" }, h("div", { class: "title" }, h("h1", {}, "Chats"),
+      h("button", { class: "iconbtn", type: "button", "aria-label": "New group", title: "New group", onclick: () => { if (!cs.length) return toast("Add a contact first: a group is made from your contacts."); st.newGroup = { name: "", members: [], anyCanAdd: false }; st.screen = "newgroup"; render(); } }, icon("newgroup")),
+      h("button", { class: "iconbtn", type: "button", "aria-label": "Add a contact", title: "Add a contact", onclick: () => { st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson")))),
     h("nav", { class: "rows", "aria-label": "Conversations" },
       st.ov.requests ? h("button", { class: "reqrow", type: "button", onclick: () => { st.screen = "requests"; st.naming = null; render(); } }, icon("addperson"),
         h("span", { style: "flex:1;font-size:14px;text-align:left" }, h("b", { style: "font-weight:600" }, `${st.ov.requests} message request${st.ov.requests > 1 ? "s" : ""}`), " ", h("span", { class: "muted" }, "from people not in your contacts")), icon("chev")) : null,
-      cs.length ? cs.map((c) => h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.chat === c.name), onclick: () => openChat(c.name) }, tile(c),
-        h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.agent ? h("span", { class: "tag plain" }, "agent") : null, c.verified ? null : h("span", { class: "tag bad" }, "Not verified")), h("span", { class: "preview" }, c.last || "No messages yet")),
-        h("span", { class: "meta" }, c.last_ts ? clock(c.last_ts) : "", c.unread ? h("span", { class: "count" }, c.unread) : null)))
+      entries.length ? entries.map((e) => e.row)
         : h("p", { class: "empty" }, "No contacts yet. Add one with the button above: paste their identity card.")),
   ];
+}
+function contactRow(c) {
+  return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.chat === c.name), onclick: () => openChat(c.name) }, tile(c),
+    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.agent ? h("span", { class: "tag plain" }, "agent") : null, c.verified ? null : h("span", { class: "tag bad" }, "Not verified")), h("span", { class: "preview" }, c.last || "No messages yet")),
+    h("span", { class: "meta" }, c.last_ts ? clock(c.last_ts) : "", c.unread ? h("span", { class: "count" }, c.unread) : null));
 }
 function ownActions(m) {
   const link = (label, fn) => h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0 0 0 8px;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: fn }, label);
@@ -198,7 +209,7 @@ async function saveFile(m) {
   try { toast("Saved to " + (await invoke("save_attachment", { id: m.id })) + ". Only open files from people you trust."); } catch (e) { toast(String(e)); }
 }
 async function openChat(name) {
-  st.chat = name; st.screen = null; st.verifyDone = null;
+  st.chat = name; st.group = null; st.gdetail = null; st.screen = null; st.verifyDone = null; st.verifyFor = null;
   try { st.msgs = await invoke("conversation", { name }); } catch (e) { toast(String(e)); }
   render(); scrollEnd();
   const c = st.ov.contacts.find((x) => x.name === name);
@@ -206,25 +217,37 @@ async function openChat(name) {
 }
 // A message that arrives in the conversation you are looking at is read.
 async function markOpenRead() {
-  if (st.section !== "chats" || st.screen || !st.chat || document.hidden) return;
-  const c = st.ov && st.ov.contacts.find((x) => x.name === st.chat);
+  if (st.section !== "chats" || st.screen || document.hidden || !st.ov) return;
+  if (st.group) {
+    const g = st.ov.groups.find((x) => x.id === st.group);
+    if (!g || !g.unread) return;
+    try { await invoke("group_mark_read", { id: st.group }); st.ov = await invoke("overview"); await loadGroup(); render(); scrollEnd(); } catch (_) {}
+    return;
+  }
+  const c = st.chat && st.ov.contacts.find((x) => x.name === st.chat);
   if (!c || !c.unread) return;
   try { await invoke("mark_read", { name: st.chat }); st.ov = await invoke("overview"); st.msgs = await invoke("conversation", { name: st.chat }); render(); scrollEnd(); } catch (_) {}
 }
 function scrollEnd() { const s = $("main").querySelector(".scroll"); if (s) s.scrollTop = s.scrollHeight; }
-function chatMain() {
-  const c = st.ov.contacts.find((x) => x.name === st.chat);
-  if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), h("p", { class: "empty" }, st.ov.contacts.length ? "Choose a conversation." : "Add a contact to start.")];
-  const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name), h("span", { class: c.agent ? "verified" : null }, c.agent ? [icon("shield"), "Agent"] : `End-to-end encrypted · ${c.devices} device${c.devices > 1 ? "s" : ""}`)),
-    h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
+function threadItems(inGroup) {
   const items = []; let day = "";
   for (const m of st.msgs) {
     const d = dayOf(m.ts); if (d !== day) { day = d; items.push(h("div", { class: "day" }, d)); }
     items.push(h("div", { class: "msg" + (m.out ? " out" : "") },
+      inGroup && !m.out && m.from ? h("span", { class: "sender" }, m.from, m.from_verified ? null : h("span", { class: "tag bad", style: "margin-left:6px" }, "Not verified")) : null,
       m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, m.body) : null),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
   }
+  return items;
+}
+function chatMain() {
+  if (st.group) return groupMain();
+  const c = st.ov.contacts.find((x) => x.name === st.chat);
+  if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), h("p", { class: "empty" }, st.ov.contacts.length ? "Choose a conversation." : "Add a contact to start.")];
+  const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name), h("span", { class: c.agent ? "verified" : null }, c.agent ? [icon("shield"), "Agent"] : `End-to-end encrypted · ${c.devices} device${c.devices > 1 ? "s" : ""}`)),
+    h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
+  const items = threadItems(false);
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
   const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: "Message", rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } } });
   async function send() {
@@ -239,9 +262,9 @@ function chatMain() {
 
 /* ---------- verify + add ---------- */
 function verifyScreen() {
-  const c = st.ov.contacts.find((x) => x.name === st.chat); const first = c.name.split(" ")[0];
+  const c = st.ov.contacts.find((x) => x.name === (st.verifyFor || st.chat)); const first = c.name.split(" ")[0];
   const done = st.verifyDone;
-  return [header(`Verify ${c.name}`, () => { st.screen = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
+  return [header(`Verify ${c.name}`, () => { st.screen = st.verifyFor ? "group" : null; st.verifyFor = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
     h("p", { class: "lead" }, `Compare this with ${first} in person or on a call you trust, reading it aloud. If it matches on both sides, nobody is in the middle.`),
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Safety number"), h("div", { class: "mono", style: "font-size:20px;overflow-wrap:anywhere;padding:10px;background:var(--panel-2);border-radius:12px;text-align:center" }, c.fingerprint)),
     c.verified && !done ? h("div", { class: "status soft" }, h("b", {}, `${c.name} is verified.`), h("span", {}, "If this number ever changes, you will be warned.")) : null,
@@ -434,7 +457,7 @@ function settingsMain() {
         h("span", { class: "note" }, "Locking wipes your keys from memory. While locked, this computer does not receive messages.")),
       h("span", { class: "note" }, "The window title, and the taskbar or dock, show how many messages and requests are waiting.")),
     updatesCard(),
-    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "groups and calls (designed, not built), an installer with auto-update, and desktop notification banners (the taskbar flashes instead). This is an unreviewed prototype.")),
+    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "calls (designed, not built), an installer with auto-update, and desktop notification banners (the taskbar flashes instead). This is an unreviewed prototype.")),
     h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: lockNow }, icon("lock"), "Lock now")))];
 }
 
@@ -482,8 +505,169 @@ function requestsScreen() {
     h("p", { class: "note" }, "Requests are end-to-end encrypted like any message. Declining or blocking deletes the conversation attempt for good: you are not shown anything more from that session, and they are not told. Undecided requests are removed after 30 days.")))];
 }
 
+const GROUP_MAX = 20;
+/* ---------- groups (ADR 0024) ---------- */
+const unreadTotal = () => st.ov.contacts.reduce((a, c) => a + c.unread, 0) + st.ov.groups.reduce((a, g) => a + g.unread, 0);
+const invitesCount = () => st.ov.groups.filter((g) => g.status === "invited").length;
+const memLetter = (m) => (m.you ? "Y" : m.name.startsWith("~") ? "?" : ini(m.name));
+const groupTile = (sm) => h("span", { class: `tile${sm ? " sm" : ""} c-neutral`, "aria-hidden": "true" }, icon("group"));
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+async function loadGroup() {
+  try { st.msgs = await invoke("group_conversation", { id: st.group }); st.gdetail = await invoke("group", { id: st.group }); }
+  catch (_) { st.group = null; st.gdetail = null; st.msgs = []; if (st.screen === "group") st.screen = null; }
+}
+async function openGroup(id) {
+  st.group = id; st.chat = null; st.screen = null; st.verifyDone = null; st.verifyFor = null; st.picking = false; st.nameMember = null;
+  await loadGroup();
+  render(); scrollEnd();
+  const g = st.ov.groups.find((x) => x.id === id);
+  if (g && g.unread) { try { await invoke("group_mark_read", { id }); await refresh(); } catch (_) {} }
+}
+function openMembers() { st.screen = "group"; st.picked = []; st.picking = false; st.nameMember = null; render(); }
+function groupRow(g) {
+  const invited = g.status === "invited", left = g.status === "left";
+  return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.group === g.id), onclick: () => openGroup(g.id) }, groupTile(false),
+    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, g.name), invited ? h("span", { class: "tag waiting" }, "Invite") : left ? h("span", { class: "tag plain" }, "left") : g.unverified ? h("span", { class: "tag bad" }, `${g.unverified} not verified`) : null),
+      h("span", { class: "preview" }, invited ? `Invite from ${g.invited_by || "someone"}` : g.last || `${plural(g.members, "person", "people")} · no messages yet`)),
+    h("span", { class: "meta" }, g.last_ts ? clock(g.last_ts) : "", g.unread ? h("span", { class: "count" }, g.unread) : null));
+}
+function groupMain() {
+  const g = st.ov.groups.find((x) => x.id === st.group), d = st.gdetail;
+  if (!g || !d) return [h("div", { class: "head" }, h("h1", {}, "Chats")), h("p", { class: "empty" }, "Choose a conversation.")];
+  if (d.status === "invited") return inviteScreen();
+  const left = d.status !== "joined";
+  const head = h("div", { class: "head" }, groupTile(true), h("span", { class: "who" }, h("b", {}, d.name), h("span", {}, left ? "You are not in this group" : `${plural(d.members.length, "person", "people")} · end-to-end encrypted`)),
+    h("button", { class: "btn", type: "button", onclick: openMembers }, icon("group"), "Members"));
+  const warn = !left && d.unverified ? h("div", { class: "sysline attention", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
+    h("span", { style: "flex:1" }, `${unverifiedText(d)} Messages from them are marked.`),
+    h("button", { class: "btn", type: "button", onclick: openMembers }, "Review")) : null;
+  const items = threadItems(true);
+  const ta = h("textarea", { "aria-label": "Message to " + d.name, placeholder: "Message", rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } } });
+  async function send() {
+    const text = ta.value; if (!text.trim()) return; ta.disabled = true;
+    try {
+      const r = await invoke("group_send", { id: d.id, text }); ta.value = "";
+      if (r.reached < r.people) toast(`Reached ${r.reached} of ${r.people} people. The others could not be reached yet.`);
+      r.notes.forEach(toast); await refresh(); scrollEnd();
+    } catch (e) { toast(String(e)); }
+    finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
+  }
+  const composer = left ? h("div", { class: "composer" }, h("span", { class: "note" }, "You are not in this group. Your history stays on this computer; nobody can add you back without your OK."))
+    : h("div", { class: "composer" }, h("div", { class: "bar" }, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
+      h("span", { class: "note" }, `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices.`));
+  return [head, warn, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : h("p", { class: "empty" }, "No messages yet.")), composer].filter(Boolean);
+}
+function unverifiedText(d) {
+  const others = d.members.length - 1;
+  if (d.unverified === others) return others === 1 ? "The other person is not verified." : `None of the other ${others} people is verified.`;
+  return `${d.unverified} of the other ${others} ${d.unverified === 1 ? "is" : "are"} not verified.`;
+}
+function inviteScreen() {
+  const d = st.gdetail, back = () => { st.group = null; st.gdetail = null; st.screen = null; render(); };
+  const stranger = (d.invited_by || "").startsWith("~") || !d.invited_by;
+  const decide = async (accept) => {
+    try {
+      await invoke(accept ? "group_accept" : "group_decline", { id: d.id });
+      if (!accept) { st.group = null; st.gdetail = null; }
+      await refresh(); toast(accept ? `You joined ${d.name}.` : "Declined. They are not told.");
+    } catch (e) { toast(String(e)); }
+  };
+  return [header("Group invite", back), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
+    h("p", { class: "lead" }, `${stranger ? "Someone who is not in your contacts" : d.invited_by} added you to “${d.name}”. Nothing from the group is shown until you accept.`),
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, `${plural(d.members.length, "person", "people")} in it`),
+      d.members.map((m) => h("div", { class: "member" }, h("span", { class: "tile sm c-neutral", "aria-hidden": "true" }, memLetter(m)),
+        h("span", { class: "body" }, h("b", { style: "font-weight:600" }, m.you ? "You" : m.name, m.name === d.invited_by ? h("span", { class: "tag plain", style: "margin-left:8px" }, "added you") : null), h("span", { class: "note" }, m.you ? "" : m.contact ? (m.verified ? "In your contacts · verified" : "In your contacts · not verified") : "Not in your contacts"))))),
+    stranger ? h("div", { class: "status warn" }, h("b", {}, "You do not know who added you."), h("span", {}, "Join only if you expect this. Members you do not know are shown as not verified.")) : null,
+    h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:10px" }, h("button", { class: "btn big", type: "button", onclick: () => decide(false) }, "Decline"), h("button", { class: "btn primary big", type: "button", onclick: () => decide(true) }, "Join the group")),
+    h("p", { class: "note" }, "If you decline, they are not told, and anyone can invite you again.")))];
+}
+function segChoice(label, value, opts, onpick, disabled) {
+  return h("div", { class: "optrow" }, h("b", { style: "font-weight:600" }, label),
+    h("div", { class: "seg", role: "radiogroup", "aria-label": label }, opts.map(([v, l]) => h("button", { type: "button", role: "radio", "aria-checked": String(value === v), "aria-selected": String(value === v), disabled: disabled || null, onclick: () => onpick(v) }, l))));
+}
+function pickRow(c, checked, onchange) {
+  return h("label", { class: "pick" }, h("input", { type: "checkbox", checked: checked || null, onchange }), tile(c, true),
+    h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, c.name), h("div", { class: "note" }, c.agent ? "Agent: can post; its approvals stay private to you" : c.verified ? "Verified" : "Not verified: you can add them, and the group will show it")),
+    c.verified ? null : h("span", { class: "tag bad" }, "Not verified"));
+}
+function groupScreen() {
+  const d = st.gdetail, back = () => { st.screen = null; render(); };
+  if (!d) return [header("Group", back), h("p", { class: "empty" }, "This group is not available.")];
+  const joined = d.status === "joined";
+  const act = async (cmd, args, msg) => { try { const r = await invoke(cmd, { id: d.id, ...args }); await refresh(); if (msg) toast(msg); if (r && r.notes) r.notes.forEach(toast); } catch (e) { toast(String(e)); } };
+  const nameBox = (m) => {
+    const inp = h("input", { "aria-label": "Name for this person", placeholder: "A name for them", maxlength: "64" });
+    return h("span", { style: "display:flex;gap:8px;align-items:center;margin-top:4px" }, h("div", { class: "field", style: "flex:1" }, inp),
+      h("button", { class: "btn primary", type: "button", onclick: async () => { try { toast(await invoke("add_member_as_contact", { owner: m.owner, name: inp.value })); st.nameMember = null; await refresh(); } catch (e) { toast(String(e)); } } }, "Add"),
+      h("button", { class: "btn", type: "button", onclick: () => { st.nameMember = null; render(); } }, "Cancel"));
+  };
+  const memberRow = (m) => h("div", { class: "member" }, h("span", { class: "tile sm c-neutral", "aria-hidden": "true" }, memLetter(m)),
+    h("span", { class: "body" }, h("span", { style: "display:flex;gap:8px;align-items:center" }, h("b", { style: "font-weight:600" }, m.you ? "You" : m.name), m.admin ? h("span", { class: "tag plain" }, "admin") : null),
+      h("span", { class: "note" }, m.you ? "Your devices" : m.verified ? "Verified" : m.contact ? "Not verified" : "Not in your contacts · not verified"),
+      !m.you && m.fingerprint ? h("span", { class: "note mono" }, m.fingerprint) : null,
+      st.nameMember === m.owner ? nameBox(m) : null),
+    joined && !m.you ? h("span", { style: "display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end" },
+      m.contact && !m.verified ? h("button", { class: "btn", type: "button", onclick: () => { st.verifyFor = m.name; st.verifyDone = null; st.screen = "verify"; render(); } }, "Verify") : null,
+      !m.contact ? h("button", { class: "btn", type: "button", onclick: () => { st.nameMember = m.owner; render(); } }, "Add as contact") : null,
+      d.me_admin && !m.admin ? h("button", { class: "btn quiet", type: "button", onclick: () => act("group_make_admin", { owner: m.owner }, `${m.name} is an admin now.`) }, "Make admin") : null,
+      d.me_admin ? h("button", { class: "btn danger", type: "button", onclick: () => { if (confirm(`Remove ${m.name}?\n\nNew messages stop being encrypted for their devices. They keep what they already received.`)) act("group_remove", { owner: m.owner }, `${m.name} removed.`); } }, "Remove") : null) : null);
+  const room = d.max - d.members.length;
+  const addable = st.ov.contacts.filter((c) => !d.members.some((m) => m.name === c.name));
+  const picker = st.picking ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Add people"),
+    addable.length ? addable.map((c) => pickRow(c, st.picked.includes(c.name), (e) => {
+      if (e.target.checked && st.picked.length >= room) { e.target.checked = false; return toast(`Small groups are limited to ${d.max} people.`); }
+      st.picked = e.target.checked ? [...st.picked, c.name] : st.picked.filter((x) => x !== c.name);
+    })) : h("p", { class: "note", style: "margin:0" }, "Everyone in your contacts is already in this group."),
+    h("div", { style: "display:flex;gap:8px" },
+      h("button", { class: "btn primary", type: "button", onclick: async () => { const names = st.picked; if (!names.length) return toast("Choose at least one person."); st.picking = false; await act("group_add", { names }, "Added. They see messages from now on."); } }, "Add"),
+      h("button", { class: "btn", type: "button", onclick: () => { st.picking = false; render(); } }, "Cancel"))) : null;
+  return [header(d.name, back), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
+    h("section", { class: "card", style: "flex-direction:row;align-items:center;gap:14px" }, groupTile(false),
+      h("span", { style: "flex:1;min-width:0;display:flex;flex-direction:column;gap:6px" },
+        d.me_admin && joined ? h("div", { class: "field" }, h("input", { "aria-label": "Group name", value: d.name, onchange: (e) => { const v = e.target.value.trim(); if (v && v !== d.name) act("group_rename", { name: v }, `Renamed to “${v}”.`); else e.target.value = d.name; } })) : h("b", { style: "font-size:18px" }, d.name),
+        h("span", { class: "note" }, `${d.members.length} of up to ${d.max} people · ${d.unverified ? d.unverified + " not verified" : "everyone verified"}`))),
+    h("section", { class: "card", style: "gap:0" },
+      h("div", { style: "display:flex;align-items:center;padding-bottom:6px" }, h("h2", { class: "eyebrow", style: "flex:1" }, `Members (${d.members.length})`),
+        joined ? (d.can_add ? h("button", { class: "btn", type: "button", onclick: () => { st.picking = !st.picking; st.picked = []; render(); } }, icon("addperson"), "Add people") : h("span", { class: "note" }, d.members.length >= d.max ? `A small group holds up to ${d.max} people` : "Only admins can add people")) : null),
+      d.members.map(memberRow)),
+    picker,
+    joined ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Group settings"), d.me_admin ? null : h("span", { class: "note" }, "Only admins can change these."),
+      segChoice("Who can add people", d.add_by, [["admins", "Admins only"], ["any", "Any member"]], (v) => act("group_set_add_by", { any: v === "any" }, v === "any" ? "Any member can add people now." : "Only admins can add people now."), !d.me_admin),
+      h("span", { class: "note" }, "New members see messages from when they join. Earlier messages stay with the people who were here.")) : null,
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "How this group is encrypted"),
+      h("span", {}, "Each message is encrypted separately for every device of every member, over your one-to-one sessions. The relay sees separate messages, not a group, and not who is in it."),
+      h("span", { class: "note" }, "The member list is signed by whoever changes it. If two admins change it at once, every app picks the same winner. Someone you remove keeps what they already received. Bigger groups with stronger guarantees (MLS) are planned.")),
+    joined ? h("button", { class: "btn danger", style: "align-self:flex-start", type: "button", onclick: async () => {
+      if (!confirm(`Leave ${d.name}?\n\nYour history stays on this computer. Nobody can add you back without your OK.`)) return;
+      try { await invoke("group_leave", { id: d.id }); st.screen = null; await refresh(); toast(`You left ${d.name}.`); } catch (e) { toast(String(e)); }
+    } }, "Leave group") : null))];
+}
+function newGroupScreen() {
+  const f = st.newGroup, back = () => { st.screen = null; st.newGroup = null; render(); };
+  const sel = f.members.map((n) => st.ov.contacts.find((c) => c.name === n)).filter(Boolean), unv = sel.filter((c) => !c.verified);
+  const ok = () => f.name.trim() && f.members.length;
+  const nameIn = h("input", { "aria-label": "Group name", placeholder: "e.g. Pilot team", value: f.name, maxlength: "100", oninput: (e) => { f.name = e.target.value; const b = $("createGroup"); if (b) b.disabled = !ok(); } });
+  return [header("New group", back), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
+    h("p", { class: "lead" }, `A small group: up to ${GROUP_MAX} people. Every message is encrypted separately for each member's devices.`),
+    h("label", { class: "lbl", style: "font-weight:600" }, "Group name"), h("div", { class: "field" }, nameIn),
+    h("section", { class: "card", style: "gap:2px" }, h("h2", { class: "eyebrow", style: "padding-bottom:6px" }, `Members · ${sel.length} selected`),
+      st.ov.contacts.map((c) => pickRow(c, f.members.includes(c.name), (e) => {
+        if (e.target.checked && f.members.length >= GROUP_MAX - 1) { e.target.checked = false; return toast(`Small groups are limited to ${GROUP_MAX} people, including you.`); }
+        f.members = e.target.checked ? [...f.members, c.name] : f.members.filter((x) => x !== c.name); render();
+      }))),
+    unv.length ? h("div", { class: "status soft" }, h("span", {}, h("b", {}, unv.map((c) => c.name).join(", ")), unv.length > 1 ? " are" : " is", " not verified. You can still add them; everyone in the group will see it.")) : null,
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Settings (you will be admin)"),
+      segChoice("Who can add people", f.anyCanAdd ? "any" : "admins", [["admins", "Admins only"], ["any", "Any member"]], (v) => { f.anyCanAdd = v === "any"; render(); })),
+    h("button", { id: "createGroup", class: "btn primary big", type: "button", disabled: !ok() || null, onclick: async () => {
+      try {
+        const r = await invoke("group_create", { name: f.name, members: f.members, anyCanAdd: f.anyCanAdd });
+        st.newGroup = null; st.screen = null; await refresh(); await openGroup(r.group); toast(`Group created. Reached ${r.reached} of ${r.people} people.`); r.notes.forEach(toast);
+      } catch (e) { toast(String(e)); }
+    } }, "Create group")))];
+}
+
 const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { main: agentsMain }, devices: { main: devicesMain }, settings: { main: settingsMain } };
-const SCREENS = { requests: requestsScreen, verify: verifyScreen, add: addScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
+const SCREENS = { group: groupScreen, newgroup: newGroupScreen, requests: requestsScreen, verify: verifyScreen, add: addScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
 
 document.addEventListener("keydown", (e) => {
   if (!(MAC ? e.metaKey : e.ctrlKey) || e.altKey || $("app").hidden) return;

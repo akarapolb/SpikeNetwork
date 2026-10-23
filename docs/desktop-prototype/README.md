@@ -29,7 +29,7 @@ Desktop differences: an icon-only left rail (tooltips, Ctrl+1-4, Ctrl+L to lock)
 | Call (planned) | Phone and video buttons in a one-to-one conversation. Marked "planned, not built" (ADR 0018 draft): ringing, the identity check on call keys, direct vs relayed path, relay-only setting, mute, camera, hang up. Group conversations show the buttons disabled |
 | New group (new) | The new-group button above the chat list: name, pick members, settings |
 
-## Groups: decisions this design assumes (proposed, not agreed)
+## Groups: decisions this design assumes (agreed and built in the desktop app: ADR 0024; the 7-day history option and the agents card are not in the app yet)
 - **Small groups first, up to 20 people,** built on today's code: each message is encrypted separately for every member's devices over the existing one-to-one sessions. No new cryptography. Membership is kept by each member's app and is not yet one signed list; the screen says so. MLS (large groups, signed membership) stays in Phase 3.
 - **Admins add people by default;** a group can switch to "any member".
 - **New members see messages from when they join by default;** optionally the last 7 days, sent encrypted by the device that adds them.

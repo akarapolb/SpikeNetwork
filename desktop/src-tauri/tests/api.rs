@@ -951,3 +951,277 @@ async fn the_screen_is_told_as_soon_as_a_message_is_stored_not_after_the_idle_wa
         "told after {at:?} of a {total:?} sync"
     );
 }
+
+// ------------------------------------------------------------------ groups (ADR 0024)
+
+/// Alice (admin) with Bob and Carol, who know Alice but not each other.
+async fn pilot() -> (String, Dev, Dev, Dev, String) {
+    let url = relay().await;
+    let (alice, bob, carol) = (dev("alice", &url), dev("bob", &url), dev("carol", &url));
+    for d in [&alice, &bob, &carol] {
+        d.s.sync(IDLE).await.unwrap();
+    }
+    for (name, d) in [("Bob", &bob), ("Carol", &carol)] {
+        alice.s.add_contact(name, &card(d)).unwrap();
+        d.s.add_contact("Alice", &card(&alice)).unwrap();
+    }
+    let made = alice
+        .s
+        .group_create("Pilot", &["Bob".into(), "Carol".into()], false)
+        .await
+        .unwrap();
+    assert_eq!((made.reached, made.people), (2, 2));
+    for d in [&bob, &carol] {
+        assert_eq!(d.s.sync(IDLE).await.unwrap().groups, 1);
+    }
+    (url, alice, bob, carol, made.group)
+}
+
+#[tokio::test]
+async fn a_group_is_created_listed_and_written_in_from_the_app() {
+    let (_url, alice, bob, carol, gid) = pilot().await;
+
+    // It appears in the list for everyone, with no unread yet.
+    for d in [&alice, &bob, &carol] {
+        let g = &d.s.overview().unwrap().groups;
+        assert_eq!(g.len(), 1);
+        assert_eq!(
+            (g[0].name.as_str(), g[0].members, g[0].unread),
+            ("Pilot", 3, 0)
+        );
+        assert_eq!(g[0].status, "joined");
+    }
+    // Alice knows two unverified people; Bob knows Alice (a contact) and Carol (a stranger).
+    assert_eq!(alice.s.overview().unwrap().groups[0].unverified, 2);
+
+    // A message arrives with its author's name, unread, and in the preview.
+    assert_eq!(
+        alice
+            .s
+            .group_send(&gid, "agenda is above")
+            .await
+            .unwrap()
+            .reached,
+        2
+    );
+    assert_eq!(bob.s.sync(IDLE).await.unwrap().received, 1);
+    let row = &bob.s.overview().unwrap().groups[0];
+    assert_eq!(
+        (row.unread, row.last.as_deref()),
+        (1, Some("Alice: agenda is above"))
+    );
+    assert_eq!(bob.s.attention().unwrap(), 1, "the window title counts it");
+    let thread = bob.s.group_conversation(&gid, 50).unwrap();
+    assert_eq!(thread.len(), 1);
+    assert_eq!(
+        (
+            thread[0].from.as_deref(),
+            thread[0].from_verified,
+            thread[0].out
+        ),
+        (Some("Alice"), false, false)
+    );
+    bob.s.group_mark_read(&gid).await.unwrap();
+    assert_eq!(bob.s.overview().unwrap().groups[0].unread, 0);
+    assert_eq!(bob.s.attention().unwrap(), 0);
+
+    // Bob writes to Carol, whom he has never met: she sees a name she can recognise by its code.
+    bob.s.group_send(&gid, "hi carol, bob here").await.unwrap();
+    carol.s.sync(IDLE).await.unwrap();
+    let msgs = carol.s.group_conversation(&gid, 50).unwrap();
+    let last = msgs.last().unwrap();
+    assert!(last.from.as_deref().unwrap().starts_with('~'), "{last:?}");
+    let detail = carol.s.group(&gid).unwrap();
+    let bobm = detail
+        .members
+        .iter()
+        .find(|m| !m.you && !m.contact)
+        .unwrap();
+    assert!(bobm.fingerprint.is_some() && !bobm.verified);
+    assert_eq!(
+        (detail.unverified, detail.me_admin, detail.can_add),
+        (2, false, false)
+    );
+
+    // She can keep him as a contact; his messages then carry the name she gave.
+    carol.s.add_member_as_contact(&bobm.owner, "Bob").unwrap();
+    assert_eq!(
+        carol
+            .s
+            .group(&gid)
+            .unwrap()
+            .members
+            .iter()
+            .filter(|m| m.contact)
+            .count(),
+        2
+    );
+    assert_eq!(
+        carol
+            .s
+            .group_conversation(&gid, 50)
+            .unwrap()
+            .last()
+            .unwrap()
+            .from
+            .as_deref(),
+        Some("Bob")
+    );
+    assert!(carol
+        .s
+        .add_member_as_contact(&"0".repeat(64), "Nobody")
+        .is_err());
+
+    // Empty and oversize messages never reach the network.
+    assert!(alice.s.group_send(&gid, "  ").await.is_err());
+    assert!(alice
+        .s
+        .group_send(&gid, &"x".repeat(17 * 1024))
+        .await
+        .is_err());
+    assert!(alice.s.group_send("nope", "hi").await.is_err());
+
+    // Editing and deleting your own group message reaches everyone; others' messages are not yours.
+    let mine = alice.s.group_conversation(&gid, 50).unwrap();
+    let id = mine.iter().find(|m| m.out).unwrap().id.clone();
+    alice.s.edit(&id, "agenda v2").await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    let seen = bob.s.group_conversation(&gid, 50).unwrap();
+    let m = seen.iter().find(|m| m.id == id).unwrap();
+    assert_eq!((m.body.as_str(), m.edited), ("agenda v2", true));
+    assert!(carol.s.edit(&id, "mine now").await.is_err());
+    alice.s.delete(&id).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    assert!(bob
+        .s
+        .group_conversation(&gid, 50)
+        .unwrap()
+        .iter()
+        .any(|m| m.id == id && m.deleted));
+}
+
+#[tokio::test]
+async fn members_and_settings_change_only_as_the_rules_allow() {
+    let (_url, alice, bob, carol, gid) = pilot().await;
+    let bob_owner = owner_key(&bob);
+    let carol_owner = owner_key(&carol);
+
+    let a = alice.s.group(&gid).unwrap();
+    assert_eq!(
+        (a.me_admin, a.can_add, a.add_by.as_str(), a.version, a.max),
+        (true, true, "admins", 1, 20)
+    );
+    // A member who is not an admin can change nothing, and cannot add while it is admins-only.
+    assert!(bob.s.group_rename(&gid, "Mine").await.is_err());
+    assert!(bob.s.group_remove(&gid, &carol_owner).await.is_err());
+    assert!(bob.s.group_make_admin(&gid, &bob_owner).await.is_err());
+    assert!(bob.s.group_add(&gid, &["Alice".into()]).await.is_err());
+    assert!(!bob.s.group(&gid).unwrap().can_add);
+
+    // Alice opens adding to everyone, renames, and makes Bob an admin; they hear about it.
+    alice.s.group_set_add_by(&gid, true).await.unwrap();
+    alice.s.group_rename(&gid, "Pilot team").await.unwrap();
+    alice.s.group_make_admin(&gid, &bob_owner).await.unwrap();
+    let r = bob.s.sync(IDLE).await.unwrap();
+    assert!(r.groups >= 1);
+    let b = bob.s.group(&gid).unwrap();
+    assert_eq!(
+        (b.name.as_str(), b.add_by.as_str(), b.me_admin, b.can_add),
+        ("Pilot team", "any", true, true)
+    );
+    assert_eq!(b.members.iter().filter(|m| m.admin).count(), 2);
+    assert!(
+        alice.s.group_rename(&gid, "").await.is_err(),
+        "a group needs a name"
+    );
+
+    // Alice removes Carol: she learns it, keeps the history as read-only, and cannot write.
+    alice.s.group_send(&gid, "before").await.unwrap();
+    carol.s.sync(IDLE).await.unwrap();
+    alice.s.group_remove(&gid, &carol_owner).await.unwrap();
+    let r = carol.s.sync(IDLE).await.unwrap();
+    assert!(
+        r.notes.iter().any(|n| n.contains("removed")),
+        "{:?}",
+        r.notes
+    );
+    let row = &carol.s.overview().unwrap().groups[0];
+    assert_eq!((row.status.as_str(), row.members), ("left", 2));
+    assert!(carol
+        .s
+        .group_conversation(&gid, 50)
+        .unwrap()
+        .iter()
+        .any(|m| m.body == "before"));
+    assert!(carol.s.group_send(&gid, "still here?").await.is_err());
+    alice.s.group_send(&gid, "after").await.unwrap();
+    carol.s.sync(IDLE).await.unwrap();
+    assert!(!carol
+        .s
+        .group_conversation(&gid, 50)
+        .unwrap()
+        .iter()
+        .any(|m| m.body == "after"));
+
+    // Bob leaves, after hearing about Carol's removal (otherwise the two changes would be
+    // concurrent and the one with the lower hash would win).
+    bob.s.sync(IDLE).await.unwrap();
+    bob.s.group_leave(&gid).await.unwrap();
+    assert_eq!(bob.s.group(&gid).unwrap().status, "left");
+    let row = &bob.s.overview().unwrap().groups[0];
+    assert_eq!(row.status, "left", "listed because it has a history");
+    assert!(bob.s.group_send(&gid, "still here?").await.is_err());
+    alice.s.sync(IDLE).await.unwrap();
+    assert_eq!(alice.s.group(&gid).unwrap().members.len(), 1);
+}
+
+#[tokio::test]
+async fn an_invite_from_someone_you_do_not_know_waits_for_you() {
+    let (url, alice, _bob, _carol, gid) = pilot().await;
+    // Eve is Alice's contact, but Eve has never heard of Alice.
+    let eve = dev("eve", &url);
+    eve.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Eve", &card(&eve)).unwrap();
+    alice.s.group_add(&gid, &["Eve".into()]).await.unwrap();
+
+    let r = eve.s.sync(IDLE).await.unwrap();
+    assert_eq!(r.message_requests, 1, "counted so the screen refreshes");
+    let ov = eve.s.overview().unwrap();
+    assert_eq!(ov.requests, 0, "not in the message-request list");
+    assert_eq!(
+        (ov.groups[0].status.as_str(), ov.groups[0].name.as_str()),
+        ("invited", "Pilot")
+    );
+    assert!(ov.groups[0].invited_by.as_deref().unwrap().starts_with('~'));
+    assert_eq!(eve.s.attention().unwrap(), 1, "an invite asks for you");
+    assert!(eve.s.group_send(&gid, "hi").await.is_err());
+
+    alice
+        .s
+        .group_send(&gid, "before you accepted")
+        .await
+        .unwrap();
+    eve.s.sync(IDLE).await.unwrap();
+    assert!(eve.s.group_conversation(&gid, 50).unwrap().is_empty());
+
+    eve.s.group_accept(&gid).unwrap();
+    assert_eq!(eve.s.overview().unwrap().groups[0].status, "joined");
+    assert_eq!(eve.s.attention().unwrap(), 0);
+    alice.s.group_send(&gid, "welcome eve").await.unwrap();
+    eve.s.sync(IDLE).await.unwrap();
+    assert_eq!(eve.s.group_conversation(&gid, 50).unwrap().len(), 1);
+    assert!(eve.s.group_send(&gid, "thanks").await.is_ok());
+
+    // Declining keeps you out, and a second invite after leaving is an invite again.
+    let zed = dev("zed", &url);
+    zed.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Zed", &card(&zed)).unwrap();
+    alice.s.group_add(&gid, &["Zed".into()]).await.unwrap();
+    zed.s.sync(IDLE).await.unwrap();
+    zed.s.group_decline(&gid).unwrap();
+    assert!(
+        zed.s.overview().unwrap().groups.is_empty(),
+        "nothing to show: no history"
+    );
+    assert!(zed.s.group_accept(&gid).is_err());
+}

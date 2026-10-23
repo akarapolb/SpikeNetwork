@@ -34,6 +34,12 @@ struct Bundle {
     device_list: DeviceList,
     contacts: Vec<Contact>,
     messages: Vec<StoredMessage>,
+    /// Groups you are in or left, so the new device can take part (ADR 0024).
+    #[serde(default)]
+    groups: Vec<crate::groups::Record>,
+    /// Cards of group members who are not contacts.
+    #[serde(default)]
+    member_cards: std::collections::BTreeMap<String, String>,
     /// Bytes of recent attachments this device holds (older ones are fetched on demand).
     #[serde(default)]
     files: Vec<BundledFile>,
@@ -132,6 +138,7 @@ pub async fn receive(
         }
     }
     home.save_contacts(&contacts)?;
+    crate::groups::install_from_link(home, b.groups.clone(), b.member_cards.clone())?;
     let store = home.messages()?;
     let mut n = 0;
     for m in &b.messages {
@@ -255,6 +262,7 @@ pub async fn finish(
         }
     };
     let contacts = home.load_contacts()?;
+    let (groups, member_cards) = crate::groups::export_for_link(home)?;
     let att_cut = now.saturating_sub(BUNDLE_ATTACHMENT_DAYS * 86_400_000);
     let mut files = Vec::new();
     for m in messages
@@ -274,6 +282,8 @@ pub async fn finish(
         device_list: list.clone(),
         contacts,
         messages,
+        groups,
+        member_cards,
         files,
     };
     let frames = p.session.seal(&serde_json::to_vec(&bundle)?)?;

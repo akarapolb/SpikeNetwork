@@ -8,8 +8,8 @@ pub mod api;
 pub mod updates;
 
 use api::{
-    ActionTypeDto, AgentsDto, BlockedDto, GrantRequest, InstalledDto, LinkedDto, MessageDto,
-    MessageRequestDto, Overview, Session, SyncDto,
+    ActionTypeDto, AgentsDto, BlockedDto, GrantRequest, GroupDetailDto, GroupSendDto, InstalledDto,
+    LinkedDto, MessageDto, MessageRequestDto, Overview, Session, SyncDto,
 };
 use spike_core::vault::KdfParams;
 use std::path::PathBuf;
@@ -348,6 +348,123 @@ fn unblock(state: State<'_, AppState>, owner: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn group(state: State<'_, AppState>, id: String) -> Result<GroupDetailDto, String> {
+    session(&state)?.group(&id).map_err(err)
+}
+
+#[tauri::command]
+fn group_conversation(state: State<'_, AppState>, id: String) -> Result<Vec<MessageDto>, String> {
+    session(&state)?.group_conversation(&id, 200).map_err(err)
+}
+
+#[tauri::command]
+async fn group_create(
+    state: State<'_, AppState>,
+    name: String,
+    members: Vec<String>,
+    any_can_add: bool,
+) -> Result<GroupSendDto, String> {
+    session(&state)?
+        .group_create(&name, &members, any_can_add)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn group_send(
+    state: State<'_, AppState>,
+    id: String,
+    text: String,
+) -> Result<GroupSendDto, String> {
+    session(&state)?.group_send(&id, &text).await.map_err(err)
+}
+
+#[tauri::command]
+async fn group_add(
+    state: State<'_, AppState>,
+    id: String,
+    names: Vec<String>,
+) -> Result<GroupSendDto, String> {
+    session(&state)?.group_add(&id, &names).await.map_err(err)
+}
+
+#[tauri::command]
+async fn group_remove(
+    state: State<'_, AppState>,
+    id: String,
+    owner: String,
+) -> Result<GroupSendDto, String> {
+    session(&state)?
+        .group_remove(&id, &owner)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn group_make_admin(
+    state: State<'_, AppState>,
+    id: String,
+    owner: String,
+) -> Result<GroupSendDto, String> {
+    session(&state)?
+        .group_make_admin(&id, &owner)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn group_rename(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<GroupSendDto, String> {
+    session(&state)?.group_rename(&id, &name).await.map_err(err)
+}
+
+#[tauri::command]
+async fn group_set_add_by(
+    state: State<'_, AppState>,
+    id: String,
+    any: bool,
+) -> Result<GroupSendDto, String> {
+    session(&state)?
+        .group_set_add_by(&id, any)
+        .await
+        .map_err(err)
+}
+
+#[tauri::command]
+async fn group_leave(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.group_leave(&id).await.map_err(err)
+}
+
+#[tauri::command]
+fn group_accept(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.group_accept(&id).map_err(err)
+}
+
+#[tauri::command]
+fn group_decline(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.group_decline(&id).map_err(err)
+}
+
+#[tauri::command]
+async fn group_mark_read(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    session(&state)?.group_mark_read(&id).await.map_err(err)
+}
+
+#[tauri::command]
+fn add_member_as_contact(
+    state: State<'_, AppState>,
+    owner: String,
+    name: String,
+) -> Result<String, String> {
+    session(&state)?
+        .add_member_as_contact(&owner, &name)
+        .map_err(err)
+}
+
+#[tauri::command]
 fn action_types() -> Vec<ActionTypeDto> {
     api::action_types()
 }
@@ -589,6 +706,20 @@ pub fn run() {
             link_cancel,
             link_begin,
             link_finish,
+            group,
+            group_conversation,
+            group_create,
+            group_send,
+            group_add,
+            group_remove,
+            group_make_admin,
+            group_rename,
+            group_set_add_by,
+            group_leave,
+            group_accept,
+            group_decline,
+            group_mark_read,
+            add_member_as_contact,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Spike Connect");

@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use spike_cli::agent::{self, Status};
 use spike_cli::client::Relay;
+use spike_cli::groups;
 use spike_cli::link;
 use spike_cli::messages::Direction;
 use spike_cli::requests;
@@ -20,6 +21,7 @@ use spike_cli::transport::{validate_ca_pem, Target, TransportOpts};
 use spike_cli::{ops, Outcome};
 use spike_core::action;
 use spike_core::agent::{DecidedBy, Decision};
+use spike_core::group::{AddBy, GroupState, MAX_MEMBERS};
 use spike_core::link::LinkSession;
 use spike_core::owner::IdentityCard;
 use spike_core::vault::KdfParams;
@@ -141,11 +143,70 @@ pub struct ContactDto {
 pub struct Overview {
     pub me: Me,
     pub contacts: Vec<ContactDto>,
+    /// Groups you are in, were invited to, or left but still have a history for (ADR 0024).
+    pub groups: Vec<GroupDto>,
     pub waiting: usize,
     /// Message requests from strangers, waiting for your decision (ADR 0021).
     pub requests: usize,
     pub relay: String,
     pub relay_trust: RelayTrustDto,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct GroupDto {
+    /// The group id (hex). Pass it back to the other group calls.
+    pub id: String,
+    pub name: String,
+    pub members: usize,
+    pub unread: usize,
+    /// `joined`, `invited` (nothing is shown until you accept) or `left` (history only).
+    pub status: String,
+    /// Who added you, while `invited`.
+    pub invited_by: Option<String>,
+    /// Members (not you) who are not verified contacts.
+    pub unverified: usize,
+    pub last: Option<String>,
+    pub last_ts: Option<u64>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct MemberDto {
+    /// Owner key (hex): what remove and make-admin take.
+    pub owner: String,
+    /// "you", a contact's name, or "~" and the start of their fingerprint.
+    pub name: String,
+    pub you: bool,
+    pub admin: bool,
+    pub contact: bool,
+    pub verified: bool,
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct GroupDetailDto {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub invited_by: Option<String>,
+    pub members: Vec<MemberDto>,
+    pub me_admin: bool,
+    /// You may add people now (you are in it, the settings allow it, and there is room).
+    pub can_add: bool,
+    /// `admins` or `any`.
+    pub add_by: String,
+    pub version: u64,
+    pub max: usize,
+    pub unverified: usize,
+}
+
+/// What a group change or message reached.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct GroupSendDto {
+    pub group: String,
+    /// Other members who got it on at least one device, and how many others there are.
+    pub reached: usize,
+    pub people: usize,
+    pub notes: Vec<String>,
 }
 
 /// One text message held for a message request. Shown only when you ask to see it.
@@ -194,6 +255,10 @@ pub struct MessageDto {
     pub edited: bool,
     pub deleted: bool,
     pub file: Option<FileDto>,
+    /// In a group: who wrote it (not you). `None` in a one-to-one chat.
+    pub from: Option<String>,
+    /// In a group: the author is a verified contact. Always true in a one-to-one chat.
+    pub from_verified: bool,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -202,6 +267,8 @@ pub struct SyncDto {
     pub agent_requests: usize,
     /// New message requests from strangers.
     pub message_requests: usize,
+    /// Group changes, joins and removals.
+    pub groups: usize,
     pub notes: Vec<String>,
 }
 
@@ -419,7 +486,15 @@ impl Session {
             .iter()
             .filter(|r| r.status == "waiting")
             .count();
-        Ok(unread + waiting + requests::list(&self.home)?.len())
+        let group_unread: usize = groups::unread_counts(&self.home)?
+            .iter()
+            .map(|(_, n)| n)
+            .sum();
+        let invites = groups::list(&self.home)?
+            .iter()
+            .filter(|r| r.status == groups::Status::Invited)
+            .count();
+        Ok(unread + group_unread + invites + waiting + requests::list(&self.home)?.len())
     }
 
     // ------------------------------------------------------------ read side
@@ -498,6 +573,7 @@ impl Session {
                 removed: !self.home.this_device_is_listed()?,
             },
             contacts,
+            groups: self.group_rows()?,
             waiting,
             requests: requests::list(&self.home)?.len(),
             relay: self.relay(),
@@ -527,22 +603,7 @@ impl Session {
             .messages()?
             .conversation(&key, limit.clamp(1, 500))?
             .into_iter()
-            .map(|m| MessageDto {
-                out: m.direction == Direction::Out,
-                body: if m.deleted { String::new() } else { m.body },
-                file: if m.deleted {
-                    None
-                } else {
-                    m.attachment.map(|a| FileDto {
-                        name: spike_core::attachment::safe_file_name(&a.name),
-                        size: a.size,
-                    })
-                },
-                id: m.id,
-                ts: m.ts,
-                edited: m.edited,
-                deleted: m.deleted,
-            })
+            .map(|m| message_dto(m, None, true))
             .collect())
     }
 
@@ -625,6 +686,7 @@ impl Session {
             received: 0,
             agent_requests: 0,
             message_requests: 0,
+            groups: 0,
             notes: vec![],
         };
         ops::recv(&self.home, self.target(), Some(idle), |o| {
@@ -636,6 +698,15 @@ impl Session {
                 }
                 Outcome::AgentRemotePending { .. } => out.agent_requests += 1,
                 Outcome::MessageRequest { new: true, .. } => out.message_requests += 1,
+                Outcome::GroupMessage { .. } => out.received += 1,
+                Outcome::GroupInvite { .. } => out.message_requests += 1,
+                Outcome::GroupJoined { .. } | Outcome::GroupChanged { .. } => out.groups += 1,
+                Outcome::GroupRemoved { group, .. } => {
+                    out.groups += 1;
+                    out.notes.push(format!(
+                        "You were removed from {group}. Its history stays on this computer."
+                    ));
+                }
                 Outcome::UnknownSender { .. } => out.notes.push(
                     "A message from someone who is not in your contacts and did not introduce themselves was dropped."
                         .into(),
@@ -1132,11 +1203,309 @@ fn dto(
     }
 }
 
+fn message_dto(
+    m: spike_cli::messages::StoredMessage,
+    from: Option<String>,
+    from_verified: bool,
+) -> MessageDto {
+    MessageDto {
+        out: m.direction == Direction::Out,
+        body: if m.deleted { String::new() } else { m.body },
+        file: if m.deleted {
+            None
+        } else {
+            m.attachment.map(|a| FileDto {
+                name: spike_core::attachment::safe_file_name(&a.name),
+                size: a.size,
+            })
+        },
+        id: m.id,
+        ts: m.ts,
+        edited: m.edited,
+        deleted: m.deleted,
+        from,
+        from_verified,
+    }
+}
+
 fn preview(body: &str, file: Option<&str>) -> String {
     let text: String = body.chars().filter(|c| !c.is_control()).take(80).collect();
     match (text.is_empty(), file) {
         (true, Some(f)) => format!("File: {}", spike_core::attachment::safe_file_name(f)),
         (_, Some(_)) => format!("{text} (file)"),
         _ => text,
+    }
+}
+
+// ------------------------------------------------------------- groups (ADR 0024)
+
+impl Session {
+    fn my_owner(&self) -> Result<String> {
+        Ok(self.home.load_device_list()?.owner)
+    }
+
+    /// Members other than you who are not verified contacts.
+    fn unverified_members(&self, s: &GroupState) -> usize {
+        let contacts = self.home.load_contacts().unwrap_or_default();
+        let me = self.my_owner().unwrap_or_default();
+        s.members
+            .iter()
+            .filter(|m| m.owner != me)
+            .filter(|m| {
+                !contacts.iter().any(|c| {
+                    c.verified && c.conversation_key().ok().as_deref() == Some(m.owner.as_str())
+                })
+            })
+            .count()
+    }
+
+    fn author_verified(&self, owner: &str) -> bool {
+        self.home.load_contacts().is_ok_and(|cs| {
+            cs.iter()
+                .any(|c| c.verified && c.conversation_key().ok().as_deref() == Some(owner))
+        })
+    }
+
+    /// The rows for the chat list: groups you are in, invites, and groups you left that
+    /// still have a history. Ordering is the UI's job.
+    fn group_rows(&self) -> Result<Vec<GroupDto>> {
+        let unread: BTreeMap<String, usize> =
+            groups::unread_counts(&self.home)?.into_iter().collect();
+        let store = self.home.messages()?;
+        let mut out = Vec::new();
+        for r in groups::list(&self.home)? {
+            let s = r.current()?;
+            let last = store
+                .conversation(r.id(), usize::MAX)?
+                .into_iter()
+                .rfind(|m| !groups::is_ghost(m));
+            if r.status == groups::Status::Left && last.is_none() {
+                continue;
+            }
+            out.push(GroupDto {
+                id: r.id().to_string(),
+                members: s.members.len(),
+                unread: unread.get(r.id()).copied().unwrap_or(0),
+                status: status_word(r.status).into(),
+                invited_by: r
+                    .invited_by
+                    .as_deref()
+                    .map(|o| groups::display_name(&self.home, o)),
+                unverified: self.unverified_members(&s),
+                last: last.as_ref().map(|m| {
+                    if m.deleted {
+                        "Message deleted".into()
+                    } else {
+                        let who = match (m.direction, m.author.as_deref()) {
+                            (Direction::Out, _) => "You".to_string(),
+                            (_, Some(a)) => groups::display_name(&self.home, a),
+                            _ => "?".to_string(),
+                        };
+                        format!("{who}: {}", preview(&m.body, None))
+                    }
+                }),
+                last_ts: last.map(|m| m.ts),
+                name: s.name,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Members, settings and your rights in one group.
+    pub fn group(&self, id: &str) -> Result<GroupDetailDto> {
+        let r = groups::find(&self.home, id)?;
+        let s = r.current()?;
+        let me = self.my_owner()?;
+        let contacts = self.home.load_contacts()?;
+        let cards = groups::member_cards(&self.home)?;
+        let members = s
+            .members
+            .iter()
+            .map(|m| {
+                let contact = contacts
+                    .iter()
+                    .find(|c| c.conversation_key().ok().as_deref() == Some(m.owner.as_str()));
+                let fingerprint = contact
+                    .and_then(|c| c.identity().ok())
+                    .or_else(|| {
+                        cards
+                            .get(&m.owner)
+                            .and_then(|c| IdentityCard::decode(c).ok())
+                    })
+                    .map(|c| c.fingerprint());
+                MemberDto {
+                    owner: m.owner.clone(),
+                    name: groups::display_name(&self.home, &m.owner),
+                    you: m.owner == me,
+                    admin: s.is_admin(&m.owner),
+                    contact: contact.is_some(),
+                    verified: contact.is_some_and(|c| c.verified),
+                    fingerprint,
+                }
+            })
+            .collect();
+        let me_admin = s.is_admin(&me);
+        Ok(GroupDetailDto {
+            id: r.id().to_string(),
+            status: status_word(r.status).into(),
+            invited_by: r
+                .invited_by
+                .as_deref()
+                .map(|o| groups::display_name(&self.home, o)),
+            members,
+            me_admin,
+            can_add: r.status == groups::Status::Joined
+                && s.members.len() < MAX_MEMBERS
+                && (me_admin || s.add_by == AddBy::Any),
+            add_by: if s.add_by == AddBy::Any {
+                "any"
+            } else {
+                "admins"
+            }
+            .into(),
+            version: s.version,
+            max: MAX_MEMBERS,
+            unverified: self.unverified_members(&s),
+            name: s.name,
+        })
+    }
+
+    pub fn group_conversation(&self, id: &str, limit: usize) -> Result<Vec<MessageDto>> {
+        let (_, msgs) = groups::history(&self.home, id, limit.clamp(1, 500))?;
+        Ok(msgs
+            .into_iter()
+            .map(|m| {
+                let author = m.author.clone().unwrap_or_default();
+                let (from, verified) = if m.direction == Direction::Out {
+                    (None, true)
+                } else {
+                    (
+                        Some(groups::display_name(&self.home, &author)),
+                        self.author_verified(&author),
+                    )
+                };
+                message_dto(m, from, verified)
+            })
+            .collect())
+    }
+
+    fn sent_dto(group: &str, r: &groups::GroupSend) -> GroupSendDto {
+        GroupSendDto {
+            group: group.to_string(),
+            reached: r.reached,
+            people: r.people,
+            notes: r.notes.clone(),
+        }
+    }
+
+    /// Create a group with some of your contacts. You are its only admin.
+    pub async fn group_create(
+        &self,
+        name: &str,
+        members: &[String],
+        any_can_add: bool,
+    ) -> Result<GroupSendDto> {
+        if members.is_empty() {
+            bail!("choose at least one person to add");
+        }
+        let add_by = if any_can_add {
+            AddBy::Any
+        } else {
+            AddBy::Admins
+        };
+        let _net = self.net.lock().await;
+        let (s, r) = groups::create(&self.home, self.target(), name, members, add_by).await?;
+        Ok(Self::sent_dto(&s.group, &r))
+    }
+
+    pub async fn group_send(&self, id: &str, text: &str) -> Result<GroupSendDto> {
+        let text = text.trim_end();
+        if text.trim().is_empty() {
+            bail!("nothing to send");
+        }
+        if text.len() > MAX_MESSAGE {
+            bail!("messages are limited to {} KiB", MAX_MESSAGE / 1024);
+        }
+        let gid = groups::find(&self.home, id)?.id().to_string();
+        let _net = self.net.lock().await;
+        let r = groups::send(&self.home, self.target(), &gid, text).await?;
+        Ok(Self::sent_dto(&gid, &r))
+    }
+
+    pub async fn group_add(&self, id: &str, names: &[String]) -> Result<GroupSendDto> {
+        if names.is_empty() {
+            bail!("choose at least one person to add");
+        }
+        let _net = self.net.lock().await;
+        let (s, r) = groups::add(&self.home, self.target(), id, names).await?;
+        Ok(Self::sent_dto(&s.group, &r))
+    }
+
+    /// Remove a member by owner key (from [`MemberDto::owner`]).
+    pub async fn group_remove(&self, id: &str, owner: &str) -> Result<GroupSendDto> {
+        let _net = self.net.lock().await;
+        let (s, r) = groups::remove(&self.home, self.target(), id, owner).await?;
+        Ok(Self::sent_dto(&s.group, &r))
+    }
+
+    pub async fn group_make_admin(&self, id: &str, owner: &str) -> Result<GroupSendDto> {
+        let _net = self.net.lock().await;
+        let (s, r) = groups::make_admin(&self.home, self.target(), id, owner).await?;
+        Ok(Self::sent_dto(&s.group, &r))
+    }
+
+    pub async fn group_rename(&self, id: &str, name: &str) -> Result<GroupSendDto> {
+        let _net = self.net.lock().await;
+        let (s, r) = groups::rename(&self.home, self.target(), id, name).await?;
+        Ok(Self::sent_dto(&s.group, &r))
+    }
+
+    pub async fn group_set_add_by(&self, id: &str, any: bool) -> Result<GroupSendDto> {
+        let add_by = if any { AddBy::Any } else { AddBy::Admins };
+        let _net = self.net.lock().await;
+        let (s, r) = groups::set_add_by(&self.home, self.target(), id, add_by).await?;
+        Ok(Self::sent_dto(&s.group, &r))
+    }
+
+    /// Leave a group. Your history stays on this computer; nobody can add you back without your OK.
+    pub async fn group_leave(&self, id: &str) -> Result<()> {
+        let _net = self.net.lock().await;
+        groups::leave(&self.home, self.target(), id).await?;
+        Ok(())
+    }
+
+    pub fn group_accept(&self, id: &str) -> Result<()> {
+        groups::accept(&self.home, id)?;
+        Ok(())
+    }
+
+    pub fn group_decline(&self, id: &str) -> Result<()> {
+        groups::decline(&self.home, id)
+    }
+
+    /// Mark a group read here, and on your other devices if reachable.
+    pub async fn group_mark_read(&self, id: &str) -> Result<()> {
+        groups::find(&self.home, id)?;
+        let _net = self.net.lock().await;
+        // The marker moves on this device first; telling the others may fail while offline.
+        let _ = groups::mark_read(&self.home, self.target(), id).await;
+        Ok(())
+    }
+
+    /// Keep a group member who is not a contact as a contact (not verified), under `name`.
+    pub fn add_member_as_contact(&self, owner: &str, name: &str) -> Result<String> {
+        let card = groups::member_cards(&self.home)?
+            .get(owner)
+            .cloned()
+            .ok_or_else(|| anyhow!("no card is known for that member yet"))?;
+        self.add_contact(name, &card)
+    }
+}
+
+fn status_word(s: groups::Status) -> &'static str {
+    match s {
+        groups::Status::Joined => "joined",
+        groups::Status::Invited => "invited",
+        groups::Status::Left => "left",
     }
 }

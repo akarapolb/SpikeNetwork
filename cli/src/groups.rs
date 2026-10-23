@@ -115,10 +115,13 @@ fn my_owner(home: &Home) -> Result<String> {
     Ok(home.load_device_list()?.owner)
 }
 
-/// Find a group by exact name or by the first 6+ characters of its id.
+/// Find a group by its exact id, its exact name, or the first 6+ characters of its id.
 pub fn find(home: &Home, query: &str) -> Result<Record> {
     let all = list(home)?;
     let q = query.trim();
+    if let Some(r) = all.iter().find(|r| r.id() == q) {
+        return Ok(r.clone());
+    }
     let mut hits: Vec<&Record> = all
         .iter()
         .filter(|r| r.current().is_ok_and(|s| s.name == q))
@@ -767,11 +770,104 @@ fn key_bytes(hex_key: &str) -> Result<[u8; 32]> {
     Ok(out)
 }
 
-/// Stored messages of a group, oldest first.
+/// Incoming messages in each joined group newer than its read marker, by group id.
+pub fn unread_counts(home: &Home) -> Result<Vec<(String, usize)>> {
+    let store = home.messages()?;
+    let mut out = Vec::new();
+    for r in list(home)? {
+        if r.status != Status::Joined {
+            continue;
+        }
+        let marker = home.read_marker(r.id())?;
+        let n = store
+            .conversation(r.id(), usize::MAX)?
+            .iter()
+            .filter(|m| m.direction == Direction::In && !m.deleted && m.ts > marker)
+            .count();
+        out.push((r.id().to_string(), n));
+    }
+    Ok(out)
+}
+
+/// Mark a group read up to its newest incoming message, here and on your other devices.
+/// Returns how many other devices were told.
+pub async fn mark_read(home: &Home, relay: impl Into<Target>, group: &str) -> Result<usize> {
+    let peer = find(home, group)?.id().to_string();
+    let upto = home
+        .messages()?
+        .conversation(&peer, usize::MAX)?
+        .iter()
+        .filter(|m| m.direction == Direction::In)
+        .map(|m| m.ts)
+        .max()
+        .unwrap_or(0);
+    home.advance_read_marker(&peer, upto)?;
+    ops::broadcast_own(
+        home,
+        relay.into(),
+        &crate::sync::SyncMsg::Read { peer, upto },
+    )
+    .await
+}
+
+/// What a newly linked device needs to take part in your groups: the groups you are in or left
+/// (an invite stays on the device that holds its session), and the cards of members who are not
+/// contacts. Messages waiting for a state are not copied.
+pub fn export_for_link(home: &Home) -> Result<(Vec<Record>, BTreeMap<String, String>)> {
+    let records = list(home)?
+        .into_iter()
+        .filter(|r| r.status != Status::Invited)
+        .map(|mut r| {
+            r.held.clear();
+            r.invited_by = None;
+            r.stranger = None;
+            r
+        })
+        .collect();
+    Ok((records, member_cards(home)?))
+}
+
+/// Keep groups and member cards that came with a link bundle. Every chain is checked again
+/// (signatures and rules); a record that fails is skipped, and groups already here are kept as they are.
+pub fn install_from_link(
+    home: &Home,
+    records: Vec<Record>,
+    cards: BTreeMap<String, String>,
+) -> Result<()> {
+    let mut all = list(home)?;
+    for mut r in records {
+        let Ok(chain) = r.chain() else { continue };
+        if all.iter().any(|x| x.id() == r.id()) || r.status == Status::Invited {
+            continue;
+        }
+        r.set_chain(&chain);
+        r.held.clear();
+        all.push(r);
+    }
+    save(home, &all)?;
+    let mut have = member_cards(home)?;
+    for (owner, card) in cards {
+        if IdentityCard::decode(&card).is_ok_and(|c| c.owner_hex() == owner) {
+            have.entry(owner).or_insert(card);
+        }
+    }
+    home.save_json(MEMBERS, &have)
+}
+
+/// A tombstone for a message this device never had: a delete that arrived first, or for something
+/// sent before you joined. It stays so a late copy cannot bring the message back, but it is not a
+/// message anyone should see, so listings skip it.
+pub fn is_ghost(m: &StoredMessage) -> bool {
+    m.deleted && m.ts == 0
+}
+
+/// Stored messages of a group, oldest first, without ghosts.
 pub fn history(home: &Home, group: &str, limit: usize) -> Result<(Record, Vec<StoredMessage>)> {
     let rec = find(home, group)?;
-    let msgs = home.messages()?.conversation(rec.id(), limit)?;
-    Ok((rec, msgs))
+    let mut msgs = home.messages()?.conversation(rec.id(), usize::MAX)?;
+    msgs.retain(|m| !is_ghost(m));
+    let skip = msgs.len().saturating_sub(limit);
+    Ok((rec, msgs.split_off(skip)))
 }
 
 // ---------- receiving ----------
@@ -837,9 +933,12 @@ fn apply_group_change(
     }
     let action = crate::apply_change(home, env, author == me, gid, device)?;
     if action == MergeAction::Tombstone {
-        // Remember whose delete this was, so it binds only that author's message.
+        // Remember whose delete this was, so it binds only that author's message. The marker has
+        // no send time of its own (0): it is kept so a late copy cannot bring the message back,
+        // but never shown (see `is_ghost`).
         if let Some(mut t) = store.get(target)? {
             t.author = Some(author.to_string());
+            t.ts = 0;
             store.update(&t)?;
         }
     }

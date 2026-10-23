@@ -51,6 +51,15 @@ fn is_hex(s: &str, len: usize) -> bool {
             .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
+/// A conversation is a person's owner key (64 hex) or a group id (32 hex); a group message also
+/// names its author, who is an owner key.
+fn peer_ok(m: &StoredMessage) -> bool {
+    match &m.author {
+        None => is_hex(&m.peer, 64),
+        Some(author) => is_hex(author, 64) && is_hex(&m.peer, 32),
+    }
+}
+
 impl SyncMsg {
     pub fn to_envelope(&self) -> Result<Envelope> {
         Ok(Envelope::sync(&serde_json::to_string(self)?)?)
@@ -68,7 +77,7 @@ impl SyncMsg {
 
     fn validate(&self) -> Result<()> {
         let ok = match self {
-            SyncMsg::Read { peer, .. } => is_hex(peer, 64),
+            SyncMsg::Read { peer, .. } => is_hex(peer, 64) || is_hex(peer, 32),
             SyncMsg::CatchUpRequest { .. } => true,
             SyncMsg::FileRequest { msg_id } => is_hex(msg_id, 32),
             SyncMsg::FileOffer { msg_id, attachment } => {
@@ -82,7 +91,7 @@ impl SyncMsg {
             } => is_hex(request_id, 32) && note.len() <= 200,
             SyncMsg::CatchUpBatch { messages, .. } => messages.iter().all(|m| {
                 is_hex(&m.id, 32)
-                    && is_hex(&m.peer, 64)
+                    && peer_ok(m)
                     && m.body.len() <= MAX_TEXT
                     && m.attachment.as_ref().is_none_or(|a| a.validate().is_ok())
             }),
@@ -171,6 +180,38 @@ mod tests {
                 last: true
             }]
         );
+    }
+
+    #[test]
+    fn group_messages_and_group_read_markers_are_accepted() {
+        let owner = "ab".repeat(32);
+        let group = "cd".repeat(16);
+        let ok = SyncMsg::CatchUpBatch {
+            messages: vec![StoredMessage {
+                peer: group.clone(),
+                author: Some(owner.clone()),
+                ..msg(1, 1)
+            }],
+            last: true,
+        };
+        assert!(SyncMsg::from_envelope(&ok.to_envelope().unwrap()).is_ok());
+        let read = SyncMsg::Read {
+            peer: group.clone(),
+            upto: 5,
+        };
+        assert!(SyncMsg::from_envelope(&read.to_envelope().unwrap()).is_ok());
+        // A group id without an author, or an owner key with one, is not a consistent record.
+        for (peer, author) in [(group.clone(), None), (owner.clone(), Some(owner.clone()))] {
+            let bad = SyncMsg::CatchUpBatch {
+                messages: vec![StoredMessage {
+                    peer,
+                    author,
+                    ..msg(1, 1)
+                }],
+                last: true,
+            };
+            assert!(SyncMsg::from_envelope(&bad.to_envelope().unwrap()).is_err());
+        }
     }
 
     #[test]
