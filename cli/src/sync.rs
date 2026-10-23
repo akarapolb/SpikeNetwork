@@ -137,6 +137,7 @@ mod tests {
             edited: false,
             deleted: false,
             changed_at: 0,
+            author: None,
         }
     }
 

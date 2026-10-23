@@ -310,6 +310,138 @@ enum Cmd {
         #[arg(long)]
         older_than_days: u64,
     },
+    /// Small groups (up to 20 people): each message is encrypted separately for every member's devices.
+    Group {
+        #[command(subcommand)]
+        cmd: GroupCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum GroupCmd {
+    /// Create a group with some of your contacts. You are its admin.
+    New {
+        name: String,
+        /// Contacts to add, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        with: Vec<String>,
+        /// Let any member add people (default: admins only).
+        #[arg(long)]
+        any_can_add: bool,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Your groups and invites.
+    List,
+    /// Members, admins and settings of a group.
+    Show { group: String },
+    /// Send a message to a group.
+    Send {
+        group: String,
+        message: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Stored messages of a group (from this device only).
+    History {
+        group: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Add contacts to a group.
+    Add {
+        group: String,
+        names: Vec<String>,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Remove a member (contact name, or 8+ characters of their key from `group show`).
+    Remove {
+        group: String,
+        who: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Make a member an admin.
+    Admin {
+        group: String,
+        who: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Rename a group.
+    Rename {
+        group: String,
+        name: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Choose who can add people: `admins` or `any`.
+    WhoCanAdd {
+        group: String,
+        who: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Leave a group. Your history stays here; nobody can add you back without your OK.
+    Leave {
+        group: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Accept an invite to a group.
+    Accept { group: String },
+    /// Decline an invite to a group. The inviter is not told.
+    Decline { group: String },
+}
+
+fn print_group_send(r: &spike_cli::groups::GroupSend) {
+    for n in &r.notes {
+        eprintln!("note: {n}");
+    }
+    if !r.all_verified {
+        eprintln!("warning: not everyone in this group is a verified contact");
+    }
+    println!(
+        "delivered to {} of {} member(s) ({} devices)",
+        r.reached,
+        r.people,
+        r.delivered_devices()
+    );
+}
+
+fn print_group(home: &Home, s: &spike_core::group::GroupState) {
+    use spike_cli::groups::display_name;
+    println!("{} · {} · version {}", s.name, &s.group[..12], s.version);
+    println!(
+        "who can add people: {} · new members see: {}",
+        match s.add_by {
+            spike_core::group::AddBy::Admins => "admins",
+            spike_core::group::AddBy::Any => "any member",
+        },
+        match s.history {
+            spike_core::group::History::Join => "messages from when they join",
+            spike_core::group::History::Week => "the last 7 days",
+        }
+    );
+    let contacts = home.load_contacts().unwrap_or_default();
+    for m in &s.members {
+        let contact = contacts
+            .iter()
+            .find(|c| c.conversation_key().ok().as_deref() == Some(m.owner.as_str()));
+        let name = display_name(home, &m.owner);
+        let tag = match contact {
+            _ if name == "you" => "",
+            Some(c) if c.verified => " · verified",
+            Some(_) => " · NOT VERIFIED",
+            None => " · not a contact, NOT VERIFIED",
+        };
+        println!(
+            "  {name}{}{tag}  ({})",
+            if s.is_admin(&m.owner) { " (admin)" } else { "" },
+            &m.owner[..12]
+        );
+    }
 }
 
 /// Passphrase from `--passphrase-file`, then `SPIKE_PASSPHRASE`, then a prompt.
@@ -513,6 +645,136 @@ async fn run() -> Result<()> {
                         if d.new_session { " (new session)" } else { "" }
                     ),
                     Some(e) => println!("  {who} {}: NOT sent: {e}", &d.device_id[..8]),
+                }
+            }
+        }
+        Cmd::Group { cmd } => {
+            use spike_cli::groups;
+            match cmd {
+                GroupCmd::New {
+                    name,
+                    with,
+                    any_can_add,
+                    relay,
+                } => {
+                    let add_by = if any_can_add {
+                        spike_core::group::AddBy::Any
+                    } else {
+                        spike_core::group::AddBy::Admins
+                    };
+                    let (s, r) = groups::create(&home, target(relay), &name, &with, add_by).await?;
+                    println!("created {} ({})", s.name, &s.group[..12]);
+                    print_group_send(&r);
+                }
+                GroupCmd::List => {
+                    let all = groups::list(&home)?;
+                    if all.is_empty() {
+                        println!("no groups");
+                    }
+                    for r in all {
+                        let s = r.current()?;
+                        let status = match r.status {
+                            groups::Status::Joined => String::new(),
+                            groups::Status::Invited => format!(
+                                " · INVITED by {}: `spike group accept {}` or `decline`",
+                                r.invited_by
+                                    .as_deref()
+                                    .map(|o| groups::display_name(&home, o))
+                                    .unwrap_or_default(),
+                                &s.group[..12]
+                            ),
+                            groups::Status::Left => " · left".into(),
+                        };
+                        println!(
+                            "{} {} · {} member(s){status}",
+                            &s.group[..12],
+                            s.name,
+                            s.members.len()
+                        );
+                    }
+                }
+                GroupCmd::Show { group } => {
+                    let r = groups::find(&home, &group)?;
+                    print_group(&home, &r.current()?);
+                }
+                GroupCmd::Send {
+                    group,
+                    message,
+                    relay,
+                } => {
+                    let r = groups::send(&home, target(relay), &group, &message).await?;
+                    print_group_send(&r);
+                }
+                GroupCmd::History { group, limit } => {
+                    let (rec, msgs) = groups::history(&home, &group, limit)?;
+                    if msgs.is_empty() {
+                        eprintln!("no stored messages in {}", rec.current()?.name);
+                    }
+                    for m in msgs {
+                        let who = m
+                            .author
+                            .as_deref()
+                            .map(|a| groups::display_name(&home, a))
+                            .unwrap_or_else(|| "?".into());
+                        let short = &m.id[..8];
+                        if m.deleted {
+                            println!("{}  {who}: [message deleted]  ({short})", fmt_utc(m.ts));
+                        } else {
+                            let edited = if m.edited { " (edited)" } else { "" };
+                            println!("{}  {who}: {}{edited}  ({short})", fmt_utc(m.ts), m.body);
+                        }
+                    }
+                }
+                GroupCmd::Add {
+                    group,
+                    names,
+                    relay,
+                } => {
+                    let (s, r) = groups::add(&home, target(relay), &group, &names).await?;
+                    println!(
+                        "{} now has {} member(s); new members see messages from now on",
+                        s.name,
+                        s.members.len()
+                    );
+                    print_group_send(&r);
+                }
+                GroupCmd::Remove { group, who, relay } => {
+                    let (s, r) = groups::remove(&home, target(relay), &group, &who).await?;
+                    println!("removed from {}: new messages are no longer encrypted for their devices; they keep what they already received", s.name);
+                    print_group_send(&r);
+                }
+                GroupCmd::Admin { group, who, relay } => {
+                    let (_, r) = groups::make_admin(&home, target(relay), &group, &who).await?;
+                    print_group_send(&r);
+                }
+                GroupCmd::Rename { group, name, relay } => {
+                    let (_, r) = groups::rename(&home, target(relay), &group, &name).await?;
+                    print_group_send(&r);
+                }
+                GroupCmd::WhoCanAdd { group, who, relay } => {
+                    let add_by = match who.as_str() {
+                        "admins" => spike_core::group::AddBy::Admins,
+                        "any" => spike_core::group::AddBy::Any,
+                        _ => bail!("say `admins` or `any`"),
+                    };
+                    let (_, r) = groups::set_add_by(&home, target(relay), &group, add_by).await?;
+                    print_group_send(&r);
+                }
+                GroupCmd::Leave { group, relay } => {
+                    let r = groups::leave(&home, target(relay), &group).await?;
+                    println!("you left; your history stays on this device");
+                    if r.people > 0 {
+                        print_group_send(&r);
+                    }
+                }
+                GroupCmd::Accept { group } => {
+                    let s = groups::accept(&home, &group)?;
+                    println!("joined {}", s.name);
+                    print_group(&home, &s);
+                }
+                GroupCmd::Decline { group } => {
+                    groups::decline(&home, &group)?;
+                    println!("declined; the inviter is not told");
                 }
             }
         }
@@ -1039,6 +1301,21 @@ async fn run() -> Result<()> {
                 }
                 Outcome::FileReady { id } => println!("[your other device re-supplied a file: `spike fetch {}`]", &id[..8]),
                 Outcome::SyncRequest { .. } => println!("[answered a request from your other device]"),
+                Outcome::GroupMessage { group, from, verified, body, out_of_date, .. } => {
+                    let tag = if verified { "" } else { " (UNVERIFIED)" };
+                    let note = if out_of_date { " [sent with an out-of-date member list; yours was sent back]" } else { "" };
+                    println!("[{group}] [{from}{tag}] {}{note}", String::from_utf8_lossy(&body));
+                    n += 1;
+                }
+                Outcome::GroupJoined { group, by } => println!("[{by} added you to the group {group}]"),
+                Outcome::GroupInvite { group, from } => println!(
+                    "[group invite: {from} added you to {group}; `spike group accept` or `spike group decline`]"
+                ),
+                Outcome::GroupChanged { group, by, version, released } => println!(
+                    "[{by} changed the group {group} (version {version}){}]",
+                    if released > 0 { format!("; {released} waiting message(s) shown") } else { String::new() }
+                ),
+                Outcome::GroupRemoved { group, by } => println!("[{by} removed you from {group}; its history stays here]"),
                 Outcome::SentCopy { to, body, .. } => {
                     println!("[you -> {to}, sent from your other device] {}", String::from_utf8_lossy(&body));
                 }

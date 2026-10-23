@@ -11,6 +11,10 @@
 //! one: the valid state with the highest version, ties broken by the lowest
 //! hash. Concurrent changes by two admins therefore converge; the losing
 //! change is simply not applied.
+//!
+//! A new member does not get the whole history: it starts from the state that
+//! added it (a *checkpoint*, [`Chain::from_checkpoint`]) and follows the rules
+//! from there. Members who were present earlier hold the chain from version 1.
 
 use crate::owner::OwnerKey;
 use crate::{Error, Result};
@@ -353,6 +357,8 @@ pub enum Added {
     New { current_changed: bool },
     /// Its previous state is not held yet: ask the sender for states after `have`.
     MissingPrev { have: u64 },
+    /// Older than the checkpoint this device started from; it cannot be checked and is ignored.
+    BeforeStart,
 }
 
 /// How a group message relates to the receiver's view of the group (ADR 0024, section 4).
@@ -375,6 +381,8 @@ pub enum MessageCheck {
 pub struct Chain {
     states: HashMap<String, GroupState>,
     current: String,
+    /// The version this device started from: 1, or the checkpoint it was added with.
+    base: u64,
 }
 
 impl Chain {
@@ -385,17 +393,44 @@ impl Chain {
         Ok(Self {
             states: HashMap::from([(h.clone(), genesis)]),
             current: h,
+            base: 1,
         })
+    }
+
+    /// Start from the state that added this device's person (a new member's
+    /// view). Only its signature and shape can be checked, and that its author
+    /// is in it; what came before is taken on trust from that author.
+    pub fn from_checkpoint(state: GroupState) -> Result<Self> {
+        if state.version == 1 {
+            return Self::new(state);
+        }
+        state.verify_signature()?;
+        if !state.is_member(&state.author) {
+            return Err(Error::BadGroup("the author of a checkpoint must be in it"));
+        }
+        let h = state.hash();
+        Ok(Self {
+            base: state.version,
+            states: HashMap::from([(h.clone(), state)]),
+            current: h,
+        })
+    }
+
+    /// The version this device started from.
+    pub fn base(&self) -> u64 {
+        self.base
     }
 
     /// Rebuild from stored states (any order), checking every one again.
     pub fn from_states(mut states: Vec<GroupState>) -> Result<Self> {
         states.sort_by_key(|s| s.version);
         let mut it = states.into_iter();
-        let mut chain = Self::new(it.next().ok_or(Error::BadGroup("no states"))?)?;
+        let mut chain = Self::from_checkpoint(it.next().ok_or(Error::BadGroup("no states"))?)?;
         for s in it {
-            if let Added::MissingPrev { .. } = chain.add(s)? {
-                return Err(Error::BadGroup("stored chain has a gap"));
+            match chain.add(s)? {
+                Added::MissingPrev { .. } => return Err(Error::BadGroup("stored chain has a gap")),
+                Added::BeforeStart => return Err(Error::BadGroup("stored chain has two starts")),
+                Added::Known | Added::New { .. } => {}
             }
         }
         Ok(chain)
@@ -431,8 +466,11 @@ impl Chain {
             return Ok(Added::Known);
         }
         let Some(prev) = state.prev.as_ref().and_then(|p| self.states.get(p)) else {
-            if state.version == 1 {
-                return Err(Error::BadGroup("a second first state for this group"));
+            if state.version <= self.base {
+                if state.version == 1 {
+                    return Err(Error::BadGroup("a second first state for this group"));
+                }
+                return Ok(Added::BeforeStart);
             }
             state.verify_signature()?;
             return Ok(Added::MissingPrev {
@@ -504,7 +542,7 @@ impl Chain {
 
     /// The highest version up to which every version has at least one state held.
     fn highest_contiguous(&self) -> u64 {
-        let mut v = 0;
+        let mut v = self.base;
         while self.states.values().any(|s| s.version == v + 1) {
             v += 1;
         }
@@ -907,6 +945,41 @@ mod tests {
             behind.add(s).unwrap();
         }
         assert_eq!(behind.current(), chain.current());
+    }
+
+    #[test]
+    fn a_new_member_starts_from_the_state_that_added_them() {
+        let p = people();
+        let v1 = pilot(&p, AddBy::Admins);
+        let v2 = v1.successor(&p.alice, |d| d.name = "Two".into()).unwrap();
+        let v3 = v2
+            .successor(&p.alice, |d| d.members.push(member(&p.dana)))
+            .unwrap();
+        let v4 = v3
+            .successor(&p.alice, |d| d.history = History::Week)
+            .unwrap();
+        let mut dana = Chain::from_checkpoint(v3.clone()).unwrap();
+        assert_eq!(dana.base(), 3);
+        assert_eq!(dana.add(v2.clone()).unwrap(), Added::BeforeStart);
+        assert_eq!(
+            dana.add(v4.clone()).unwrap(),
+            Added::New {
+                current_changed: true
+            }
+        );
+        // Saved and reloaded, it still starts from the checkpoint.
+        let again = Chain::from_states(dana.states()).unwrap();
+        assert_eq!((again.base(), again.current()), (3, &v4));
+        // A checkpoint whose author is not in it is refused, and so is a forged one.
+        let gone = v4.leave(&p.alice).unwrap();
+        let mut d = gone.draft();
+        d.name = "Hijack".into();
+        let outsider =
+            GroupState::sign(&p.alice, gone.group.clone(), 6, Some(gone.hash()), d).unwrap();
+        assert!(Chain::from_checkpoint(outsider).is_err());
+        let mut forged = v3.clone();
+        forged.name = "Forged".into();
+        assert!(Chain::from_checkpoint(forged).is_err());
     }
 
     #[test]

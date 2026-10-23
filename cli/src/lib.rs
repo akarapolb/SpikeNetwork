@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod client;
+pub mod groups;
 pub mod link;
 pub mod messages;
 pub mod ops;
@@ -107,6 +108,31 @@ pub enum Outcome {
         by_policy: bool,
         note: String,
     },
+    /// A message in a group you are in (ADR 0024).
+    GroupMessage {
+        group: String,
+        /// The sender's contact name, or "~" and the start of their fingerprint.
+        from: String,
+        verified: bool,
+        body: Vec<u8>,
+        id: String,
+        /// Sent with a member list that lost to yours; your list was sent back to them.
+        out_of_date: bool,
+    },
+    /// A contact (or you, on another device) put you in a group.
+    GroupJoined { group: String, by: String },
+    /// Someone who is not a contact added you: nothing is shown until you accept.
+    GroupInvite { group: String, from: String },
+    /// A group's members, admins, name or settings changed. `released` counts messages that
+    /// had waited for this change.
+    GroupChanged {
+        group: String,
+        by: String,
+        version: u64,
+        released: usize,
+    },
+    /// You were removed from a group. Its history stays on this device.
+    GroupRemoved { group: String, by: String },
     /// Not decryptable: corrupted, tampered, replayed, or not for us.
     Invalid,
 }
@@ -175,6 +201,7 @@ pub fn apply_change(
                 edited: false,
                 deleted: true,
                 changed_at: 0,
+                author: None,
             })?;
         }
         _ => {}
@@ -198,21 +225,37 @@ pub fn process(
 ) -> anyhow::Result<Outcome> {
     use spike_core::envelope::Kind;
     let contacts = home.load_contacts()?;
-    // Every device of every contact, plus our own other devices, remembering
-    // whose each one is. `None` marks one of our own devices.
+    // Every device of every contact, our own other devices, and the devices of
+    // group members who are not contacts, remembering whose each one is.
     let mut cards: Vec<DeviceCard> = Vec::new();
-    let mut owner_of: Vec<Option<usize>> = Vec::new();
+    let mut owner_of: Vec<From> = Vec::new();
+    let mut known_owners = std::collections::HashSet::new();
     for (i, c) in contacts.iter().enumerate() {
-        for d in c.identity()?.devices() {
+        let id = c.identity()?;
+        known_owners.insert(id.owner_hex());
+        for d in id.devices() {
             cards.push(d.clone());
-            owner_of.push(Some(i));
+            owner_of.push(From::Contact(i));
         }
     }
     let my_id = me.device_id();
-    for d in home.load_device_list()?.verify()? {
+    let my_list = home.load_device_list()?;
+    for d in my_list.verify()? {
         if d.device_id() != my_id {
             cards.push(d);
-            owner_of.push(None);
+            owner_of.push(From::Own);
+        }
+    }
+    known_owners.insert(my_list.owner.clone());
+    for (owner, card) in groups::member_cards(home)? {
+        if known_owners.contains(&owner) {
+            continue;
+        }
+        if let Ok(id) = spike_core::owner::IdentityCard::decode(&card) {
+            for d in id.devices() {
+                cards.push(d.clone());
+                owner_of.push(From::Member(owner.clone()));
+            }
         }
     }
     let persist = |sessions: &Sessions, me: &Identity| -> anyhow::Result<()> {
@@ -231,9 +274,37 @@ pub fn process(
             };
             let sender_device = cards[device].device_id();
             home.observe_lamport(env.lamport)?;
+            if env.group.is_some() {
+                let owner = match &owner_of[device] {
+                    From::Own => my_list.owner.clone(),
+                    From::Contact(i) => contacts[*i].conversation_key()?,
+                    From::Member(o) => o.clone(),
+                };
+                let outcome = groups::on_envelope(
+                    home,
+                    groups::Sender {
+                        owner: &owner,
+                        device: &sender_device,
+                        own: matches!(owner_of[device], From::Own),
+                    },
+                    &env,
+                )?;
+                persist(sessions, me)?;
+                return Ok(outcome);
+            }
             match owner_of[device] {
+                // Someone we only know from a group writes privately: not a contact.
+                From::Member(ref owner) => {
+                    persist(sessions, me)?;
+                    Ok(Outcome::Rejected {
+                        reason: format!(
+                            "{} is in a group with you but is not a contact; add them to talk one to one",
+                            groups::display_name(home, owner)
+                        ),
+                    })
+                }
                 // From one of our own other devices.
-                None => {
+                From::Own => {
                     if env.kind == Kind::Sync {
                         let outcome = match sync::SyncMsg::from_envelope(&env) {
                             Ok(msg) => apply_sync(home, &contacts, msg, &sender_device, &my_id)?,
@@ -277,6 +348,7 @@ pub fn process(
                         edited: false,
                         deleted: false,
                         changed_at: 0,
+                        author: None,
                     })?;
                     persist(sessions, me)?;
                     if !fresh {
@@ -289,7 +361,7 @@ pub fn process(
                     })
                 }
                 // From a contact.
-                Some(contact) => {
+                From::Contact(contact) => {
                     let peer = contacts[contact].conversation_key()?;
                     if env.kind == Kind::Sync {
                         // Sync messages are for a person's own devices only. A contact has no business sending one.
@@ -333,6 +405,7 @@ pub fn process(
                         edited: false,
                         deleted: false,
                         changed_at: 0,
+                        author: None,
                     })?;
                     persist(sessions, me)?;
                     if !fresh {
@@ -355,6 +428,14 @@ pub fn process(
         }),
         Err(_) => Ok(Outcome::Invalid),
     }
+}
+
+/// Whose device a session belongs to.
+enum From {
+    Own,
+    Contact(usize),
+    /// A group member who is not a contact (their owner key).
+    Member(String),
 }
 
 /// Apply a sync message that came from one of our own devices.
@@ -426,7 +507,7 @@ fn apply_sync(
     })
 }
 
-fn change_outcome(
+pub(crate) fn change_outcome(
     kind: spike_core::envelope::Kind,
     action: MergeAction,
     who: String,

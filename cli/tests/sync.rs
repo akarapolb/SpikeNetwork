@@ -296,6 +296,7 @@ async fn a_delete_that_arrives_first_leaves_a_tombstone_so_the_message_never_app
         edited: false,
         deleted: false,
         changed_at: 0,
+        author: None,
     };
     assert!(!bob[0].0.messages().unwrap().insert(&late).unwrap());
     assert!(get(&bob[0], &id).deleted);

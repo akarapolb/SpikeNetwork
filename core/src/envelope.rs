@@ -29,6 +29,10 @@ pub enum Kind {
     AgentRequest,
     /// The principal's signed answer (body: `agent::Receipt` JSON).
     AgentReceipt,
+    /// Signed group states (body: JSON array of `group::GroupState`, oldest first; ADR 0024).
+    GroupState,
+    /// Ask a member for the group states after a version (body: `{"after": n}`).
+    GroupStateRequest,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -61,6 +65,13 @@ pub struct Envelope {
     /// Only trusted after it is checked against the device that sent the message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intro: Option<String>,
+    /// The group this message belongs to (ADR 0024). When set, `to` is ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Hash of the group state the sender used, so receivers can tell an
+    /// out-of-date member list from their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gstate: Option<String>,
 }
 
 /// Longest introduction accepted: a card with a generous number of devices.
@@ -88,6 +99,8 @@ impl Envelope {
             to: None,
             attachment: None,
             intro: None,
+            group: None,
+            gstate: None,
         })
     }
 
@@ -111,6 +124,15 @@ impl Envelope {
         debug_assert!(matches!(kind, Kind::AgentRequest | Kind::AgentReceipt));
         let mut e = Self::text(json)?;
         e.kind = kind;
+        Ok(e)
+    }
+
+    /// Group states or a request for them, addressed to one group (ADR 0024).
+    pub fn group_control(kind: Kind, group: &str, json: &str) -> Result<Self> {
+        debug_assert!(matches!(kind, Kind::GroupState | Kind::GroupStateRequest));
+        let mut e = Self::text(json)?;
+        e.kind = kind;
+        e.group = Some(group.to_string());
         Ok(e)
     }
 
@@ -140,12 +162,35 @@ impl Envelope {
                     .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
         });
         let att_ok = e.attachment.as_ref().is_none_or(|a| a.validate().is_ok());
-        // Only a text message introduces its sender, and the card must be a sane size.
+        // Only a text message or a group invite introduces its sender, and the card must be a sane size.
         let intro_ok = e.intro.as_ref().is_none_or(|c| {
-            c.len() <= MAX_INTRO && e.kind == Kind::Text && !c.chars().any(char::is_control)
+            c.len() <= MAX_INTRO
+                && matches!(e.kind, Kind::Text | Kind::GroupState)
+                && !c.chars().any(char::is_control)
         });
+        let hex_of = |s: &str, n: usize| {
+            s.len() == n
+                && s.bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        };
+        let group_ok = e.group.as_deref().is_none_or(|g| hex_of(g, 32))
+            && e.gstate.as_deref().is_none_or(|h| hex_of(h, 64))
+            && match e.kind {
+                // Group control always names its group; private kinds never do.
+                Kind::GroupState | Kind::GroupStateRequest => e.group.is_some(),
+                Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => {
+                    e.group.is_none() && e.gstate.is_none()
+                }
+                // A group message says which member list it was sent with.
+                Kind::Text | Kind::Edit | Kind::Delete => e.group.is_some() == e.gstate.is_some(),
+            };
         let target_ok = match e.kind {
-            Kind::Text | Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => e.target.is_none(),
+            Kind::Text
+            | Kind::Sync
+            | Kind::AgentRequest
+            | Kind::AgentReceipt
+            | Kind::GroupState
+            | Kind::GroupStateRequest => e.target.is_none(),
             Kind::Edit | Kind::Delete => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
@@ -157,15 +202,18 @@ impl Envelope {
             Kind::Text => true,
             Kind::Edit => e.attachment.is_none(),
             Kind::Delete => e.attachment.is_none() && e.body.is_empty(),
-            Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => {
-                e.attachment.is_none() && !e.body.is_empty()
-            }
+            Kind::Sync
+            | Kind::AgentRequest
+            | Kind::AgentReceipt
+            | Kind::GroupState
+            | Kind::GroupStateRequest => e.attachment.is_none() && !e.body.is_empty(),
         };
         if e.v != VERSION
             || !id_ok
             || !to_ok
             || !att_ok
             || !intro_ok
+            || !group_ok
             || !target_ok
             || !shape_ok
             || e.body.len() > MAX_TEXT
@@ -179,6 +227,47 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_fields_are_checked() {
+        let g = "ab".repeat(16);
+        let h = "cd".repeat(32);
+        let mut e = Envelope::text("hi all").unwrap();
+        e.group = Some(g.clone());
+        assert!(
+            Envelope::from_bytes(&e.to_bytes()).is_err(),
+            "a group message names its state"
+        );
+        e.gstate = Some(h.clone());
+        let back = Envelope::from_bytes(&e.to_bytes()).unwrap();
+        assert_eq!(
+            (back.group.as_deref(), back.gstate.as_deref()),
+            (Some(g.as_str()), Some(h.as_str()))
+        );
+        let mut upper = e.clone();
+        upper.group = Some("AB".repeat(16));
+        assert!(Envelope::from_bytes(&upper.to_bytes()).is_err());
+        let mut sync = Envelope::sync("{}").unwrap();
+        sync.group = Some(g.clone());
+        assert!(
+            Envelope::from_bytes(&sync.to_bytes()).is_err(),
+            "own-device sync is never a group message"
+        );
+        let mut ctl = Envelope::group_control(Kind::GroupState, &g, "[]").unwrap();
+        ctl.intro = Some("spike2:abcd".into());
+        assert!(
+            Envelope::from_bytes(&ctl.to_bytes()).is_ok(),
+            "an invite may introduce its sender"
+        );
+        ctl.group = None;
+        assert!(Envelope::from_bytes(&ctl.to_bytes()).is_err());
+        assert!(
+            !String::from_utf8(Envelope::text("x").unwrap().to_bytes())
+                .unwrap()
+                .contains("group"),
+            "absent unless set"
+        );
+    }
 
     #[test]
     fn an_introduction_is_text_only_and_bounded() {

@@ -185,6 +185,7 @@ async fn history_choice_is_honoured() {
             edited: false,
             deleted: false,
             changed_at: 0,
+            author: None,
             id: "aa".repeat(16),
             peer: owner(&bob),
             direction: Direction::In,

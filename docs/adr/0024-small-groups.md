@@ -1,6 +1,6 @@
 # ADR 0024: Small groups over pairwise sessions
 
-Status: **Accepted 2026-10-23: pairwise first, MLS later.** Slice 1 (core, `core/src/group.rs`) built.
+Status: **Accepted 2026-10-23: pairwise first, MLS later.** Slices 1 (core, `core/src/group.rs`) and 2 (CLI, `cli/src/groups.rs`) built; see "Changes while building" below.
 Date: 2026-10-23
 
 Groups exist only in the desktop and mobile prototypes. The desktop prototype assumes a design (`docs/desktop-prototype/README.md`, "Groups: decisions this design assumes"): up to 20 people, each message encrypted separately for every member's devices over the existing one-to-one sessions, membership kept by each member's app. This ADR turns that into something buildable and says where it is weaker than MLS. Nothing here changes the relay.
@@ -95,6 +95,19 @@ Your app sends nothing to a group until you are in it by these rules.
 2. **CLI:** `spike group new|add|remove|admin|rename|leave|list|show`, sending and receiving group messages, invites through message requests; integration tests with three people and multiple devices, including a non-contact member, a fork between two admins, and a removed member who receives nothing new.
 3. **Desktop:** the prototype's group screens on top of the API.
 4. Later: `week` history, mobile.
+
+## Changes while building (2026-10-23)
+Building the CLI changed or settled these points. Where they differ from the sections above, this list wins.
+1. **New members start from a checkpoint, not the whole chain.** A whole chain does not fit one envelope after a few dozen changes, and a newcomer cannot judge the history anyway: it has never seen the earlier members. The state that adds you is your starting point (`Chain::from_checkpoint`): its signature and shape are checked, and its author must be in it. Earlier states are ignored (`BeforeStart`). Members who were already there keep the chain from version 1, and answers to "send me the states after version n" are split into batches that fit an envelope. Cost: if a branch that started before your checkpoint later wins elsewhere, you cannot follow it. That needs two admins to keep editing on both sides of a fork, and it shows as a member-list warning.
+2. **An invite from someone who is not a contact is kept with the group, not in the message-request list.** `spike group list` shows it as INVITED, and `spike group accept` / `decline` answer it. It is still introduced and bound exactly as a request (ADR 0021), its session waits in quarantine, nothing is shown before you accept, and at most 20 such invites wait at once. Accepting moves the inviter's session out of quarantine and keeps their card as a group member's, not as a contact.
+3. **A member who is not a contact cannot write to you one to one.** Their private messages are refused ("add them to talk one to one"). Their group messages work.
+4. **Members' devices are fetched from the relay named in the member list** when you send, and when a message arrives from a device you do not know. A message from a brand-new member that arrives *before* the state that added them is dropped: you do not know them yet. On one relay that order cannot happen (the state is sent first); across relays it can.
+5. **Replies to other members wait in a sealed outbox** (`group-outbox.enc`) and are sent by `recv` after it has acknowledged what it received, so a failed reply is retried and never blocks receiving.
+6. **A tombstone binds only its author.** In a group, a member sees a message before you might. If someone else's delete for that id arrives first, the real message replaces the tombstone instead of being suppressed by it.
+7. **Not built yet:** accepting or declining an invite is not passed to your own other devices (each device decides), blocking from an invite (decline only), attachments in groups, read state for groups, and the desktop screens.
+
+## Tested (`cli/tests/groups.rs`, `core/src/group.rs`, `core/src/envelope.rs`)
+Three people where two are not contacts talk through the group, each stored with its author and nothing going to message requests; a removed member gets nothing new, cannot send, and a hand-made message naming her old member list is refused; two admins change the group at once and all three apps converge on the same state, and a message from the losing side is shown marked while its sender catches up; an add by someone who is not a contact is an invite, shows nothing before you accept, and works after; leaving and being added back is an invite even from a contact, and declining keeps you out; only the author can edit or delete a group message; a message naming a state you missed waits, the state is fetched from its sender, and then the message is shown; a group follows you to your other devices (joined there, sent copies, sending from the phone).
 
 ## Decisions (2026-10-23)
 1. **Pairwise first, MLS later.** Sender keys (Megolm via `vodozemac`) were considered as a middle step and rejected: they need the same relay fan-out work as MLS, removal re-keying grows with the square of the group size, and every group would migrate twice. Larger groups wait for an MLS ADR, preceded by a short `openmls` spike (Windows and Android builds, add/remove, what it needs from the relay).

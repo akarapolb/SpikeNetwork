@@ -190,7 +190,34 @@ pub fn on_stranger(home: &Home, me: &mut Identity, blob: &[u8], key: [u8; 32]) -
     let Ok(env) = Envelope::from_bytes(&plain) else {
         return refuse(&mut q);
     };
-    if env.kind != Kind::Text {
+    if env.kind == Kind::GroupState && !known {
+        // Someone who is not a contact added us to a group (ADR 0024, section 6): an invite,
+        // introduced and bound like any request, its session kept in quarantine until we accept.
+        let Some((intro, card)) = env.intro.as_deref().and_then(|c| {
+            IdentityCard::decode(c)
+                .ok()
+                .map(|card| (c.to_string(), card))
+        }) else {
+            return refuse(&mut q);
+        };
+        if !card.devices().iter().any(|d| d.x25519 == key) {
+            return refuse(&mut q);
+        }
+        return match crate::groups::on_stranger_invite(
+            home,
+            &env,
+            &key_hex,
+            &intro,
+            &card.owner_hex(),
+        )? {
+            Some(o) => {
+                home.save_quarantine(&q)?;
+                Ok(o)
+            }
+            None => refuse(&mut q),
+        };
+    }
+    if env.kind != Kind::Text || env.group.is_some() {
         return refuse(&mut q);
     }
     let idx = match all.iter().position(|r| r.key == key_hex) {
@@ -246,6 +273,10 @@ pub fn on_pending(home: &Home, me: &mut Identity, blob: &[u8]) -> Result<Option<
     let who_hex = hex::encode(who);
     let mut all = load(home)?;
     let Some(req) = all.iter_mut().find(|r| r.key == who_hex) else {
+        if crate::groups::is_invite_key(home, &who_hex)? {
+            // Someone whose group invite waits for you: nothing is shown until you accept.
+            return Ok(Some(Outcome::Ignored));
+        }
         // A session with no request (it expired): drop it.
         q.forget(&who);
         home.save_quarantine(&q)?;
@@ -254,7 +285,7 @@ pub fn on_pending(home: &Home, me: &mut Identity, blob: &[u8]) -> Result<Option<
     let Ok(env) = Envelope::from_bytes(&plain) else {
         return Ok(Some(Outcome::Invalid));
     };
-    if env.kind == Kind::Text {
+    if env.kind == Kind::Text && env.group.is_none() {
         hold(req, &env);
     }
     let (id, fingerprint, held) = (req.key.clone(), req.fingerprint.clone(), req.held.len());
@@ -335,6 +366,7 @@ pub fn accept(home: &Home, id: &str, name: &str) -> Result<usize> {
             edited: false,
             deleted: false,
             changed_at: 0,
+            author: None,
         })? {
             added += 1;
         }

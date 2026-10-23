@@ -121,14 +121,14 @@ pub async fn refresh_contacts(
 }
 
 /// Connections to every relay a send needs, opened on demand.
-struct Pool<'a> {
-    base: Target,
-    me: &'a Identity,
-    conns: HashMap<String, Relay>,
+pub(crate) struct Pool<'a> {
+    pub(crate) base: Target,
+    pub(crate) me: &'a Identity,
+    pub(crate) conns: HashMap<String, Relay>,
 }
 
 impl<'a> Pool<'a> {
-    async fn get(&mut self, url: &str) -> Result<&mut Relay> {
+    pub(crate) async fn get(&mut self, url: &str) -> Result<&mut Relay> {
         if !self.conns.contains_key(url) {
             let t = Target {
                 url: url.into(),
@@ -164,6 +164,17 @@ pub struct SendReport {
     pub notes: Vec<String>,
 }
 
+impl From<crate::groups::GroupSend> for SendReport {
+    fn from(g: crate::groups::GroupSend) -> Self {
+        Self {
+            id: g.id,
+            verified: g.all_verified,
+            devices: g.devices,
+            notes: g.notes,
+        }
+    }
+}
+
 impl SendReport {
     /// Whether a new session was started with any of the recipient's devices.
     pub fn new_session(&self) -> bool {
@@ -178,7 +189,7 @@ impl SendReport {
     }
 }
 
-async fn send_to_device(
+pub(crate) async fn send_to_device(
     pool: &mut Pool<'_>,
     home: &Home,
     sessions: &mut Sessions,
@@ -298,6 +309,12 @@ pub async fn edit(
     if m.deleted {
         bail!("that message was deleted");
     }
+    if m.author.is_some() {
+        let env = Envelope::edit(&m.id, new_text)?;
+        return Ok(crate::groups::send_change(home, relay.into(), &m, env)
+            .await?
+            .into());
+    }
     deliver(
         home,
         relay.into(),
@@ -310,6 +327,12 @@ pub async fn edit(
 /// Delete a message you sent, on every device that has it.
 pub async fn delete(home: &Home, relay: impl Into<Target>, msg_id: &str) -> Result<SendReport> {
     let (m, contact) = own_message(home, msg_id)?;
+    if m.author.is_some() {
+        let env = Envelope::delete(&m.id)?;
+        return Ok(crate::groups::send_change(home, relay.into(), &m, env)
+            .await?
+            .into());
+    }
     deliver(home, relay.into(), &contact, Envelope::delete(&m.id)?).await
 }
 
@@ -318,6 +341,10 @@ fn own_message(home: &Home, msg_id: &str) -> Result<(StoredMessage, String)> {
     let m = home.messages()?.find(msg_id)?;
     if m.direction != Direction::Out {
         bail!("you can only edit or delete messages you sent");
+    }
+    if m.author.is_some() {
+        // A group message: the group, not a contact, is the conversation.
+        return Ok((m.clone(), String::new()));
     }
     let contacts = home.load_contacts()?;
     let c = contacts
@@ -430,13 +457,18 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
                 edited: false,
                 deleted: false,
                 changed_at: 0,
+                author: None,
             })?;
         }
         Kind::Edit | Kind::Delete => {
             crate::apply_change(home, &env, true, &peer.owner_hex(), &my_id)?;
         }
-        // Sync messages change nothing in the sender's own history.
-        Kind::Sync | Kind::AgentRequest | Kind::AgentReceipt => {}
+        // Sync messages change nothing in the sender's own history; group control goes through `groups`.
+        Kind::Sync
+        | Kind::AgentRequest
+        | Kind::AgentReceipt
+        | Kind::GroupState
+        | Kind::GroupStateRequest => {}
     }
     Ok(SendReport {
         id: env.id,
@@ -469,6 +501,13 @@ pub async fn recv(
         if matches!(outcome, Outcome::UnknownSender { .. }) {
             refresh_contacts(&mut relay, home, None).await?;
             sync_own_list(&mut relay, home).await?;
+            outcome = process(home, &mut me, &mut sessions, &d.blob)?;
+        }
+        if matches!(outcome, Outcome::UnknownSender { .. }) {
+            // Perhaps someone from one of our groups whose devices we have not fetched yet.
+            for n in crate::groups::refresh_member_cards(home, &base, &me).await? {
+                eprintln!("note: {n}");
+            }
             outcome = process(home, &mut me, &mut sessions, &d.blob)?;
         }
         // Still nobody we know: a stranger writing to us becomes a message request if they
@@ -504,6 +543,15 @@ pub async fn recv(
             }
             me = home.load_identity()?;
             sessions = home.load_sessions()?;
+        }
+        // Replies owed to other group members (states they asked for or need).
+        match crate::groups::flush_outbox(home, base.clone()).await {
+            Ok(0) => {}
+            Ok(_) => {
+                me = home.load_identity()?;
+                sessions = home.load_sessions()?;
+            }
+            Err(e) => eprintln!("note: could not answer a group member yet: {e:#}"),
         }
         if decided {
             // `deliver` keeps its own copy of the ratchet state on disk; reload ours after it.

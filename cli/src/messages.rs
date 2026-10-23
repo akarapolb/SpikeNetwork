@@ -51,6 +51,10 @@ pub struct StoredMessage {
     /// from another of the person's devices (catch-up).
     #[serde(default)]
     pub changed_at: u64,
+    /// Who wrote it (owner key, hex), for group messages, whose `peer` is the
+    /// group id. `None` in one-to-one conversations, where `direction` says it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -251,7 +255,7 @@ impl<'v> MessageStore<'v> {
         let Some(mut cur) = self.get(&r.id)? else {
             return self.insert(r);
         };
-        if cur.peer != r.peer || cur.direction != r.direction {
+        if cur.peer != r.peer || cur.direction != r.direction || cur.author != r.author {
             return Ok(false); // inconsistent record: not ours to apply
         }
         if r.deleted && !cur.deleted {
@@ -371,6 +375,7 @@ mod tests {
             edited: false,
             deleted: false,
             changed_at: 0,
+            author: None,
             id: id.into(),
             peer: peer.into(),
             direction: d,
