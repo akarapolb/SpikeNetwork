@@ -21,12 +21,19 @@ sudo install -m 0755 target/release/spike-relay /usr/local/bin/spike-relay
 | `--insecure-no-tls` | Allow plain WebSocket on a non-loopback address (only behind a TLS-terminating proxy) | off |
 | `--ttl-secs N` | How long an unacknowledged message is kept | 604800 (7 days) |
 | `--queue-cap N` | Most queued messages per recipient device | 1000 |
+| `--group-max-entry N` | Largest entry in a group mailbox, in bytes (large groups, ADR 0025) | 262144 (256 KiB) |
+| `--group-message-days N` `--group-handshake-days N` | Days a group message is kept, and a group commit (and a mailbox after its last append). Commits are kept far longer on purpose: a device that misses one cannot read anything afterwards | 30 / 180 |
+| `--group-max-bytes N` | Bytes one group mailbox may hold; past it the oldest messages (never commits) are dropped | 67108864 (64 MiB) |
+| `--group-max-mailboxes-per-device N` | Group mailboxes one device may create | 200 |
+| `--max-group-subs-per-conn N` | Group mailboxes one connection may listen to | 256 |
 | `--max-conns-per-ip N` | Connections one client address may hold open (0 = unlimited) | 64 |
 | `--conn-rate-per-ip N` | New connections one address may open per minute (0 = unlimited) | 300 |
 | `--req-rate R` `--req-burst N` | Requests per second one connection may sustain, and the burst allowed (0 rate = unlimited) | 50 / 200 |
 | `--trusted-proxy CIDR` | Reverse proxy (address or network, repeat or comma-separate) whose `X-Forwarded-For` is believed. **Set this when behind a proxy**, or every client looks like the proxy and shares one limit | none |
 | `--metrics-listen ADDR` | Serve `/healthz` and `/metrics` (plain HTTP, numbers only) on this address | off |
 | `--metrics-token TOKEN` (or `SPIKE_RELAY_METRICS_TOKEN`) | Require `Authorization: Bearer TOKEN` for `/metrics`. Mandatory on a non-loopback metrics address | none |
+
+**Group mailboxes (large groups, ADR 0025; no client uses them yet).** For each large group the relay holds one or two random mailbox ids, the mailbox's *public* key, and an append-only log of ciphertext with its sizes and times. It holds no group id, no name, no member list and no content; it does see which authenticated devices create, read, append to and listen to a mailbox, as it sees which devices exchange messages today. Plan disk for the longer retention: a busy mailbox can hold up to `--group-max-bytes`, and commits (small) stay for `--group-handshake-days` even after the group moves on. `/metrics` gains `group_mailboxes`, `group_entries`, `group_bytes` and counters for appends, bytes, reads and pushes; none carries an id. The relay also stores opaque MLS key packages a device publishes (up to 200 one-time ones of at most 16 KiB each, plus one reusable last-resort package) and hands each one-time package out once; `/metrics` shows only a count. The database schema moves to version 3 the first time this relay version opens it; an older database is copied to `<file>.before-v2` first, and a database written by a newer relay is refused.
 
 Fixed in code for now (not flags): messages up to 64 KiB, attachments kept 30 days with 1 GiB per device, **at most 4 live connections per device** (the oldest beyond that is closed), and a connection that has sent nothing for **120 seconds** is closed (waiting clients ping every 25 s, so only dead or abandoned connections reach that). The relay refuses plain `ws://` on a non-loopback address unless you pass `--insecure-no-tls`.
 

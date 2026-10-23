@@ -21,15 +21,16 @@ use spike_core::attachment::{CHUNK, MAX_FILE, OVERHEAD};
 use spike_core::identity::{
     device_id_from_ed, is_valid_device_id, verify_auth, verify_prekey, SignedPrekey, MAX_PREKEYS,
 };
+use spike_core::mailbox::{self, is_valid_mailbox_id};
 use spike_core::owner::DeviceList;
-use spike_core::wire::{ClientMsg, ServerMsg, WirePrekey};
-use std::collections::HashMap;
+use spike_core::wire::{ClientMsg, GroupKind, ServerMsg, WireEntry, WirePrekey, WireSeal};
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use store::{Enqueued, PutChunk, Store};
+use store::{Enqueued, GroupAppended, GroupCreated, GroupLimits, PutChunk, Store};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -68,6 +69,20 @@ pub struct Config {
     pub trusted_proxies: Vec<Cidr>,
     /// If set, `/metrics` needs `Authorization: Bearer <token>`.
     pub metrics_token: Option<String>,
+    /// Largest entry in a group mailbox, in bytes (ADR 0025).
+    pub group_max_entry: usize,
+    /// How long a group message is kept. Short: a member who is away longer reads it from a device
+    /// that kept it, not from the relay.
+    pub group_message_ttl: Duration,
+    /// How long a commit is kept, and a mailbox after its last append. Long: a device that misses
+    /// one commit cannot read anything afterwards, so commits outlive any ordinary absence.
+    pub group_handshake_ttl: Duration,
+    /// Bytes one mailbox may hold. Past it the oldest messages (never commits) are dropped.
+    pub group_max_bytes: usize,
+    /// Group mailboxes one device may have created (and not yet seen expire).
+    pub group_max_mailboxes_per_device: usize,
+    /// Mailboxes one connection may be subscribed to.
+    pub max_group_subs_per_conn: usize,
     /// SQLite file for queues and prekeys; `None` keeps them in memory only.
     pub db_path: Option<PathBuf>,
     /// Terminate TLS in the relay. Without it the relay speaks plain WebSocket
@@ -92,6 +107,12 @@ impl Default for Config {
             req_burst: 200.0,
             trusted_proxies: Vec::new(),
             metrics_token: None,
+            group_max_entry: 256 * 1024,
+            group_message_ttl: Duration::from_secs(30 * 24 * 3600),
+            group_handshake_ttl: Duration::from_secs(180 * 24 * 3600),
+            group_max_bytes: 64 * 1024 * 1024,
+            group_max_mailboxes_per_device: 200,
+            max_group_subs_per_conn: 256,
             db_path: None,
             tls: None,
         }
@@ -110,6 +131,10 @@ const MAX_RATE_LIMIT_STREAK: u32 = 200;
 struct State {
     /// Device id -> its live connections, oldest first. A new message is pushed to all of them.
     online: HashMap<String, Vec<(u64, mpsc::UnboundedSender<ServerMsg>)>>,
+    /// Mailbox id -> the connections subscribed to it: one stored copy, pushed to each. The
+    /// senders are *weak*: only `online` keeps a connection's channel open, so evicting a
+    /// connection (dropping its sender there) still ends it, subscribed or not.
+    groups: HashMap<String, Vec<(u64, mpsc::WeakUnboundedSender<ServerMsg>)>>,
     next_conn: u64,
 }
 
@@ -225,13 +250,18 @@ where
 struct Peer {
     me: String,
     my_ed: [u8; 32],
+    /// This connection, and a weak handle to push to it (see `State::groups`).
+    conn_id: u64,
+    out: mpsc::WeakUnboundedSender<ServerMsg>,
+    /// The mailboxes this connection is subscribed to.
+    subs: Mutex<HashSet<String>>,
 }
 
 /// What a request costs the connection's token bucket.
 fn cost(m: &ClientMsg) -> f64 {
     match m {
         ClientMsg::Ping => 0.0,
-        ClientMsg::Ack { .. } => 0.25,
+        ClientMsg::Ack { .. } | ClientMsg::GroupUnsubscribe { .. } => 0.25,
         _ => 1.0,
     }
 }
@@ -335,14 +365,11 @@ where
         return Err(());
     };
     Metrics::inc(&state.metrics.auth_ok);
-    let peer = Arc::new(Peer {
-        me: me.clone(),
-        my_ed,
-    });
 
     // 2. Register (a device may hold a few live connections; the oldest beyond the cap is closed)
     // and flush the queue. The database work runs on a blocking thread.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+    let out_for_peer = out_tx.downgrade();
     let registered = {
         let (state, me) = (state.clone(), me.clone());
         tokio::task::spawn_blocking(move || register(&state, &me, out_tx)).await
@@ -352,6 +379,13 @@ where
         state.metrics.error("internal");
         return Err(());
     };
+    let peer = Arc::new(Peer {
+        me: me.clone(),
+        my_ed,
+        conn_id,
+        out: out_for_peer,
+        subs: Mutex::new(HashSet::new()),
+    });
     let run = async {
         send_json(
             &mut tx,
@@ -435,6 +469,16 @@ where
         conns.retain(|(c, _)| *c != conn_id);
         if conns.is_empty() {
             st.online.remove(&me);
+        }
+    }
+    // Forget this connection's group subscriptions.
+    let subscribed: Vec<String> = peer.subs.lock().unwrap().drain().collect();
+    for mailbox in subscribed {
+        if let Some(conns) = st.groups.get_mut(&mailbox) {
+            conns.retain(|(c, _)| *c != conn_id);
+            if conns.is_empty() {
+                st.groups.remove(&mailbox);
+            }
         }
     }
     result
@@ -522,6 +566,57 @@ fn dispatch(
                 Metrics::inc(&m.chunks_served);
             }
             Some(r)
+        }
+        ClientMsg::PublishKeyPackages { packages } => {
+            Some(on_publish_key_packages(state, &p.me, &packages))
+        }
+        ClientMsg::PublishLastResortKeyPackage { package } => {
+            Some(on_last_resort_key_package(state, &p.me, &package))
+        }
+        ClientMsg::ClaimKeyPackage { device } => {
+            // Shares the per-connection claim limit with prekeys: a stranger cannot drain a device.
+            *claims += 1;
+            if *claims > cfg.max_claims_per_conn {
+                Some(err("rate_limited", "too many claims on this connection"))
+            } else {
+                Some(on_claim_key_package(state, &device))
+            }
+        }
+        ClientMsg::GroupCreate {
+            mailbox,
+            pubkey,
+            sig,
+        } => Some(on_group_create(state, cfg, p, &mailbox, &pubkey, &sig)),
+        ClientMsg::GroupAppend {
+            mailbox,
+            kind,
+            expected_seq,
+            blob,
+            seal,
+            sig,
+        } => Some(on_group_append(
+            state,
+            cfg,
+            p,
+            &mailbox,
+            kind,
+            expected_seq,
+            &blob,
+            seal.as_ref(),
+            &sig,
+        )),
+        ClientMsg::GroupRead {
+            mailbox,
+            after_seq,
+            limit,
+            sig,
+        } => Some(on_group_read(state, p, &mailbox, after_seq, limit, &sig)),
+        ClientMsg::GroupSubscribe { mailbox, sig } => {
+            Some(on_group_subscribe(state, cfg, p, &mailbox, &sig))
+        }
+        ClientMsg::GroupUnsubscribe { mailbox } => {
+            on_group_unsubscribe(state, p, &mailbox);
+            None
         }
         ClientMsg::ClaimPrekey { device } => {
             *claims += 1;
@@ -663,7 +758,354 @@ fn on_publish_list(state: &Shared, cfg: &Config, me: &str, json: &str) -> Server
 }
 
 fn frame_limit(cfg: &Config) -> usize {
-    cfg.max_blob.max(CHUNK + OVERHEAD) * 2 + 4096
+    cfg.max_blob.max(CHUNK + OVERHEAD).max(cfg.group_max_entry) * 2 + 4096
+}
+
+// ---------------------------------------------------------------- group mailboxes (ADR 0025)
+
+fn group_limits(cfg: &Config) -> GroupLimits {
+    GroupLimits {
+        message_ttl_ms: cfg.group_message_ttl.as_millis() as i64,
+        handshake_ttl_ms: cfg.group_handshake_ttl.as_millis() as i64,
+        max_bytes: cfg.group_max_bytes,
+        max_per_device: cfg.group_max_mailboxes_per_device,
+    }
+}
+
+fn is_pubkey(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+}
+
+/// Entries one read may return.
+const GROUP_PAGE: u32 = 200;
+
+/// One-time key packages one device may have stored, and the largest one. An MLS key package is
+/// about 400 bytes; the limit leaves room for extensions and nothing more.
+const MAX_KEY_PACKAGES: usize = 200;
+const MAX_KEY_PACKAGE_BYTES: usize = 16 * 1024;
+
+fn decode_package(hex_pkg: &str) -> Result<Vec<u8>, ServerMsg> {
+    if hex_pkg.len() > MAX_KEY_PACKAGE_BYTES * 2 {
+        return Err(err("too_large", "key package exceeds the relay's limit"));
+    }
+    match hex::decode(hex_pkg) {
+        Ok(b) if !b.is_empty() => Ok(b),
+        _ => Err(err("bad_request", "a key package is empty or not hex")),
+    }
+}
+
+/// The relay cannot read a key package, so it cannot tell a good one from rubbish: whoever claims
+/// one checks it (and the credential in it) before use. It does bound what a device may store.
+fn on_publish_key_packages(state: &Shared, me: &str, packages: &[String]) -> ServerMsg {
+    if packages.is_empty() {
+        return err("bad_request", "no key packages given");
+    }
+    let mut decoded = Vec::with_capacity(packages.len());
+    for p in packages {
+        match decode_package(p) {
+            Ok(b) => decoded.push(b),
+            Err(e) => return e,
+        }
+    }
+    match state
+        .store
+        .publish_key_packages(me, &decoded, MAX_KEY_PACKAGES)
+    {
+        Ok(count) => {
+            Metrics::add(&state.metrics.key_packages_published, decoded.len() as u64);
+            ServerMsg::KeyPackagesPublished { count }
+        }
+        Err(_) => internal(),
+    }
+}
+
+fn on_last_resort_key_package(state: &Shared, me: &str, package: &str) -> ServerMsg {
+    let bytes = match decode_package(package) {
+        Ok(b) => b,
+        Err(e) => return e,
+    };
+    match state.store.publish_last_resort_key_package(me, &bytes) {
+        Ok(()) => ServerMsg::LastResortKeyPackagePublished,
+        Err(_) => internal(),
+    }
+}
+
+fn on_claim_key_package(state: &Shared, device: &str) -> ServerMsg {
+    if !is_valid_device_id(device) {
+        return err("bad_request", "invalid device id");
+    }
+    match state.store.claim_key_package(device) {
+        Ok(found) => {
+            Metrics::inc(&state.metrics.key_package_claims);
+            ServerMsg::KeyPackage {
+                device: device.to_string(),
+                last_resort: found.as_ref().is_some_and(|(_, last)| *last),
+                package: found.map(|(p, _)| hex::encode(p)),
+            }
+        }
+        Err(_) => internal(),
+    }
+}
+
+fn on_group_create(
+    state: &Shared,
+    cfg: &Config,
+    p: &Peer,
+    mailbox: &str,
+    pubkey: &str,
+    sig: &str,
+) -> ServerMsg {
+    if !is_valid_mailbox_id(mailbox) || !is_pubkey(pubkey) {
+        return err("bad_request", "invalid mailbox id or public key");
+    }
+    // The new key signs the request: whoever registers a mailbox holds its private key.
+    if mailbox::verify(pubkey, &mailbox::create_bytes(&p.me, mailbox, pubkey), sig).is_err() {
+        return err("bad_signature", "the new key did not sign this request");
+    }
+    match state
+        .store
+        .create_group_mailbox(mailbox, pubkey, &p.me, &group_limits(cfg))
+    {
+        Ok(GroupCreated::Created) => {
+            Metrics::inc(&state.metrics.group_mailboxes_created);
+            ServerMsg::GroupCreated {
+                mailbox: mailbox.into(),
+            }
+        }
+        Ok(GroupCreated::Exists) => err("exists", "that mailbox id is taken"),
+        Ok(GroupCreated::OverQuota) => err(
+            "quota_exceeded",
+            "this device has created as many group mailboxes as allowed",
+        ),
+        Err(_) => internal(),
+    }
+}
+
+/// Look up a mailbox's key and check a request signed with it. `Err` is the reply to send.
+fn group_auth(state: &Shared, mailbox: &str, signed: &[u8], sig: &str) -> Result<(), ServerMsg> {
+    let pubkey = match state.store.group_pubkey(mailbox) {
+        Ok(Some(k)) => k,
+        Ok(None) => return Err(err("unknown_mailbox", "no such mailbox")),
+        Err(_) => return Err(internal()),
+    };
+    mailbox::verify(&pubkey, signed, sig).map_err(|_| err("bad_signature", "signature rejected"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn on_group_append(
+    state: &Shared,
+    cfg: &Config,
+    p: &Peer,
+    mailbox: &str,
+    kind: GroupKind,
+    expected_seq: Option<u64>,
+    blob_hex: &str,
+    seal: Option<&WireSeal>,
+    sig: &str,
+) -> ServerMsg {
+    if !is_valid_mailbox_id(mailbox) {
+        return err("bad_request", "invalid mailbox id");
+    }
+    if blob_hex.len() > cfg.group_max_entry * 2 {
+        return err("too_large", "entry exceeds the relay's limit");
+    }
+    let Ok(blob) = hex::decode(blob_hex) else {
+        return err("bad_request", "entry is not hex");
+    };
+    // A commit changes the group, so it must say where it expects to land; only a commit may seal.
+    if kind == GroupKind::Commit && expected_seq.is_none() {
+        return err("bad_request", "a commit must say which position it expects");
+    }
+    if kind == GroupKind::Message && seal.is_some() {
+        return err("bad_request", "only a commit can seal a mailbox");
+    }
+    if let Some(s) = seal {
+        if !is_valid_mailbox_id(&s.mailbox) || !is_pubkey(&s.pubkey) {
+            return err("bad_request", "invalid successor mailbox id or key");
+        }
+    }
+    let signed = mailbox::append_bytes(
+        &p.me,
+        mailbox,
+        kind,
+        expected_seq,
+        &blob,
+        seal.map(|s| (s.mailbox.as_str(), s.pubkey.as_str())),
+    );
+    if let Err(e) = group_auth(state, mailbox, &signed, sig) {
+        return e;
+    }
+    // The successor's key proves it exists, as when a mailbox is registered.
+    if let Some(s) = seal {
+        let proof = mailbox::create_bytes(&p.me, &s.mailbox, &s.pubkey);
+        if mailbox::verify(&s.pubkey, &proof, &s.sig).is_err() {
+            return err(
+                "bad_signature",
+                "the successor key did not sign this request",
+            );
+        }
+    }
+    // State before store, as everywhere: a subscriber registered in between gets this entry
+    // pushed, one registered after reads it.
+    let mut st = state.state.lock().unwrap();
+    let outcome = state.store.append_group(
+        mailbox,
+        kind,
+        expected_seq,
+        &blob,
+        seal.map(|s| (s.mailbox.as_str(), s.pubkey.as_str())),
+        &p.me,
+        &group_limits(cfg),
+    );
+    match outcome {
+        Ok(GroupAppended::Appended { seq, sealed }) => {
+            let m = &state.metrics;
+            Metrics::inc(&m.group_appends);
+            Metrics::add(&m.group_bytes_appended, blob.len() as u64);
+            if let Some(subs) = st.groups.get_mut(mailbox) {
+                let push = ServerMsg::GroupEntry {
+                    mailbox: mailbox.into(),
+                    entry: WireEntry {
+                        seq,
+                        kind,
+                        blob: blob_hex.to_string(),
+                    },
+                    sealed,
+                };
+                // A connection that went away fails the send: forget it.
+                subs.retain(|(_, tx)| {
+                    let ok = tx.upgrade().is_some_and(|tx| tx.send(push.clone()).is_ok());
+                    if ok {
+                        Metrics::inc(&m.group_pushes);
+                    }
+                    ok
+                });
+            }
+            ServerMsg::GroupAppended {
+                mailbox: mailbox.into(),
+                seq,
+            }
+        }
+        Ok(GroupAppended::Conflict(next_seq)) => ServerMsg::GroupConflict {
+            mailbox: mailbox.into(),
+            next_seq,
+        },
+        Ok(GroupAppended::Unknown) => err("unknown_mailbox", "no such mailbox"),
+        Ok(GroupAppended::Sealed) => err("sealed", "this mailbox was closed by a commit"),
+        Ok(GroupAppended::Full) => err(
+            "mailbox_full",
+            "this mailbox is full of entries that cannot be dropped",
+        ),
+        Ok(GroupAppended::OverQuota) => err(
+            "quota_exceeded",
+            "this device has created as many group mailboxes as allowed",
+        ),
+        Ok(GroupAppended::TargetExists) => err("exists", "the successor mailbox id is taken"),
+        Err(_) => internal(),
+    }
+}
+
+fn on_group_read(
+    state: &Shared,
+    p: &Peer,
+    mailbox: &str,
+    after_seq: u64,
+    limit: u32,
+    sig: &str,
+) -> ServerMsg {
+    if !is_valid_mailbox_id(mailbox) {
+        return err("bad_request", "invalid mailbox id");
+    }
+    if let Err(e) = group_auth(
+        state,
+        mailbox,
+        &mailbox::read_bytes(&p.me, mailbox, after_seq, limit),
+        sig,
+    ) {
+        return e;
+    }
+    match state
+        .store
+        .read_group(mailbox, after_seq, limit.clamp(1, GROUP_PAGE))
+    {
+        Ok(Some(page)) => {
+            Metrics::inc(&state.metrics.group_reads);
+            ServerMsg::GroupEntries {
+                mailbox: mailbox.into(),
+                entries: page
+                    .entries
+                    .into_iter()
+                    .map(|e| WireEntry {
+                        seq: e.seq,
+                        kind: e.kind,
+                        blob: hex::encode(e.blob),
+                    })
+                    .collect(),
+                next_seq: page.next_seq,
+                sealed: page.sealed,
+            }
+        }
+        Ok(None) => err("unknown_mailbox", "no such mailbox"),
+        Err(_) => internal(),
+    }
+}
+
+fn on_group_subscribe(
+    state: &Shared,
+    cfg: &Config,
+    p: &Peer,
+    mailbox: &str,
+    sig: &str,
+) -> ServerMsg {
+    if !is_valid_mailbox_id(mailbox) {
+        return err("bad_request", "invalid mailbox id");
+    }
+    if let Err(e) = group_auth(
+        state,
+        mailbox,
+        &mailbox::subscribe_bytes(&p.me, mailbox),
+        sig,
+    ) {
+        return e;
+    }
+    let mut subs = p.subs.lock().unwrap();
+    if !subs.contains(mailbox) && subs.len() >= cfg.max_group_subs_per_conn {
+        return err(
+            "quota_exceeded",
+            "this connection is subscribed to as many mailboxes as allowed",
+        );
+    }
+    let mut st = state.state.lock().unwrap();
+    let status = match state.store.group_status(mailbox) {
+        Ok(Some(s)) => s,
+        Ok(None) => return err("unknown_mailbox", "no such mailbox"),
+        Err(_) => return internal(),
+    };
+    if subs.insert(mailbox.to_string()) {
+        st.groups
+            .entry(mailbox.to_string())
+            .or_default()
+            .push((p.conn_id, p.out.clone()));
+    }
+    ServerMsg::GroupSubscribed {
+        mailbox: mailbox.into(),
+        next_seq: status.0,
+        sealed: status.1,
+    }
+}
+
+fn on_group_unsubscribe(state: &Shared, p: &Peer, mailbox: &str) {
+    if p.subs.lock().unwrap().remove(mailbox) {
+        let mut st = state.state.lock().unwrap();
+        if let Some(conns) = st.groups.get_mut(mailbox) {
+            conns.retain(|(c, _)| *c != p.conn_id);
+            if conns.is_empty() {
+                st.groups.remove(mailbox);
+            }
+        }
+    }
 }
 
 fn is_blob_id(s: &str) -> bool {

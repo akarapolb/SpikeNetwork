@@ -1,6 +1,6 @@
 # ADR 0025: Large groups with MLS
 
-Status: **Proposed. For your review; not built.** Nothing here changes existing code or groups.
+Status: **Accepted 2026-10-23 for slices 0 and 1** (decisions recorded below). **Slice 0 (the relay mailbox) is built; slice 1 (`spike-mls`) is not started.** Nothing here changes existing groups or clients.
 Date: 2026-10-23
 
 Evidence: `spikes/openmls/REPORT.md` (a feasibility spike, committed with its code and raw data). Read its verdict and its list of what is unverified before this ADR: several choices below rest on design reasoning about the relay that nobody has measured.
@@ -76,11 +76,37 @@ Messages inside the group are the same envelopes (text, edit, delete, attachment
 3. **Desktop** screens (reusing the group screens; a "Large group" switch and a size note).
 4. **Hardening:** phone benchmarks on real hardware, the advisory watch, fuzzing time, and an independent review of the credential design and the relay protocol before any real use.
 
-## Decisions I need from you
-1. **MLS as the path above 20, with the kind chosen at creation and no conversion in the first version.**
-2. **The first-release cap:** 500 people and 1000 devices as proposed, or lower (200?) until phones are measured.
-3. **One leaf per device,** accepting that linking and revoking a device need an online device and a commit per large group.
+## Decisions (2026-10-23)
+Accepted as proposed, with the recommended defaults:
+1. **MLS is the path above 20**, the kind chosen at creation, no conversion in the first version.
+2. **First-release cap: 500 people and 1000 devices.**
+3. **One leaf per device**, with linking and revoking a device needing an online device and a commit per large group.
 4. **The relay changes and the metadata trade** in sections 4 and 5, including the longer handshake retention.
-5. **No external commits in the first version:** a device offline too long is re-added by a person.
-6. **Shipping policy for an unaudited dependency:** build now with the exact pin and the safeguards in section 8, but treat an independent review as a gate before any real use (recommended), or require it before the CLI slice.
-7. **Go ahead with slices 0 and 1 only** (the relay mailbox with fake payloads, then the `spike-mls` crate), with no client or UI work until they pass.
+5. **No external commits in the first version.**
+6. **An independent review is a gate before any real use.** Build now with the exact pin and the safeguards in section 8.
+7. **Slices 0 and 1 only** (the relay mailbox with fake payloads, then the `spike-mls` crate): no client or UI work until they pass.
+
+## Slice 0: what was built (2026-10-23)
+The relay side of section 4, with fake payloads, before any MLS code. Everything below is in `relay/`, `core/src/mailbox.rs` and `core/src/wire.rs`, with client calls in `cli/src/client.rs` and tests in `cli/tests/mailbox.rs`.
+
+**Protocol.**
+- A mailbox is registered with its id and an Ed25519 *public* key (`GroupCreate`; the new key signs the request, so whoever registers holds the private key). Every later request (`GroupAppend`, `GroupRead`, `GroupSubscribe`) is signed with that key. Each signature covers the **requesting device's id** (the relay knows which device authenticated the connection), the mailbox, and every field of the request, with length-prefixed fields and a context string per request type: a signature captured on one connection cannot be replayed by another device, one request's signature is useless for another, and no two requests produce the same bytes.
+- An entry is a `Message` or a `Commit`. A **commit** must say the position it expects and is accepted only if the log is exactly there (compare-and-append): of two concurrent commits one gets the position, the other is told `GroupConflict { next_seq }`. Messages have no such rule. Welcomes are not in the mailbox (they go to the new device's own queue, as today).
+- A commit may **seal** the mailbox and name a successor (id, public key, and a signature by the successor key proving possession). Closing the old mailbox and opening the new one happen in one transaction: a bad proof, a stale position, a successor id that exists, or a device over its quota leaves everything unchanged. A sealed mailbox refuses appends but can still be read, so a member who was offline replays it up to the sealing commit and finds the handover there.
+- **Fan-out:** `GroupSubscribe` registers the connection; each append is stored once and pushed (with its position) to every subscriber. Subscribing returns where the mailbox is, not a backlog: subscribe first, then read from your own cursor (`GroupRead`, capped at 200 entries), and use the positions to tell pushes from what you read.
+- **Key packages** (the other half of the ADR's slice 0): `PublishKeyPackages`, `PublishLastResortKeyPackage`, `ClaimKeyPackage`. Opaque to the relay; one-time packages are handed out once each, in order, then the reusable last-resort package repeats; at most 200 per device and 16 KiB each; claims share the per-connection claim limit with prekeys so a stranger cannot drain a device. The relay cannot check a package, so whoever claims one checks it and the credential in it.
+
+**Limits and retention** (all relay flags, see `docs/deploy-relay.md`): entries up to 256 KiB; messages kept 30 days, commits and a mailbox after its last append 180 days; 64 MiB per mailbox, past which the oldest *messages* (never commits) are dropped and a mailbox full of commits says `mailbox_full`; 200 mailboxes per creating device (a seal counts for the device that seals); 256 subscriptions per connection; positions are never reused. Storage is SQLite schema version 3, applied with the existing backup-before-upgrade and refuse-newer-database rules. Metrics add counts only (mailboxes, entries, bytes, appends, pushes, reads, key packages), with no id in any name or label.
+
+**How it was tested.** 16 integration tests against a real relay (`cli/tests/mailbox.rs`), store unit tests including the upgrade from the previous schema, and core tests for the signing bytes. **Eighteen protections were each broken in turn and a test failed every time** (signatures, device binding of the position check, commits needing a position, only commits sealing, proof of the successor key, existing successor ids, sealed mailboxes, quotas, retention classes, never dropping commits, subscription cap, one-time package consumption and caps), with a clean control run before and after. Two things went wrong on the way and are worth knowing: the relay's connection eviction broke (an evicted connection's channel stayed open because the new subscription registry held a clone of its sender; fixed with weak senders, with a regression test that includes a subscribed connection), and the first mutation harness left a stale binary behind (restoring a file with an old timestamp makes cargo keep the mutated build), which invalidated its first results until it was rewritten and rerun with control runs.
+
+**Differences from the proposal above.** Subscribing returns no backlog (see above). A seal needs the successor key's proof of possession, which the proposal did not say. The outer-layer secret (section 5) and the handover of the new mailbox key are entirely client matters: the relay never sees either, so slice 0 cannot test them; slice 1 must.
+
+**What slice 0 does not show.**
+- **Throughput is unmeasured.** Every append is one SQLite transaction with `synchronous=FULL` (one disk flush). A busy 500-person group could produce many appends a second; nothing here says the relay keeps up. Measure before slice 2.
+- **Any current member can fill a mailbox** with garbage up to its cap, evicting older messages (never commits); the only brakes are the per-connection request rate and the mailbox size cap. A removed member can no longer append once the removal commit seals the old mailbox, but between a member turning hostile and being removed nothing stops this.
+- **The relay still sees** which authenticated devices read and write which mailbox, sizes and times, and the number of entries, as section 5 says.
+- **Ordering is by the relay.** A dishonest relay can still show different logs to different members; only members comparing epoch authenticators can notice (not built).
+- **Nothing uses it yet.** No client creates a mailbox; the deployment guide says so.
+
+**For slice 1:** the `spike-mls` crate must put the new mailbox key and id inside the encrypted removal commit, wrap every message in the outer layer, and treat `GroupConflict` as "discard my pending commit and redo it on the winner". The spike's credential check and merge-after-accept are the starting point.

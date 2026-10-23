@@ -5,8 +5,9 @@ use crate::transport::{dial, Target, Ws};
 use anyhow::{anyhow, bail, Result};
 use futures_util::{SinkExt, StreamExt};
 use spike_core::identity::{Identity, SignedPrekey};
+use spike_core::mailbox::{self, MailboxKey};
 use spike_core::owner::DeviceList;
-use spike_core::wire::{ClientMsg, ServerMsg};
+use spike_core::wire::{ClientMsg, GroupKind, ServerMsg, WireEntry, WireSeal};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
@@ -14,6 +15,42 @@ use tokio_tungstenite::tungstenite::Message;
 pub struct Delivery {
     pub id: String,
     pub blob: Vec<u8>,
+}
+
+/// One entry of a group mailbox (ADR 0025): its position, what it is, and its opaque contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupEntry {
+    pub seq: u64,
+    pub kind: GroupKind,
+    pub blob: Vec<u8>,
+}
+
+/// What a read of a group mailbox returned.
+#[derive(Debug, Clone)]
+pub struct GroupPage {
+    pub entries: Vec<GroupEntry>,
+    /// The position the next append will get (not the end of this page).
+    pub next_seq: u64,
+    /// The mailbox was closed by a commit that opened another.
+    pub sealed: bool,
+}
+
+/// How an append to a group mailbox ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Appended {
+    Seq(u64),
+    /// A commit expected another position; the log is really at `next_seq`.
+    Conflict {
+        next_seq: u64,
+    },
+}
+
+fn group_entry(e: WireEntry) -> Result<GroupEntry> {
+    Ok(GroupEntry {
+        seq: e.seq,
+        kind: e.kind,
+        blob: hex::decode(e.blob)?,
+    })
 }
 
 pub struct Relay {
@@ -31,6 +68,8 @@ pub struct Relay {
     next_ping: Instant,
     /// Set after a ping went out; cleared by anything the relay sends.
     pong_due: Option<Instant>,
+    /// Group entries pushed while this connection was waiting for something else.
+    group_pending: VecDeque<(String, GroupEntry, bool)>,
 }
 
 /// Ping every 25 s (under the 60 s idle timeout many proxies use) and give up after 15 s of silence.
@@ -50,6 +89,7 @@ impl Relay {
             pong_wait: PONG_WAIT,
             next_ping: Instant::now() + KEEPALIVE,
             pong_due: None,
+            group_pending: VecDeque::new(),
         };
         let ServerMsg::Challenge { nonce } = r.read().await? else {
             bail!("relay did not send a challenge")
@@ -177,6 +217,237 @@ impl Relay {
                 }
                 ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
                 _ => {}
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- key packages and group mailboxes (ADR 0025)
+
+    /// Upload one-time key packages (opaque bytes). Returns how many the relay now holds for us.
+    pub async fn publish_key_packages(&mut self, packages: &[Vec<u8>]) -> Result<usize> {
+        let packages = packages.iter().map(hex::encode).collect();
+        match self
+            .group_request(ClientMsg::PublishKeyPackages { packages })
+            .await?
+        {
+            ServerMsg::KeyPackagesPublished { count } => Ok(count),
+            other => bail!("unexpected answer to publishing key packages: {other:?}"),
+        }
+    }
+
+    /// Replace our reusable last-resort key package.
+    pub async fn publish_last_resort(&mut self, package: &[u8]) -> Result<()> {
+        match self
+            .group_request(ClientMsg::PublishLastResortKeyPackage {
+                package: hex::encode(package),
+            })
+            .await?
+        {
+            ServerMsg::LastResortKeyPackagePublished => Ok(()),
+            other => bail!("unexpected answer to publishing a last-resort key package: {other:?}"),
+        }
+    }
+
+    /// Take one of `device`'s key packages: `(bytes, is_last_resort)`, or `None` if it has none.
+    pub async fn claim_key_package(&mut self, device: &str) -> Result<Option<(Vec<u8>, bool)>> {
+        match self
+            .group_request(ClientMsg::ClaimKeyPackage {
+                device: device.into(),
+            })
+            .await?
+        {
+            ServerMsg::KeyPackage {
+                package,
+                last_resort,
+                ..
+            } => Ok(package
+                .map(|p| hex::decode(p).map(|b| (b, last_resort)))
+                .transpose()?),
+            other => bail!("unexpected answer to claiming a key package: {other:?}"),
+        }
+    }
+
+    /// Send a request and return the relay's first answer to it. Deliveries and group pushes that
+    /// arrive meanwhile are kept. Lets a test send a hand-made request.
+    pub async fn request(&mut self, msg: ClientMsg) -> Result<ServerMsg> {
+        self.write(&msg).await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                ServerMsg::Pong => {}
+                other => return Ok(other),
+            }
+        }
+    }
+
+    /// Like [`request`](Self::request), but a relay error is an error.
+    async fn group_request(&mut self, msg: ClientMsg) -> Result<ServerMsg> {
+        match self.request(msg).await? {
+            ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+            other => Ok(other),
+        }
+    }
+
+    /// Register a mailbox under `key`. Whoever holds `key` can read and append.
+    pub async fn group_create(&mut self, key: &MailboxKey, mailbox: &str) -> Result<()> {
+        let pubkey = key.public_hex();
+        let sig = key.sign(&mailbox::create_bytes(&self.device_id, mailbox, &pubkey));
+        match self
+            .group_request(ClientMsg::GroupCreate {
+                mailbox: mailbox.into(),
+                pubkey,
+                sig,
+            })
+            .await?
+        {
+            ServerMsg::GroupCreated { .. } => Ok(()),
+            other => bail!("unexpected answer to a mailbox registration: {other:?}"),
+        }
+    }
+
+    /// Append an entry. A commit must give the position it expects (`expected_seq`); it may
+    /// `seal` this mailbox, handing the group to a successor whose key proves it exists.
+    pub async fn group_append(
+        &mut self,
+        key: &MailboxKey,
+        mailbox: &str,
+        kind: GroupKind,
+        expected_seq: Option<u64>,
+        blob: &[u8],
+        seal: Option<(&str, &MailboxKey)>,
+    ) -> Result<Appended> {
+        let seal_pub = seal.map(|(id, k)| (id.to_string(), k.public_hex()));
+        let sig = key.sign(&mailbox::append_bytes(
+            &self.device_id,
+            mailbox,
+            kind,
+            expected_seq,
+            blob,
+            seal_pub.as_ref().map(|(m, k)| (m.as_str(), k.as_str())),
+        ));
+        let seal = seal
+            .zip(seal_pub)
+            .map(|((_, successor), (mb, pubkey))| WireSeal {
+                sig: successor.sign(&mailbox::create_bytes(&self.device_id, &mb, &pubkey)),
+                mailbox: mb,
+                pubkey,
+            });
+        match self
+            .group_request(ClientMsg::GroupAppend {
+                mailbox: mailbox.into(),
+                kind,
+                expected_seq,
+                blob: hex::encode(blob),
+                seal,
+                sig,
+            })
+            .await?
+        {
+            ServerMsg::GroupAppended { seq, .. } => Ok(Appended::Seq(seq)),
+            ServerMsg::GroupConflict { next_seq, .. } => Ok(Appended::Conflict { next_seq }),
+            other => bail!("unexpected answer to an append: {other:?}"),
+        }
+    }
+
+    /// Read up to `limit` entries after `after_seq`, oldest first (the relay caps a page at 200).
+    pub async fn group_read(
+        &mut self,
+        key: &MailboxKey,
+        mailbox: &str,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<GroupPage> {
+        let sig = key.sign(&mailbox::read_bytes(
+            &self.device_id,
+            mailbox,
+            after_seq,
+            limit,
+        ));
+        match self
+            .group_request(ClientMsg::GroupRead {
+                mailbox: mailbox.into(),
+                after_seq,
+                limit,
+                sig,
+            })
+            .await?
+        {
+            ServerMsg::GroupEntries {
+                entries,
+                next_seq,
+                sealed,
+                ..
+            } => Ok(GroupPage {
+                entries: entries
+                    .into_iter()
+                    .map(group_entry)
+                    .collect::<Result<_>>()?,
+                next_seq,
+                sealed,
+            }),
+            other => bail!("unexpected answer to a read: {other:?}"),
+        }
+    }
+
+    /// Be pushed every entry appended from now on (see [`next_group_entry`](Self::next_group_entry)).
+    /// Returns where the mailbox is: the next position, and whether it is sealed. Read from your
+    /// own cursor after subscribing: pushes carry their position.
+    pub async fn group_subscribe(
+        &mut self,
+        key: &MailboxKey,
+        mailbox: &str,
+    ) -> Result<(u64, bool)> {
+        let sig = key.sign(&mailbox::subscribe_bytes(&self.device_id, mailbox));
+        match self
+            .group_request(ClientMsg::GroupSubscribe {
+                mailbox: mailbox.into(),
+                sig,
+            })
+            .await?
+        {
+            ServerMsg::GroupSubscribed {
+                next_seq, sealed, ..
+            } => Ok((next_seq, sealed)),
+            other => bail!("unexpected answer to a subscription: {other:?}"),
+        }
+    }
+
+    pub async fn group_unsubscribe(&mut self, mailbox: &str) -> Result<()> {
+        self.write(&ClientMsg::GroupUnsubscribe {
+            mailbox: mailbox.into(),
+        })
+        .await
+    }
+
+    /// The next pushed group entry (mailbox id, entry, whether that entry sealed the mailbox),
+    /// waiting up to `idle`. `Ok(None)` means nothing arrived in that time.
+    pub async fn next_group_entry(
+        &mut self,
+        idle: Duration,
+    ) -> Result<Option<(String, GroupEntry, bool)>> {
+        let deadline = Instant::now() + idle;
+        loop {
+            if let Some(e) = self.group_pending.pop_front() {
+                return Ok(Some(e));
+            }
+            match tokio::time::timeout_at(deadline.into(), self.read_raw()).await {
+                Err(_) => return Ok(None),
+                Ok(m) => match m? {
+                    ServerMsg::GroupEntry {
+                        mailbox,
+                        entry,
+                        sealed,
+                    } => return Ok(Some((mailbox, group_entry(entry)?, sealed))),
+                    ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                        id,
+                        blob: hex::decode(blob)?,
+                    }),
+                    ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                    _ => {}
+                },
             }
         }
     }
@@ -361,7 +632,8 @@ impl Relay {
         Ok(())
     }
 
-    async fn read(&mut self) -> Result<ServerMsg> {
+    /// The next message from the relay, whatever it is.
+    async fn read_raw(&mut self) -> Result<ServerMsg> {
         loop {
             match self
                 .ws
@@ -372,6 +644,23 @@ impl Relay {
                 Message::Text(t) => return Ok(serde_json::from_str(&t)?),
                 Message::Close(_) => bail!("relay closed the connection"),
                 _ => {}
+            }
+        }
+    }
+
+    /// The next message other than a group push. Pushes that arrive while something else is
+    /// waited for are kept for [`next_group_entry`](Self::next_group_entry), not dropped.
+    async fn read(&mut self) -> Result<ServerMsg> {
+        loop {
+            match self.read_raw().await? {
+                ServerMsg::GroupEntry {
+                    mailbox,
+                    entry,
+                    sealed,
+                } => self
+                    .group_pending
+                    .push_back((mailbox, group_entry(entry)?, sealed)),
+                other => return Ok(other),
             }
         }
     }

@@ -8,7 +8,7 @@ use crate::store::Stats;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 /// The error codes the relay can answer with (anything else is counted as `other`).
-const ERROR_CODES: [&str; 14] = [
+const ERROR_CODES: [&str; 19] = [
     "bad_request",
     "too_large",
     "queue_full",
@@ -21,6 +21,11 @@ const ERROR_CODES: [&str; 14] = [
     "quota_exceeded",
     "not_owner",
     "auth_failed",
+    "bad_signature",
+    "unknown_mailbox",
+    "sealed",
+    "exists",
+    "mailbox_full",
     "internal",
     "other",
 ];
@@ -46,6 +51,13 @@ pub struct Metrics {
     pub chunks_served: AtomicU64,
     pub connections_evicted: AtomicU64,
     pub connections_idle_closed: AtomicU64,
+    pub group_mailboxes_created: AtomicU64,
+    pub group_appends: AtomicU64,
+    pub group_bytes_appended: AtomicU64,
+    pub group_pushes: AtomicU64,
+    pub group_reads: AtomicU64,
+    pub key_packages_published: AtomicU64,
+    pub key_package_claims: AtomicU64,
     errors: [AtomicU64; ERROR_CODES.len()],
 }
 
@@ -161,6 +173,41 @@ impl Metrics {
             "Connections closed after going quiet.",
             g(&self.connections_idle_closed),
         );
+        counter(
+            "group_mailboxes_created_total",
+            "Group mailboxes registered (including by a seal).",
+            g(&self.group_mailboxes_created),
+        );
+        counter(
+            "group_appends_total",
+            "Entries appended to group mailboxes.",
+            g(&self.group_appends),
+        );
+        counter(
+            "group_bytes_appended_total",
+            "Bytes of group ciphertext appended.",
+            g(&self.group_bytes_appended),
+        );
+        counter(
+            "group_pushes_total",
+            "Group entries pushed to subscribers.",
+            g(&self.group_pushes),
+        );
+        counter(
+            "group_reads_total",
+            "Group mailbox reads answered.",
+            g(&self.group_reads),
+        );
+        counter(
+            "key_packages_published_total",
+            "Key packages uploaded.",
+            g(&self.key_packages_published),
+        );
+        counter(
+            "key_package_claims_total",
+            "Key packages handed to someone adding a device to a group.",
+            g(&self.key_package_claims),
+        );
         out.push_str("# HELP spike_relay_errors_total Error replies by code.\n# TYPE spike_relay_errors_total counter\n");
         for (code, n) in ERROR_CODES.iter().zip(&self.errors) {
             out.push_str(&format!(
@@ -214,6 +261,26 @@ impl Metrics {
                     "device_lists",
                     "Signed device lists held.",
                     s.device_lists as i64,
+                );
+                gauge(
+                    "group_mailboxes",
+                    "Group mailboxes held.",
+                    s.group_mailboxes as i64,
+                );
+                gauge(
+                    "group_entries",
+                    "Entries held in group mailboxes.",
+                    s.group_entries as i64,
+                );
+                gauge(
+                    "group_bytes",
+                    "Bytes of group ciphertext held.",
+                    s.group_bytes as i64,
+                );
+                gauge(
+                    "key_packages",
+                    "One-time key packages held for devices.",
+                    s.key_packages as i64,
                 );
             }
             None => gauge("db_up", "1 if the database answered.", 0),

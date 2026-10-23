@@ -12,6 +12,7 @@ pub mod envelope;
 pub mod group;
 pub mod identity;
 pub mod link;
+pub mod mailbox;
 pub mod merge;
 pub mod owner;
 pub mod session;

@@ -41,6 +41,24 @@ struct Args {
     /// Repeat or comma-separate. Without it the header is ignored.
     #[arg(long, value_delimiter = ',', value_parser = Cidr::parse)]
     trusted_proxy: Vec<Cidr>,
+    /// Largest entry in a group mailbox, in bytes.
+    #[arg(long, default_value_t = 256 * 1024)]
+    group_max_entry: usize,
+    /// Days a group message is kept.
+    #[arg(long, default_value_t = 30)]
+    group_message_days: u64,
+    /// Days a group commit is kept, and a mailbox after its last append.
+    #[arg(long, default_value_t = 180)]
+    group_handshake_days: u64,
+    /// Bytes one group mailbox may hold; past it the oldest messages (never commits) are dropped.
+    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    group_max_bytes: usize,
+    /// Group mailboxes one device may have created.
+    #[arg(long, default_value_t = 200)]
+    group_max_mailboxes_per_device: usize,
+    /// Group mailboxes one connection may be subscribed to.
+    #[arg(long, default_value_t = 256)]
+    max_group_subs_per_conn: usize,
     /// Serve /healthz and /metrics (plain HTTP, content-free numbers) on this address.
     #[arg(long)]
     metrics_listen: Option<String>,
@@ -103,6 +121,12 @@ async fn main() -> std::io::Result<()> {
         metrics_token: a.metrics_token,
         ttl: Duration::from_secs(a.ttl_secs),
         queue_cap: a.queue_cap,
+        group_max_entry: a.group_max_entry,
+        group_message_ttl: Duration::from_secs(a.group_message_days * 24 * 3600),
+        group_handshake_ttl: Duration::from_secs(a.group_handshake_days * 24 * 3600),
+        group_max_bytes: a.group_max_bytes,
+        group_max_mailboxes_per_device: a.group_max_mailboxes_per_device,
+        max_group_subs_per_conn: a.max_group_subs_per_conn,
         db_path: a.db,
         tls,
         ..Config::default()

@@ -1,4 +1,4 @@
-//! Durable storage for queued ciphertext and prekeys (SQLite).
+//! Durable storage for queued ciphertext, prekeys, attachment chunks and group mailboxes (SQLite).
 //!
 //! `synchronous=FULL` so a message the relay has said "accepted" to survives a
 //! crash or power loss. The database holds ciphertext and routing metadata
@@ -7,7 +7,7 @@
 //! encryption is the operator's responsibility.
 
 use rusqlite::{params, Connection, OptionalExtension};
-use spike_core::wire::WirePrekey;
+use spike_core::wire::{GroupKind, WirePrekey};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,7 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// - 1: the original tables (databases from before versioning are treated as version 1).
 /// - 2: indexes on `expires`, so the expiry purge no longer scans whole tables.
-pub const SCHEMA_VERSION: i64 = 2;
+/// - 3: group mailboxes and their entries (ADR 0025).
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -63,6 +64,10 @@ pub struct Stats {
     pub blob_bytes: u64,
     pub prekeys: u64,
     pub device_lists: u64,
+    pub group_mailboxes: u64,
+    pub group_entries: u64,
+    pub group_bytes: u64,
+    pub key_packages: u64,
 }
 
 pub struct Store {
@@ -84,6 +89,50 @@ pub enum PutChunk {
 pub struct Stored {
     pub id: i64,
     pub blob: Vec<u8>,
+}
+
+/// Limits a group mailbox is held to (ADR 0025).
+#[derive(Clone, Copy, Debug)]
+pub struct GroupLimits {
+    pub message_ttl_ms: i64,
+    pub handshake_ttl_ms: i64,
+    pub max_bytes: usize,
+    pub max_per_device: usize,
+}
+
+pub enum GroupCreated {
+    Created,
+    Exists,
+    OverQuota,
+}
+
+pub enum GroupAppended {
+    /// Stored at this position; `sealed` is true when this commit closed the mailbox.
+    Appended {
+        seq: u64,
+        sealed: bool,
+    },
+    /// A commit expected another position; this is where the log really is.
+    Conflict(u64),
+    Unknown,
+    Sealed,
+    /// The mailbox is full of entries that may not be dropped.
+    Full,
+    OverQuota,
+    /// The seal named a mailbox id that already exists.
+    TargetExists,
+}
+
+pub struct GroupEntryRow {
+    pub seq: u64,
+    pub kind: GroupKind,
+    pub blob: Vec<u8>,
+}
+
+pub struct GroupPageRow {
+    pub entries: Vec<GroupEntryRow>,
+    pub next_seq: u64,
+    pub sealed: bool,
 }
 
 /// Version 1: the tables the relay has always had. `IF NOT EXISTS` makes it safe on a database that
@@ -128,6 +177,40 @@ const V1: &str = "CREATE TABLE IF NOT EXISTS messages (
 const V2: &str = "CREATE INDEX IF NOT EXISTS messages_expires ON messages(expires);
      CREATE INDEX IF NOT EXISTS blob_chunks_expires ON blob_chunks(expires);";
 
+/// Version 3: group mailboxes. A mailbox is an append-only log with relay-assigned positions and
+/// one public key every request must be signed with; its entries are opaque to the relay. The
+/// relay stores no member list and no group id, only these random mailbox ids.
+const V3: &str = "CREATE TABLE IF NOT EXISTS group_mailboxes (
+         mailbox   TEXT PRIMARY KEY,
+         pubkey    TEXT    NOT NULL,
+         creator   TEXT    NOT NULL,
+         next_seq  INTEGER NOT NULL,
+         sealed_at INTEGER,
+         bytes     INTEGER NOT NULL,
+         expires   INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS group_mailboxes_creator ON group_mailboxes(creator);
+     CREATE INDEX IF NOT EXISTS group_mailboxes_expires ON group_mailboxes(expires);
+     CREATE TABLE IF NOT EXISTS group_entries (
+         mailbox TEXT    NOT NULL,
+         seq     INTEGER NOT NULL,
+         kind    INTEGER NOT NULL,
+         blob    BLOB    NOT NULL,
+         expires INTEGER NOT NULL,
+         PRIMARY KEY (mailbox, seq)
+     );
+     CREATE INDEX IF NOT EXISTS group_entries_expires ON group_entries(expires);
+     CREATE TABLE IF NOT EXISTS key_packages (
+         id      INTEGER PRIMARY KEY AUTOINCREMENT,
+         device  TEXT NOT NULL,
+         package BLOB NOT NULL,
+         UNIQUE(device, package)
+     );
+     CREATE TABLE IF NOT EXISTS key_package_last_resort (
+         device  TEXT PRIMARY KEY,
+         package BLOB NOT NULL
+     );";
+
 /// Apply every migration between the stored version and [`SCHEMA_VERSION`], each in its own
 /// transaction. A database from before versioning has user_version 0 and the version 1 tables:
 /// it is told apart from a brand new one by having a `messages` table.
@@ -164,7 +247,7 @@ fn migrate(conn: &mut Connection, path: Option<&Path>) -> Result<(), StoreError>
             }
         }
     }
-    let steps: [(i64, &str); 2] = [(1, V1), (2, V2)];
+    let steps: [(i64, &str); 3] = [(1, V1), (2, V2), (3, V3)];
     for (version, sql) in steps {
         if found >= version {
             continue;
@@ -236,17 +319,24 @@ impl Store {
             blob_bytes: one("SELECT COALESCE(SUM(LENGTH(data)), 0) FROM blob_chunks")?,
             prekeys: one("SELECT COUNT(*) FROM prekeys")?,
             device_lists: one("SELECT COUNT(*) FROM device_lists")?,
+            group_mailboxes: one("SELECT COUNT(*) FROM group_mailboxes")?,
+            group_entries: one("SELECT COUNT(*) FROM group_entries")?,
+            group_bytes: one("SELECT COALESCE(SUM(LENGTH(blob)), 0) FROM group_entries")?,
+            key_packages: one("SELECT COUNT(*) FROM key_packages")?,
         })
     }
 
-    /// Drop expired messages and attachment chunks. Returns how many rows were removed.
+    /// Drop expired messages, attachment chunks and group entries and mailboxes. Returns how many
+    /// rows were removed.
     pub fn purge_expired(&self) -> rusqlite::Result<usize> {
-        let c = self.conn.lock().unwrap();
+        let mut c = self.conn.lock().unwrap();
         let now = now_ms();
-        Ok(
-            c.execute("DELETE FROM messages WHERE expires <= ?1", [now])?
-                + c.execute("DELETE FROM blob_chunks WHERE expires <= ?1", [now])?,
-        )
+        let mut n = c.execute("DELETE FROM messages WHERE expires <= ?1", [now])?
+            + c.execute("DELETE FROM blob_chunks WHERE expires <= ?1", [now])?;
+        let tx = c.transaction()?;
+        n += purge_groups(&tx, now)?;
+        tx.commit()?;
+        Ok(n)
     }
 
     pub fn enqueue(
@@ -479,6 +569,328 @@ impl Store {
     }
 }
 
+/// Remove expired group entries and whole expired mailboxes, and fix the byte count of mailboxes
+/// that lost entries.
+fn purge_groups(tx: &rusqlite::Transaction<'_>, now: i64) -> rusqlite::Result<usize> {
+    let touched: Vec<String> = {
+        let mut stmt =
+            tx.prepare("SELECT DISTINCT mailbox FROM group_entries WHERE expires <= ?1")?;
+        let rows = stmt.query_map([now], |r| r.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut n = tx.execute("DELETE FROM group_entries WHERE expires <= ?1", [now])?;
+    for mailbox in &touched {
+        tx.execute(
+            "UPDATE group_mailboxes SET bytes =
+                 (SELECT COALESCE(SUM(LENGTH(blob)), 0) FROM group_entries WHERE mailbox = ?1)
+             WHERE mailbox = ?1",
+            [mailbox],
+        )?;
+    }
+    n += tx.execute(
+        "DELETE FROM group_entries WHERE mailbox IN
+             (SELECT mailbox FROM group_mailboxes WHERE expires <= ?1)",
+        [now],
+    )?;
+    n += tx.execute("DELETE FROM group_mailboxes WHERE expires <= ?1", [now])?;
+    Ok(n)
+}
+
+impl Store {
+    /// Store one-time key packages up to `cap` for `device`; duplicates are ignored. Returns the total.
+    pub fn publish_key_packages(
+        &self,
+        device: &str,
+        packages: &[Vec<u8>],
+        cap: usize,
+    ) -> rusqlite::Result<usize> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let mut count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM key_packages WHERE device = ?1",
+            [device],
+            |r| r.get(0),
+        )?;
+        for p in packages {
+            if count as usize >= cap {
+                break;
+            }
+            count += tx.execute(
+                "INSERT OR IGNORE INTO key_packages (device, package) VALUES (?1, ?2)",
+                params![device, p],
+            )? as i64;
+        }
+        tx.commit()?;
+        Ok(count as usize)
+    }
+
+    /// Replace the device's last-resort key package.
+    pub fn publish_last_resort_key_package(
+        &self,
+        device: &str,
+        package: &[u8],
+    ) -> rusqlite::Result<()> {
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO key_package_last_resort (device, package) VALUES (?1, ?2)
+             ON CONFLICT(device) DO UPDATE SET package = ?2",
+            params![device, package],
+        )?;
+        Ok(())
+    }
+
+    /// Remove and return the oldest one-time key package for `device`; if none remain, the
+    /// reusable last-resort one (kept). The bool is true for the last-resort package.
+    pub fn claim_key_package(&self, device: &str) -> rusqlite::Result<Option<(Vec<u8>, bool)>> {
+        let c = self.conn.lock().unwrap();
+        let one_time: Option<Vec<u8>> = c
+            .query_row(
+                "DELETE FROM key_packages WHERE id =
+                     (SELECT id FROM key_packages WHERE device = ?1 ORDER BY id LIMIT 1)
+                 RETURNING package",
+                [device],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(p) = one_time {
+            return Ok(Some((p, false)));
+        }
+        c.query_row(
+            "SELECT package FROM key_package_last_resort WHERE device = ?1",
+            [device],
+            |r| Ok((r.get(0)?, true)),
+        )
+        .optional()
+    }
+
+    /// The public key a mailbox's requests must be signed with. It never changes once registered.
+    pub fn group_pubkey(&self, mailbox: &str) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT pubkey FROM group_mailboxes WHERE mailbox = ?1 AND expires > ?2",
+                params![mailbox, now_ms()],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
+    /// Where a mailbox is: the position the next append will get, and whether it was sealed.
+    pub fn group_status(&self, mailbox: &str) -> rusqlite::Result<Option<(u64, bool)>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT next_seq, sealed_at IS NOT NULL FROM group_mailboxes
+                 WHERE mailbox = ?1 AND expires > ?2",
+                params![mailbox, now_ms()],
+                |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, bool>(1)?)),
+            )
+            .optional()
+    }
+
+    /// Register a mailbox. `creator` is the device asking, for the per-device quota.
+    pub fn create_group_mailbox(
+        &self,
+        mailbox: &str,
+        pubkey: &str,
+        creator: &str,
+        lim: &GroupLimits,
+    ) -> rusqlite::Result<GroupCreated> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let now = now_ms();
+        purge_groups(&tx, now)?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM group_mailboxes WHERE mailbox = ?1)",
+            [mailbox],
+            |r| r.get(0),
+        )?;
+        if exists {
+            return Ok(GroupCreated::Exists);
+        }
+        let mine: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM group_mailboxes WHERE creator = ?1",
+            [creator],
+            |r| r.get(0),
+        )?;
+        if mine as usize >= lim.max_per_device {
+            return Ok(GroupCreated::OverQuota);
+        }
+        tx.execute(
+            "INSERT INTO group_mailboxes (mailbox, pubkey, creator, next_seq, sealed_at, bytes, expires)
+             VALUES (?1, ?2, ?3, 1, NULL, 0, ?4)",
+            params![mailbox, pubkey, creator, now + lim.handshake_ttl_ms],
+        )?;
+        tx.commit()?;
+        Ok(GroupCreated::Created)
+    }
+
+    /// Append one entry, all or nothing. A commit must arrive with the position it expects
+    /// (compare-and-append: exactly one commit gets each position). If `seal` is given, the same
+    /// transaction closes this mailbox and registers the successor. A full mailbox drops its
+    /// oldest *messages* to make room, never commits.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_group(
+        &self,
+        mailbox: &str,
+        kind: GroupKind,
+        expected_seq: Option<u64>,
+        blob: &[u8],
+        seal: Option<(&str, &str)>,
+        by: &str,
+        lim: &GroupLimits,
+    ) -> rusqlite::Result<GroupAppended> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let now = now_ms();
+        let row: Option<(i64, bool, i64)> = tx
+            .query_row(
+                "SELECT next_seq, sealed_at IS NOT NULL, bytes FROM group_mailboxes
+                 WHERE mailbox = ?1 AND expires > ?2",
+                params![mailbox, now],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((next_seq, sealed, mut bytes)) = row else {
+            return Ok(GroupAppended::Unknown);
+        };
+        if sealed {
+            return Ok(GroupAppended::Sealed);
+        }
+        if let Some(e) = expected_seq {
+            if e != next_seq as u64 {
+                return Ok(GroupAppended::Conflict(next_seq as u64));
+            }
+        }
+        if let Some((successor, _)) = seal {
+            purge_groups(&tx, now)?;
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM group_mailboxes WHERE mailbox = ?1)",
+                [successor],
+                |r| r.get(0),
+            )?;
+            if exists {
+                return Ok(GroupAppended::TargetExists);
+            }
+            let mine: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM group_mailboxes WHERE creator = ?1",
+                [by],
+                |r| r.get(0),
+            )?;
+            if mine as usize >= lim.max_per_device {
+                return Ok(GroupAppended::OverQuota);
+            }
+        }
+        // Make room: expired entries first, then the oldest messages. Commits stay.
+        let expired = tx.execute(
+            "DELETE FROM group_entries WHERE mailbox = ?1 AND expires <= ?2",
+            params![mailbox, now],
+        )?;
+        if expired > 0 {
+            bytes = tx.query_row(
+                "SELECT COALESCE(SUM(LENGTH(blob)), 0) FROM group_entries WHERE mailbox = ?1",
+                [mailbox],
+                |r| r.get(0),
+            )?;
+        }
+        let need = blob.len() as i64;
+        while (bytes + need) as usize > lim.max_bytes {
+            let victim: Option<(i64, i64)> = tx
+                .query_row(
+                    "SELECT seq, LENGTH(blob) FROM group_entries WHERE mailbox = ?1 AND kind = 0
+                     ORDER BY seq LIMIT 1",
+                    [mailbox],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((seq, len)) = victim else {
+                return Ok(GroupAppended::Full);
+            };
+            tx.execute(
+                "DELETE FROM group_entries WHERE mailbox = ?1 AND seq = ?2",
+                params![mailbox, seq],
+            )?;
+            bytes -= len;
+        }
+        let ttl = match kind {
+            GroupKind::Message => lim.message_ttl_ms,
+            GroupKind::Commit => lim.handshake_ttl_ms,
+        };
+        tx.execute(
+            "INSERT INTO group_entries (mailbox, seq, kind, blob, expires) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![mailbox, next_seq, kind.byte() as i64, blob, now + ttl],
+        )?;
+        // The mailbox itself lives as long as its handshake entries may: a sealed one too, so a
+        // device that was offline can still replay up to the commit that moved the group on.
+        tx.execute(
+            "UPDATE group_mailboxes SET next_seq = ?2, bytes = ?3, expires = ?4,
+                 sealed_at = CASE WHEN ?5 THEN ?6 ELSE sealed_at END
+             WHERE mailbox = ?1",
+            params![
+                mailbox,
+                next_seq + 1,
+                bytes + need,
+                now + lim.handshake_ttl_ms,
+                seal.is_some(),
+                next_seq
+            ],
+        )?;
+        if let Some((successor, pubkey)) = seal {
+            tx.execute(
+                "INSERT INTO group_mailboxes (mailbox, pubkey, creator, next_seq, sealed_at, bytes, expires)
+                 VALUES (?1, ?2, ?3, 1, NULL, 0, ?4)",
+                params![successor, pubkey, by, now + lim.handshake_ttl_ms],
+            )?;
+        }
+        tx.commit()?;
+        Ok(GroupAppended::Appended {
+            seq: next_seq as u64,
+            sealed: seal.is_some(),
+        })
+    }
+
+    /// Up to `limit` unexpired entries after `after_seq`, oldest first.
+    pub fn read_group(
+        &self,
+        mailbox: &str,
+        after_seq: u64,
+        limit: u32,
+    ) -> rusqlite::Result<Option<GroupPageRow>> {
+        let c = self.conn.lock().unwrap();
+        let now = now_ms();
+        let head: Option<(i64, bool)> = c
+            .query_row(
+                "SELECT next_seq, sealed_at IS NOT NULL FROM group_mailboxes
+                 WHERE mailbox = ?1 AND expires > ?2",
+                params![mailbox, now],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((next_seq, sealed)) = head else {
+            return Ok(None);
+        };
+        let mut stmt = c.prepare(
+            "SELECT seq, kind, blob FROM group_entries
+             WHERE mailbox = ?1 AND seq > ?2 AND expires > ?3 ORDER BY seq LIMIT ?4",
+        )?;
+        let entries = stmt
+            .query_map(params![mailbox, after_seq as i64, now, limit as i64], |r| {
+                Ok(GroupEntryRow {
+                    seq: r.get::<_, i64>(0)? as u64,
+                    kind: GroupKind::from_byte(r.get(1)?).unwrap_or(GroupKind::Message),
+                    blob: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Some(GroupPageRow {
+            entries,
+            next_seq: next_seq as u64,
+            sealed,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +959,109 @@ mod tests {
         assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
         assert_eq!(s.stats().unwrap().queued_messages, 1);
         assert!(!PathBuf::from(format!("{}.before-v2", path.display())).exists());
+    }
+
+    #[test]
+    fn a_version_two_database_gains_the_group_tables_and_is_backed_up_first() {
+        let path = temp_db("v2");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(V1).unwrap();
+            c.execute_batch(V2).unwrap();
+            c.pragma_update(None, "user_version", 2).unwrap();
+            c.execute(
+                "INSERT INTO messages (recipient, blob, expires) VALUES ('r', x'0102', 9999999999999)",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Store::open(Some(&path)).unwrap();
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+        let stats = s.stats().unwrap();
+        assert_eq!((stats.queued_messages, stats.group_mailboxes), (1, 0));
+        assert!(PathBuf::from(format!("{}.before-v2", path.display())).exists());
+        // And the new tables work.
+        let lim = GroupLimits {
+            message_ttl_ms: 10_000,
+            handshake_ttl_ms: 20_000,
+            max_bytes: 1000,
+            max_per_device: 2,
+        };
+        assert!(matches!(
+            s.create_group_mailbox("m", "pk", "dev", &lim).unwrap(),
+            GroupCreated::Created
+        ));
+        assert!(matches!(
+            s.append_group("m", GroupKind::Message, None, b"x", None, "dev", &lim)
+                .unwrap(),
+            GroupAppended::Appended {
+                seq: 1,
+                sealed: false
+            }
+        ));
+    }
+
+    #[test]
+    fn expired_group_entries_and_mailboxes_are_purged_and_bytes_recounted() {
+        let s = Store::open(None).unwrap();
+        let lim = GroupLimits {
+            message_ttl_ms: 1,
+            handshake_ttl_ms: 60_000,
+            max_bytes: 10_000,
+            max_per_device: 5,
+        };
+        s.create_group_mailbox("m", "pk", "dev", &lim).unwrap();
+        s.append_group(
+            "m",
+            GroupKind::Message,
+            None,
+            &[0u8; 100],
+            None,
+            "dev",
+            &lim,
+        )
+        .unwrap();
+        s.append_group(
+            "m",
+            GroupKind::Commit,
+            Some(2),
+            &[0u8; 50],
+            None,
+            "dev",
+            &lim,
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(s.purge_expired().unwrap(), 1, "only the message expired");
+        let stats = s.stats().unwrap();
+        assert_eq!((stats.group_entries, stats.group_bytes), (1, 50));
+        // The next append sees the corrected size, not the old one.
+        let tight = GroupLimits {
+            max_bytes: 120,
+            ..lim
+        };
+        assert!(matches!(
+            s.append_group(
+                "m",
+                GroupKind::Message,
+                None,
+                &[0u8; 70],
+                None,
+                "dev",
+                &tight
+            )
+            .unwrap(),
+            GroupAppended::Appended { .. }
+        ));
+        // A mailbox with no activity for its whole lifetime goes, entries and all.
+        let short = GroupLimits {
+            handshake_ttl_ms: 1,
+            ..lim
+        };
+        s.create_group_mailbox("old", "pk", "dev", &short).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        s.purge_expired().unwrap();
+        assert!(s.group_pubkey("old").unwrap().is_none());
     }
 
     #[test]
