@@ -132,7 +132,7 @@ The `spike-mls` crate (`mls/`), openmls 0.9.2 and its companion crates pinned ex
 
 **What slice 1 does not show.**
 - **Not independently reviewed.** The ADR decision stands: independent review before anything real depends on this. openmls itself is unaudited and has had High advisories.
-- **Licence:** openmls pulls in `hpke-rs` (MPL-2.0). `deny.toml` carries three per-crate exceptions, marked provisional; accepting or rejecting MPL-2.0 for these crates is a decision for you.
+- **Licence:** openmls pulls in `hpke-rs` (MPL-2.0). `deny.toml` carries three per-crate exceptions. **Accepted by the project owner, 2026-10-23.**
 - **Rejected commits stall a device.** A commit every member refuses still occupies a relay position; what a client does then (skip it, mark the group broken) is slice 2's problem and is not decided.
 - **Nothing here is used by a client.** Welcome and tree transport, the key-package flow, "needs to rejoin", leaving, and the dependency shape (the relay test makes `spike-mls` depend on the CLI in tests; slice 2 will have to invert that) are all slice 2.
 - **Scale not measured.** Everything ran with 2 to 4 members. Commit and join cost at 500 members, tree size, and snapshot cost are unmeasured.

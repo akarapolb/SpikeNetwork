@@ -43,8 +43,8 @@ exceptions = [
     { allow = ["MPL-2.0"], crate = "option-ext" },
     { allow = ["MPL-2.0"], crate = "selectors" },
     # 2026-10-23: hpke-rs (the HPKE implementation behind openmls, both its RustCrypto and libcrux providers) is
-    # MPL-2.0. Provisional: added with ADR 0025 slice 1 so the build and CI stay checkable, and it needs the same
-    # review as the entries above, because it is a property of using openmls at all. File-level copyleft: fine to
+    # MPL-2.0. Accepted by the project owner on 2026-10-23 (ADR 0025 slice 1): it is a property of using openmls at
+    # all, and the entries above were accepted on the same terms. File-level copyleft: fine to
     # use unmodified in any licence; changes to these files themselves would have to be published.
     { allow = ["MPL-2.0"], crate = "hpke-rs" },
     { allow = ["MPL-2.0"], crate = "hpke-rs-crypto" },
