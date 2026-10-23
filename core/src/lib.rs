@@ -9,6 +9,7 @@ pub mod action;
 pub mod agent;
 pub mod attachment;
 pub mod envelope;
+pub mod group;
 pub mod identity;
 pub mod link;
 pub mod merge;
@@ -36,6 +37,8 @@ pub enum Error {
     Rollback { seen: u64, offered: u64 },
     #[error("two different device lists both claim version {0}: possible equivocation, refused")]
     Equivocation(u64),
+    #[error("invalid group state: {0}")]
+    BadGroup(&'static str),
     #[error("identity key changed")]
     KeyChange,
     #[error("wrong passphrase or corrupted vault")]

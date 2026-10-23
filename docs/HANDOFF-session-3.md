@@ -73,3 +73,10 @@ Unreviewed prototype code (README: "Do not use it for real secrets"). The webvie
 - Linux: installed WebKitGTK dev libraries in WSL Ubuntu; the desktop crate builds, clippy is clean with and without `updater`, and all 19 desktop tests pass. The window itself has not been seen on Linux.
 - Found by the Linux run: a relay that silently drops packets made connecting hang for about two minutes. Connecting now times out after 10 s.
 - Shortcuts use Cmd on a Mac, Ctrl elsewhere.
+
+## Update (2026-10-23): small groups ADR
+- ADR 0024 (small groups over pairwise sessions) is a proposal for your review. Nothing of it is built. It covers a signed group state chain with a deterministic winner rule for concurrent admin changes, group envelopes, non-contact members, consent to being added (adds by non-contacts go to message requests), history for new members, and an honest list of what pairwise groups cannot give. Its "Decisions I need from you" section lists four questions.
+- Next after your answers: build slice 1 (core state and validation), then the CLI, then the desktop screens.
+- Later the same day: you chose **pairwise first, MLS later** (sender keys considered and rejected; reasons in the ADR) and accepted the four defaults. ADR 0024 is now Accepted.
+- **Slice 1 built:** `core/src/group.rs`: signed `GroupState`, the change rules (admins anything; members leave, or add when `add_by = any`; always an admin), `Chain` with the winner rule (highest version, then lowest hash), missing-state handling, `check_message` (a removed member cannot post by naming an old state). 14 unit tests; root workspace 199 pass, clippy clean. The desktop crate was not rebuilt (no API it uses changed).
+- **Next: slice 2 (CLI).** Envelope fields `group`/`gstate`, kinds `group_state`/`group_state_request`, `StoredMessage.author`, sealed chain storage, fan-out to members, invites through message requests, `spike group ...` commands, three-person integration tests.
