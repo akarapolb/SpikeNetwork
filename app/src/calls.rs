@@ -7,6 +7,7 @@ use super::Session;
 use anyhow::{bail, Result};
 use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
+use spike_cli::messages::{Direction, StoredMessage};
 use spike_cli::{ops, Outcome};
 use spike_core::call::{Action, CallResult, Input, Machine, Origin};
 use std::collections::{HashMap, VecDeque};
@@ -28,6 +29,8 @@ pub(crate) struct Hub {
     queue: Mutex<VecDeque<Action>>,
     /// Who each call is with (conversation key, name), by call id.
     peers: Mutex<HashMap<String, (String, String)>>,
+    /// Which calls are video, by call id.
+    video: Mutex<HashMap<String, bool>>,
     pub(crate) notify: tokio::sync::Notify,
 }
 
@@ -113,6 +116,7 @@ impl Session {
             .lock()
             .expect("calls lock")
             .insert(call.clone(), (key.clone(), name.to_string()));
+        self.calls.video.lock().expect("calls lock").insert(call.clone(), video);
         self.calls.step(Input::Dial {
             call: call.clone(),
             peer: key,
@@ -173,8 +177,19 @@ impl Session {
         for a in sends {
             let Action::Send { to, signal } = a else { continue };
             let Some((_, name)) = self.peer_of(signal.call()) else { continue };
-            let _net = self.net.lock().await;
-            let _ = ops::send_call(&self.home, self.target(), &name, &signal, &to).await;
+            // A relay lets one connection per device be current, so a send can lose a race with the
+            // listener's connection: try again a couple of times before giving up on this signal.
+            for attempt in 0..3 {
+                let net = self.net.lock().await;
+                let sent = ops::send_call(&self.home, self.target(), &name, &signal, &to).await;
+                drop(net);
+                if sent.is_ok() {
+                    break;
+                }
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                }
+            }
         }
     }
 
@@ -202,6 +217,38 @@ impl Session {
         }
     }
 
+    /// One line in the conversation for a finished call, kept on this device only (ADR 0028).
+    fn log_call(&self, call: &str, peer: &str, incoming: bool, result: CallResult, seconds: u64, video: bool) {
+        let kind = if video { "video call" } else { "voice call" };
+        let body = match result {
+            CallResult::Completed => format!("{}, {}:{:02}", cap(kind), seconds / 60, seconds % 60),
+            CallResult::Missed => format!("Missed {kind}"),
+            CallResult::Declined => format!("Declined {kind}"),
+            CallResult::NoAnswer => format!("{}, no answer", cap(kind)),
+            CallResult::Busy => format!("{}, busy", cap(kind)),
+            CallResult::Failed => format!("{} failed", cap(kind)),
+            CallResult::AnsweredElsewhere => return,
+        };
+        let Ok(me) = self.home.load_identity() else { return };
+        let Ok(lamport) = self.home.next_lamport() else { return };
+        let Ok(store) = self.home.messages() else { return };
+        let _ = store.insert(&StoredMessage {
+            id: format!("call-{call}"),
+            peer: peer.to_string(),
+            direction: if incoming { Direction::In } else { Direction::Out },
+            ts: now_ms(),
+            body,
+            attachment: None,
+            lamport,
+            stamp_device: me.device_id(),
+            edited: false,
+            deleted: false,
+            changed_at: 0,
+            author: None,
+            shared_by: None,
+        });
+    }
+
     fn to_event(&self, a: Action) -> Option<CallEventDto> {
         let name_of = |call: &str| self.peer_of(call).map(|p| p.1).unwrap_or_default();
         Some(match a {
@@ -216,18 +263,25 @@ impl Session {
                         })
                     })
                     .unwrap_or_default();
+                self.calls.video.lock().expect("calls lock").insert(call.clone(), video);
                 CallEventDto::Ring { call, name, video, sdp, glare }
             }
             Action::StopRinging { call } => CallEventDto::StopRinging { call },
             Action::Connect { call, sdp } => CallEventDto::Connect { call, sdp },
             Action::RemoteIce { call, candidates } => CallEventDto::RemoteIce { call, candidates },
-            Action::Ended { call, incoming, result, answered_at, .. } => CallEventDto::Ended {
-                name: name_of(&call),
-                seconds: answered_at.map_or(0, |t| now_ms().saturating_sub(t) / 1000),
-                call,
-                incoming,
-                result: result_name(result),
-            },
+            Action::Ended { call, peer, incoming, result, answered_at } => {
+                let seconds = answered_at.map_or(0, |t| now_ms().saturating_sub(t) / 1000);
+                if let Some(peer) = &peer {
+                    let video = self.calls.video.lock().expect("calls lock").remove(&call).unwrap_or(false);
+                    self.log_call(&call, peer, incoming, result, seconds, video);
+                }
+                CallEventDto::Ended { name: name_of(&call), seconds, call, incoming, result: result_name(result) }
+            }
         })
     }
+}
+
+fn cap(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }

@@ -53,12 +53,42 @@ class MainActivity : FragmentActivity() {
             navigationBarStyle = SystemBarStyle.light(clear, clear),
         )
         applyScreenPrivacy()
+        showOverLockIfCall(intent)
         Bridge.ensureOpen(applicationContext)
         setContent {
             SpikeTheme {
                 Surface(Modifier.fillMaxSize(), color = C.Bg) { Root() }
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        showOverLockIfCall(intent)
+    }
+
+    /** Opened by an incoming-call alert on a locked phone: show the call, and only the call, over the lock screen. */
+    private var overLock = false
+    private fun showOverLockIfCall(i: android.content.Intent?) {
+        android.util.Log.i("SpikeCall", "intent incoming_call=${i?.getBooleanExtra("incoming_call", false)}")
+        android.util.Log.i("SpikeCall", "intent incoming_call=${i?.getBooleanExtra("incoming_call", false)} locked=${getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked}")
+        if (i?.getBooleanExtra("incoming_call", false) != true) return
+        if (CallManager.ringedWhileLocked) {
+            overLock = true
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+    }
+
+    /** The call ended: if we were only shown because of it, leave, so the app is never left open on a locked phone. */
+    fun callEnded() {
+        android.util.Log.i("SpikeCall", "callEnded overLock=$overLock")
+        if (!overLock) return
+        overLock = false
+        CallManager.ringedWhileLocked = false
+        setShowWhenLocked(false)
+        setTurnScreenOn(false)
+        finish()
     }
 
     override fun onResume() {
@@ -137,6 +167,8 @@ private fun Root() {
             else -> Ready(m)
         }
         CallManager.ui?.let { CallScreen(it) }
+        val act = ctx as? MainActivity
+        LaunchedEffect(CallManager.ui == null) { if (CallManager.ui == null) act?.callEnded() }
         LaunchedEffect(CallManager.message) { CallManager.message?.let { m.notice = it; CallManager.message = null } }
         m.notice?.let { text ->
             Row(
@@ -177,7 +209,7 @@ private fun Ready(m: AppModel) {
                 if (n == 1) "Encrypted for ${s.name}'s device and your own other devices" else "Encrypted separately for each of ${s.name}'s $n devices and your own other devices",
                 { t -> Bridge.call("send", args("name" to s.name, "text" to t)) },
                 { m.open(Screen.Verify(s.name)) },
-                { CallManager.call(s.name, c?.verified == true) },
+                { video -> CallManager.call(s.name, c?.verified == true, video) },
                 { fileName, f -> Bridge.call("send_file", args("name" to s.name, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
             )
         }

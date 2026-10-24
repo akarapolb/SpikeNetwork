@@ -129,11 +129,29 @@ object Notifier {
         nm.createNotificationChannel(NotificationChannel(SERVICE, "Listening for messages", NotificationManager.IMPORTANCE_LOW))
     }
 
-    private fun open(ctx: Context): PendingIntent =
+    private fun open(ctx: Context, call: Boolean = false): PendingIntent =
         PendingIntent.getActivity(
-            ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            ctx, if (call) 1 else 0,
+            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra("incoming_call", call),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+
+    /** The ongoing notification while a call is on (Android needs it to let the microphone and camera run in the background). */
+    fun callNotification(ctx: Context, text: String): Notification {
+        ensureChannels(ctx)
+        ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CALLS_ONGOING, "Calls in progress", NotificationManager.IMPORTANCE_LOW))
+        return NotificationCompat.Builder(ctx, CALLS_ONGOING)
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setContentTitle("Spike Connect")
+            .setContentText(text)
+            .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setContentIntent(open(ctx))
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+    }
+    const val CALLS_ONGOING = "calls_ongoing"
+    const val CALL_SERVICE_ID = 4
 
     fun allowed(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < 33 ||
@@ -187,8 +205,8 @@ object Notifier {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .setTimeoutAfter(45_000)
-            .setContentIntent(open(ctx))
-            .setFullScreenIntent(open(ctx), true)
+            .setContentIntent(open(ctx, true))
+            .setFullScreenIntent(open(ctx, true), true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(NotificationCompat.Builder(ctx, CALLS).setSmallIcon(android.R.drawable.stat_sys_phone_call).setContentTitle("Incoming call").build())
             .build()

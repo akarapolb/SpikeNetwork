@@ -122,6 +122,13 @@ fn a_call_rings_connects_exchanges_candidates_and_ends() {
     assert_eq!(ev[0]["result"], "completed");
     assert_eq!(ev[0]["name"], "Alice");
     assert_eq!(ev[0]["incoming"], true);
+
+    // Both conversations now have a line for the call.
+    for (p, who) in [(&alice, "Bob"), (&bob, "Alice")] {
+        let thread = p.ok("conversation", json!({ "name": who }));
+        let last = thread.as_array().unwrap().last().unwrap();
+        assert!(last["body"].as_str().unwrap().starts_with("Voice call, 0:"), "{last}");
+    }
 }
 
 #[test]
@@ -137,6 +144,8 @@ fn a_declined_call_tells_the_caller() {
     assert_eq!(kinds(&ev), ["ended"], "{ev:?}");
     assert_eq!(ev[0]["result"], "declined");
     assert_eq!(ev[0]["incoming"], false);
+    let thread = alice.ok("conversation", json!({ "name": "Bob" }));
+    assert_eq!(thread.as_array().unwrap().last().unwrap()["body"], "Declined video call");
     // and Alice can call again
     alice.ok("call_start", json!({ "name": "Bob", "video": false, "sdp": "offer2" }));
 }

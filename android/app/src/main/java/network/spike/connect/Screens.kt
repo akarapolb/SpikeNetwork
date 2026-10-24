@@ -415,7 +415,7 @@ private fun ChatRow(
 fun ConversationScreen(
     m: AppModel, title: String, sub: String, verified: Boolean, square: Boolean, caption: String,
     onSend: suspend (String) -> Unit, onInfo: () -> Unit,
-    onCall: (() -> Unit)? = null,
+    onCall: ((Boolean) -> Unit)? = null,
     attach: (suspend (String, java.io.File) -> Unit)? = null,
 ) {
     var text by remember { mutableStateOf("") }
@@ -452,8 +452,10 @@ fun ConversationScreen(
                 Muted(sub, 12.5.sp)
             }
             if (onCall != null) {
-                val gate = rememberMicGate(onCall)
+                val gate = rememberMicGate { onCall(false) }
+                val vgate = rememberMicGate(camera = true) { onCall(true) }
                 Box(Modifier.size(44.dp).clip(CircleShape).clickable { gate() }.semantics { contentDescription = "Voice call" }, contentAlignment = Alignment.Center) { Ico(IcHandset) }
+                Box(Modifier.size(44.dp).clip(CircleShape).clickable { vgate() }.semantics { contentDescription = "Video call" }, contentAlignment = Alignment.Center) { Ico(IcVideo) }
             }
             Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onInfo).semantics { contentDescription = "Details" }, contentAlignment = Alignment.Center) { Ico(Ic.Info) }
         }
@@ -992,6 +994,15 @@ fun SettingsTab(m: AppModel) {
                 }
             } else {
                 Muted("Fingerprint or face unlock needs a fingerprint or face set up in the phone's settings.", 12.5.sp)
+            }
+            if (android.os.Build.VERSION.SDK_INT >= 34 && !ctx.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent()) {
+                Muted("Incoming calls can only appear over the lock screen if you allow full-screen notifications for Spike Connect. Without it you get a normal notification.", 12.5.sp)
+                OutlineButton("Allow calls on the lock screen") {
+                    ctx.startActivity(
+                        android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, android.net.Uri.parse("package:" + ctx.packageName))
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

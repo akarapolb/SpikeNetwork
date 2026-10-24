@@ -58,6 +58,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
 import org.webrtc.AudioTrack
+import org.webrtc.Camera2Enumerator
+import org.webrtc.CameraVideoCapturer
+import org.webrtc.DefaultVideoDecoderFactory
+import org.webrtc.DefaultVideoEncoderFactory
+import org.webrtc.EglBase
+import org.webrtc.SurfaceTextureHelper
+import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoSource
+import org.webrtc.VideoTrack
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.PeerConnection
@@ -79,6 +88,8 @@ data class CallUi(
     val speaker: Boolean = false,
     val code: String = "",
     val verified: Boolean = false,
+    val video: Boolean = false,
+    val camOff: Boolean = false,
 )
 
 /**
@@ -91,6 +102,16 @@ object CallManager {
     private const val TAG = "SpikeCall"
     var ui by mutableStateOf<CallUi?>(null)
         private set
+
+    /** The picture of the other person and of us, when the call has video. */
+    var remoteVideo by mutableStateOf<VideoTrack?>(null)
+        private set
+    var localVideo by mutableStateOf<VideoTrack?>(null)
+        private set
+    val egl: EglBase by lazy { EglBase.create() }
+    private var capturer: CameraVideoCapturer? = null
+    private var videoSource: VideoSource? = null
+    private var helper: SurfaceTextureHelper? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var loop: Job? = null
@@ -139,10 +160,34 @@ object CallManager {
     private fun factory(): PeerConnectionFactory {
         factory?.let { return it }
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(appCtx).createInitializationOptions())
-        return PeerConnectionFactory.builder().createPeerConnectionFactory().also { factory = it }
+        return PeerConnectionFactory.builder()
+            .setVideoEncoderFactory(DefaultVideoEncoderFactory(egl.eglBaseContext, true, true))
+            .setVideoDecoderFactory(DefaultVideoDecoderFactory(egl.eglBaseContext))
+            .createPeerConnectionFactory().also { factory = it }
     }
 
-    private fun newPeer(): PeerConnection {
+    private fun hasCamera(): Boolean {
+        val c = appCtx ?: return false
+        return ContextCompat.checkSelfPermission(c, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    }
+
+    /** Open the front camera (or any camera) at 720p and add its track to the connection. */
+    private fun addCamera(f: PeerConnectionFactory, p: PeerConnection) {
+        val c = appCtx ?: return
+        val en = Camera2Enumerator(c)
+        val name = en.deviceNames.firstOrNull { en.isFrontFacing(it) } ?: en.deviceNames.firstOrNull() ?: return
+        val cap = en.createCapturer(name, null) ?: return
+        val th = SurfaceTextureHelper.create("spike-capture", egl.eglBaseContext)
+        val src = f.createVideoSource(false)
+        cap.initialize(th, c, src.capturerObserver)
+        cap.startCapture(1280, 720, 30)
+        val t = f.createVideoTrack("video0", src)
+        p.addTrack(t, listOf("spike"))
+        capturer = cap; videoSource = src; helper = th
+        localVideo = t
+    }
+
+    private fun newPeer(video: Boolean = false): PeerConnection {
         val cfg = PeerConnection.RTCConfiguration(emptyList()).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
@@ -160,6 +205,11 @@ object CallManager {
                 Log.i(TAG, "connection $s")
                 when (s) {
                     PeerConnection.PeerConnectionState.CONNECTED -> {
+                        // What was negotiated, without any content: media lines and directions only.
+                        for ((n, d) in listOf("local" to pc?.localDescription, "remote" to pc?.remoteDescription)) {
+                            val lines = (d?.description ?: "").lines().filter { it.startsWith("m=") || it.startsWith("a=sendrecv") || it.startsWith("a=recvonly") || it.startsWith("a=sendonly") || it.startsWith("a=inactive") }
+                            Log.i(TAG, "sdp $n: " + lines.joinToString(" ") { it.take(24).trim() })
+                        }
                         val u = ui ?: return
                         if (u.connectedAt == 0L) { ui = u.copy(status = "connected", connectedAt = System.currentTimeMillis()); startStats() }
                     }
@@ -179,11 +229,14 @@ object CallManager {
             override fun onRemoveStream(s: org.webrtc.MediaStream) {}
             override fun onDataChannel(d: org.webrtc.DataChannel) {}
             override fun onRenegotiationNeeded() {}
-            override fun onAddTrack(r: org.webrtc.RtpReceiver, s: Array<out org.webrtc.MediaStream>) {}
+            override fun onAddTrack(r: org.webrtc.RtpReceiver, s: Array<out org.webrtc.MediaStream>) {
+                (r.track() as? VideoTrack)?.let { remoteVideo = it }
+            }
         }) ?: throw BridgeError("could not start the call")
         val src = f.createAudioSource(MediaConstraints())
         track = f.createAudioTrack("audio0", src)
         p.addTrack(track, listOf("spike"))
+        if (video && hasCamera()) addCamera(f, p)
         pc = p
         appCtx?.let { c ->
             val am = c.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -209,7 +262,10 @@ object CallManager {
             override fun onCreateFailure(e: String?) = k.resumeWithException(BridgeError(e ?: "no offer"))
             override fun onSetSuccess() {}
             override fun onSetFailure(e: String?) {}
-        }, MediaConstraints().apply { mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true")) })
+        }, MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            if (ui?.video == true) mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+        })
     }
 
     private suspend fun SdpAnswer(p: PeerConnection): SessionDescription = suspendCancellableCoroutine { k ->
@@ -240,17 +296,18 @@ object CallManager {
     }
 
     /** Place a voice call. The microphone permission must already be granted. */
-    fun call(name: String, verified: Boolean) {
+    fun call(name: String, verified: Boolean, video: Boolean = false) {
         if (ui != null) return
-        ui = CallUi(name, false, "calling", verified = verified)
+        ui = CallUi(name, false, "calling", verified = verified, video = video)
+        appCtx?.let { CallService.start(it, video) }
         scope.launch {
             try {
-                val p = newPeer()
+                val p = newPeer(video)
                 val offer = SdpOffer(p)
                 setLocal(p, offer)
                 val done = CompletableDeferred<Unit>().also { ready = it }
                 try {
-                    callId = Bridge.call("call_start", args("name" to name, "video" to false, "sdp" to offer.description)) as String
+                    callId = Bridge.call("call_start", args("name" to name, "video" to video, "sdp" to offer.description)) as String
                     done.complete(Unit)
                 } catch (e: Exception) { done.completeExceptionally(e); throw e }
             } catch (e: Exception) {
@@ -265,9 +322,10 @@ object CallManager {
         if (!u.incoming || u.status != "ringing") return
         stopRing()
         ui = u.copy(status = "connecting")
+        appCtx?.let { CallService.start(it, u.video) }
         scope.launch {
             try {
-                val p = newPeer()
+                val p = newPeer(u.video)
                 setRemote(p, SessionDescription(SessionDescription.Type.OFFER, sdp))
                 remoteSet = true
                 val a = SdpAnswer(p)
@@ -301,6 +359,14 @@ object CallManager {
         ui = u.copy(muted = !u.muted)
     }
 
+    fun toggleCamera() {
+        val u = ui ?: return
+        localVideo?.setEnabled(u.camOff) // was off -> on
+        ui = u.copy(camOff = !u.camOff)
+    }
+
+    fun switchCamera() { capturer?.switchCamera(null) }
+
     fun toggleSpeaker() {
         val u = ui ?: return
         (appCtx?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)?.isSpeakerphoneOn = !u.speaker
@@ -315,8 +381,12 @@ object CallManager {
                 val verified = Bridge.obj("overview").getJSONArray("contacts").let { a ->
                     (0 until a.length()).map { a.getJSONObject(it) }.firstOrNull { it.getString("name") == name }?.optBoolean("verified") == true
                 }
+                appCtx?.let { c ->
+                    ringedWhileLocked = !c.getSystemService(android.os.PowerManager::class.java).isInteractive ||
+                        c.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+                }
                 callId = ev.getString("call"); offerSdp = ev.getString("sdp")
-                ui = CallUi(name, true, "ringing", verified = verified)
+                ui = CallUi(name, true, "ringing", verified = verified, video = ev.optBoolean("video"))
                 startRing()
                 Notifier.incomingCall(appCtx ?: return, name)
                 if (ev.optBoolean("glare")) answer()
@@ -369,6 +439,8 @@ object CallManager {
     }
 
     /** A message for the person, shown by whoever is listening (the call screen's owner). */
+    /** The call came in while the phone was locked or its screen was off: the app may only be shown for the call. */
+    @Volatile var ringedWhileLocked = false
     var message by mutableStateOf<String?>(null)
     private fun scopeToast(m: String) { message = m }
 
@@ -377,6 +449,15 @@ object CallManager {
         stats?.cancel(); stats = null
         iceJob?.cancel()
         try { track?.setEnabled(false) } catch (_: Exception) {}
+        // Stopping the camera waits for its own thread: never do that on the main thread (it froze the app).
+        val (cap, src, th) = Triple(capturer, videoSource, helper)
+        capturer = null; videoSource = null; helper = null; remoteVideo = null; localVideo = null
+        if (cap != null || src != null || th != null) scope.launch {
+            try { cap?.stopCapture() } catch (_: Exception) {}
+            try { cap?.dispose() } catch (_: Exception) {}
+            try { src?.dispose() } catch (_: Exception) {}
+            try { th?.dispose() } catch (_: Exception) {}
+        }
         try { pc?.close() } catch (_: Exception) {}
         pc = null; track = null; callId = null; offerSdp = null; ready = null
         appCtx?.let {
@@ -384,6 +465,7 @@ object CallManager {
             am.mode = AudioManager.MODE_NORMAL
             am.isSpeakerphoneOn = false
             Notifier.clearIncomingCall(it)
+            CallService.stop(it)
         }
         ui = null
         if (msg != null) message = msg
@@ -420,16 +502,17 @@ object CallManager {
         stats = scope.launch {
             while (isActive) {
                 pc?.getStats { report ->
-                    var rx = 0L; var energy = 0.0; var tx = 0L; var local = ""
+                    var rx = 0L; var energy = 0.0; var tx = 0L; var local = ""; var vrx = 0L
                     for (s in report.statsMap.values) {
                         if (s.type == "inbound-rtp" && s.members["kind"] == "audio") {
                             rx = (s.members["packetsReceived"] as? Number)?.toLong() ?: 0
                             energy = (s.members["totalAudioEnergy"] as? Number)?.toDouble() ?: 0.0
                         }
+                        if (s.type == "inbound-rtp" && s.members["kind"] == "video") vrx = (s.members["packetsReceived"] as? Number)?.toLong() ?: 0
                         if (s.type == "outbound-rtp" && s.members["kind"] == "audio") tx = (s.members["packetsSent"] as? Number)?.toLong() ?: 0
                         if (s.type == "local-candidate" && local.isEmpty()) local = s.members["candidateType"]?.toString() ?: ""
                     }
-                    Log.i(TAG, "stats rx=$rx energy=$energy tx=$tx code=${ui?.code}")
+                    Log.i(TAG, "stats rx=$rx energy=$energy tx=$tx code=${ui?.code} vrx=$vrx")
                 }
                 delay(2000)
             }
@@ -437,48 +520,72 @@ object CallManager {
     }
 }
 
-/** A handset icon (the prototype's Phone icon is a mobile device). */
-val IcHandset: ImageVector = ImageVector.Builder("Handset", 24.dp, 24.dp, 24f, 24f).addPath(
-    pathData = addPathNodes("M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"),
-    fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 2f, strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round,
-).build()
+private fun line(name: String, vararg paths: String): ImageVector {
+    val b = ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f)
+    for (p in paths) b.addPath(
+        pathData = addPathNodes(p), fill = null, stroke = SolidColor(Color.Black), strokeLineWidth = 2f,
+        strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round,
+    )
+    return b.build()
+}
+
+/** Call icons, in the same 2px round line style as the prototype's (Icons.kt). The prototype's Phone icon is a mobile device, so the handset is here. */
+val IcHandset = line("Handset", "M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z")
+val IcMic = line("Mic", "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z", "M5 11a7 7 0 0 0 14 0", "M12 18v3")
+val IcMicOff = line("MicOff", "M4 4l16 16", "M9 9v3a3 3 0 0 0 5 2.2", "M15 11V6a3 3 0 0 0-5.7-1.3", "M5 11a7 7 0 0 0 11.2 5.6", "M19 11a7 7 0 0 1-.7 3", "M12 18v3")
+val IcSpeaker = line("Speaker", "M4 9v6h4l5 4V5L8 9H4z", "M16.5 9a4.5 4.5 0 0 1 0 6", "M19 6.5a8 8 0 0 1 0 11")
+val IcEarpiece = line("Earpiece", "M4 9v6h4l5 4V5L8 9H4z")
+val IcVideo = line("VideoCam", "M3 6h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z", "M15 10l7-4v12l-7-4")
+val IcVideoOff = line("VideoOff", "M4 4l16 16", "M13 6H3a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1", "M15 10l7-4v12l-3-1.7")
+val IcFlip = line("Flip", "M4 8a8 8 0 0 1 14-2l2 2", "M20 4v4h-4", "M20 16a8 8 0 0 1-14 2l-2-2", "M4 20v-4h4")
 
 /** Ask for the microphone if needed, then run [then]. */
 @Composable
-fun rememberMicGate(then: () -> Unit): () -> Unit {
+fun rememberMicGate(camera: Boolean = false, then: () -> Unit): () -> Unit {
     val ctx = LocalContext.current
-    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) then() else CallManager.message = "Spike needs the microphone to make calls. Allow it in Settings and try again."
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
+        if (r[Manifest.permission.RECORD_AUDIO] == true || CallManager.hasMic(ctx)) then()
+        else CallManager.message = "Spike needs the microphone to make calls. Allow it in Settings and try again."
     }
-    return { if (CallManager.hasMic(ctx)) then() else ask.launch(Manifest.permission.RECORD_AUDIO) }
+    return {
+        val need = buildList {
+            if (!CallManager.hasMic(ctx)) add(Manifest.permission.RECORD_AUDIO)
+            if (camera && ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) add(Manifest.permission.CAMERA)
+        }
+        if (need.isEmpty()) then() else ask.launch(need.toTypedArray())
+    }
 }
 
 @Composable
 fun CallScreen(u: CallUi) {
-    val ctx = LocalContext.current
     var now by androidx.compose.runtime.remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(u.connectedAt) { while (u.connectedAt != 0L) { now = System.currentTimeMillis(); delay(1000) } }
-    val answerGate = rememberMicGate { CallManager.answer() }
+    val answerGate = rememberMicGate(camera = u.video) { CallManager.answer() }
     val dark = Color(0xFF0E1418)
-    Box(Modifier.fillMaxSize().background(dark).statusBarsPadding().navigationBarsPadding()) {
-        Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Spacer(Modifier.weight(1f))
-            Box(Modifier.size(110.dp).clip(CircleShape).background(Color(0xFF24313A)), contentAlignment = Alignment.Center) {
-                Text(u.name.take(2).uppercase(), color = Color(0xFFC3CED7), fontSize = 36.sp, fontWeight = FontWeight.SemiBold)
+    val remote = CallManager.remoteVideo
+    val showRemote = u.video && remote != null
+    Box(Modifier.fillMaxSize().background(dark)) {
+        if (showRemote) VideoView(remote!!, mirror = false, Modifier.fillMaxSize())
+        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            if (showRemote) Spacer(Modifier.height(8.dp)) else {
+                Spacer(Modifier.weight(1f))
+                Box(Modifier.size(110.dp).clip(CircleShape).background(Color(0xFF24313A)), contentAlignment = Alignment.Center) {
+                    Text(u.name.take(2).uppercase(), color = Color(0xFFC3CED7), fontSize = 36.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.height(16.dp))
             }
-            Spacer(Modifier.height(16.dp))
             Text(
                 when (u.status) { "ringing" -> "${u.name} is calling"; "calling" -> "Calling ${u.name}"; else -> u.name },
                 color = Color(0xFFE6EDF2), fontSize = 24.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
             )
             val sub = when (u.status) {
-                "ringing" -> "Incoming voice call"
+                "ringing" -> if (u.video) "Incoming video call" else "Incoming voice call"
                 "calling" -> "Ringing on all of their devices"
                 "connected" -> ((now - u.connectedAt) / 1000).let { "${it / 60}:${(it % 60).toString().padStart(2, '0')}" }
                 else -> "Connecting"
             }
             Text(sub, color = Color(0xFFC3CED7), fontSize = 15.sp, modifier = Modifier.padding(top = 6.dp))
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
             Text(
                 if (u.verified) "${u.name} is a verified contact" else "${u.name} is not verified yet",
                 color = if (u.verified) Color(0xFF6FCF97) else Color(0xFFF5DDB0), fontSize = 13.5.sp, textAlign = TextAlign.Center,
@@ -493,28 +600,77 @@ fun CallScreen(u: CallUi) {
                 color = Color(0xFF9AA8B4), fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp),
             )
             Spacer(Modifier.weight(1f))
-            Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (u.status == "ringing") {
-                    RoundButton("Decline", Color(0xFFC0392B), rotate = true) { CallManager.decline() }
-                    RoundButton("Answer", Color(0xFF1F7A45)) { answerGate() }
+                    RoundButton("Decline", Color(0xFFC0392B), IcHandset, rotate = true) { CallManager.decline() }
+                    RoundButton("Answer", Color(0xFF1F7A45), IcHandset) { answerGate() }
                 } else {
-                    RoundButton(if (u.muted) "Unmute microphone" else "Mute microphone", if (u.muted) Color(0xFFE6EDF2) else Color(0xFF24313A), tint = if (u.muted) dark else Color.White, glyph = if (u.muted) "Mic off" else "Mic") { CallManager.toggleMute() }
-                    RoundButton(if (u.speaker) "Speaker off" else "Speaker on", if (u.speaker) Color(0xFFE6EDF2) else Color(0xFF24313A), tint = if (u.speaker) dark else Color.White, glyph = "Spk") { CallManager.toggleSpeaker() }
-                    RoundButton("Hang up", Color(0xFFC0392B), rotate = true) { CallManager.hangUp() }
+                    RoundButton(if (u.muted) "Unmute microphone" else "Mute microphone", if (u.muted) Color(0xFFE6EDF2) else Color(0xFF24313A), if (u.muted) IcMicOff else IcMic, tint = if (u.muted) dark else Color.White) { CallManager.toggleMute() }
+                    RoundButton(if (u.speaker) "Use earpiece" else "Use speaker", if (u.speaker) Color(0xFFE6EDF2) else Color(0xFF24313A), if (u.speaker) IcSpeaker else IcEarpiece, tint = if (u.speaker) dark else Color.White) { CallManager.toggleSpeaker() }
+                    if (u.video) {
+                        RoundButton(if (u.camOff) "Turn camera on" else "Turn camera off", if (u.camOff) Color(0xFFE6EDF2) else Color(0xFF24313A), if (u.camOff) IcVideoOff else IcVideo, tint = if (u.camOff) dark else Color.White) { CallManager.toggleCamera() }
+                        RoundButton("Switch camera", Color(0xFF24313A), IcFlip) { CallManager.switchCamera() }
+                    }
+                    RoundButton("Hang up", Color(0xFFC0392B), IcHandset, rotate = true) { CallManager.hangUp() }
                 }
             }
             Spacer(Modifier.height(24.dp))
         }
+        val mine = CallManager.localVideo
+        if (u.video && !u.camOff && mine != null) {
+            VideoView(mine, mirror = true, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp).size(width = 100.dp, height = 140.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp)))
+        }
     }
 }
 
+/** A WebRTC video surface that shows [track] while it is on screen. */
 @Composable
-private fun RoundButton(label: String, bg: Color, tint: Color = Color.White, rotate: Boolean = false, glyph: String? = null, onClick: () -> Unit) {
+private fun VideoView(track: VideoTrack, mirror: Boolean, modifier: Modifier) {
+    androidx.compose.ui.viewinterop.AndroidView(
+        modifier = modifier,
+        factory = { c ->
+            SurfaceViewRenderer(c).apply {
+                init(CallManager.egl.eglBaseContext, null)
+                setEnableHardwareScaler(true)
+                setMirror(mirror)
+                setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                if (mirror) setZOrderMediaOverlay(true)
+                track.addSink(this)
+            }
+        },
+        onRelease = { v -> try { track.removeSink(v); v.release() } catch (_: Exception) {} },
+    )
+}
+
+@Composable
+private fun RoundButton(label: String, bg: Color, icon: ImageVector, tint: Color = Color.White, rotate: Boolean = false, onClick: () -> Unit) {
     Box(
-        Modifier.size(64.dp).clip(CircleShape).background(bg).clickable(onClick = onClick).semantics { contentDescription = label },
+        Modifier.size(56.dp).clip(CircleShape).background(bg).clickable(onClick = onClick).semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
-    ) {
-        if (glyph == null) Ico(IcHandset, tint, 28.dp, if (rotate) Modifier.rotate(135f) else Modifier)
-        else Text(glyph, color = tint, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    ) { Ico(icon, tint, 28.dp, if (rotate) Modifier.rotate(135f) else Modifier) }
+}
+
+/** Runs while a call is on, so the microphone (and camera) keep working if the person leaves the app. */
+class CallService : android.app.Service() {
+    override fun onBind(intent: android.content.Intent?): android.os.IBinder? = null
+
+    override fun onStartCommand(intent: android.content.Intent?, flags: Int, startId: Int): Int {
+        val video = intent?.getBooleanExtra("video", false) == true
+        val n = Notifier.callNotification(this, "Call in progress")
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            var type = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            if (video) type = type or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            startForeground(Notifier.CALL_SERVICE_ID, n, type)
+        } else {
+            startForeground(Notifier.CALL_SERVICE_ID, n)
+        }
+        return START_NOT_STICKY
+    }
+
+    companion object {
+        fun start(ctx: Context, video: Boolean) {
+            try { ContextCompat.startForegroundService(ctx, android.content.Intent(ctx, CallService::class.java).putExtra("video", video)) } catch (_: Exception) {}
+        }
+        fun stop(ctx: Context) { ctx.stopService(android.content.Intent(ctx, CallService::class.java)) }
     }
 }
