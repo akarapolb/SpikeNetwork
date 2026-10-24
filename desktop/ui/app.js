@@ -247,7 +247,7 @@ function chatMain() {
   const c = st.ov.contacts.find((x) => x.name === st.chat);
   if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), h("p", { class: "empty" }, st.ov.contacts.length ? "Choose a conversation." : "Add a contact to start.")];
   const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name), h("span", { class: c.agent ? "verified" : null }, c.agent ? [icon("shield"), "Agent"] : `End-to-end encrypted · ${c.devices} device${c.devices > 1 ? "s" : ""}`)),
-    h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
+    callButtons(c), h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
   const items = threadItems(false);
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
   const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: "Message", rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } } });

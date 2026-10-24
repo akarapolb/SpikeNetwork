@@ -8,7 +8,7 @@ pub mod api;
 pub mod updates;
 
 use api::{
-    ActionTypeDto, AgentsDto, BlockedDto, DirectDto, GrantRequest, GroupDetailDto, GroupSendDto,
+    ActionTypeDto, AgentsDto, BlockedDto, CallEventDto, DirectDto, GrantRequest, GroupDetailDto, GroupSendDto,
     InstalledDto, LinkedDto, MessageDto, MessageRequestDto, Overview, Session, SyncDto,
 };
 use spike_core::vault::KdfParams;
@@ -291,6 +291,48 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
         // The sync's own connection replaced ours: pause briefly so two connections do not trade places in a loop.
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
+}
+
+// Calls (ADR 0028): the window makes the WebRTC offer/answer and hands the text up.
+#[tauri::command]
+async fn call_start(
+    state: State<'_, AppState>,
+    name: String,
+    video: bool,
+    sdp: String,
+) -> Result<String, String> {
+    session(&state)?.call_start(&name, video, &sdp).await.map_err(err)
+}
+
+#[tauri::command]
+async fn call_accept(state: State<'_, AppState>, sdp: String) -> Result<(), String> {
+    session(&state)?.call_accept(&sdp).await.map_err(err)
+}
+
+#[tauri::command]
+async fn call_decline(state: State<'_, AppState>, all: bool) -> Result<(), String> {
+    session(&state)?.call_decline(all).await.map_err(err)
+}
+
+#[tauri::command]
+async fn call_hangup(state: State<'_, AppState>) -> Result<(), String> {
+    session(&state)?.call_hangup().await.map_err(err)
+}
+
+#[tauri::command]
+async fn call_fail(state: State<'_, AppState>) -> Result<(), String> {
+    session(&state)?.call_fail().await.map_err(err)
+}
+
+#[tauri::command]
+async fn call_ice(state: State<'_, AppState>, candidates: Vec<String>) -> Result<(), String> {
+    session(&state)?.call_local_ice(candidates).await.map_err(err)
+}
+
+/// Wait up to `ms` for something the call screen must act on (ring, connect, candidates, end).
+#[tauri::command]
+async fn call_wait(state: State<'_, AppState>, ms: u64) -> Result<Vec<CallEventDto>, String> {
+    Ok(session(&state)?.call_wait(ms.min(60_000)).await)
 }
 
 #[tauri::command]
@@ -896,6 +938,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_status,
+            call_start,
+            call_accept,
+            call_decline,
+            call_hangup,
+            call_fail,
+            call_ice,
+            call_wait,
             direct_status,
             direct_enable,
             direct_disable,

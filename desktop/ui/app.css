@@ -248,3 +248,25 @@ textarea.cardbox { width: 100%; min-height: 90px; border: 1px solid var(--line);
 .app { grid-template-rows: 1fr; }
 
 img.qrimg { width: 240px; height: 240px; align-self: flex-start; background: #fff; border-radius: 12px; border: 1px solid var(--line); padding: 4px; }
+
+/* ---------- live calls (ADR 0028) ---------- */
+.callov { position: fixed; inset: 0; z-index: 40; background: #0E1418; color: #E6EDF2; display: flex; }
+.callbox { flex: 1; display: flex; flex-direction: column; position: relative; min-width: 0; }
+.callbox .stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; text-align: center; position: relative; min-height: 0; }
+.callbox .stage h2 { margin: 0; font-size: 26px; }
+.callbox .sub { margin: 0; color: #C3CED7; font-size: 15px; }
+.callbox .big { width: 120px; height: 120px; border-radius: 60px; background: #24313A; color: #C3CED7; display: grid; place-items: center; font-size: 40px; font-weight: 600; }
+.callbox video.remote { max-width: 100%; max-height: 62vh; border-radius: 14px; background: #000; }
+.callbox .stage > span.big + video.remote { display: none; }
+.callbox video.self { position: absolute; right: 24px; bottom: 24px; width: 200px; border-radius: 14px; background: #24313A; border: 1px solid #3A4B57; }
+.callbox .facts { display: flex; flex-direction: column; gap: 6px; align-items: center; font-size: 13.5px; color: #C3CED7; }
+.callbox .facts .ok svg { color: #6FCF97; }
+.callbox .facts .warn { color: #F5DDB0; font-weight: 600; }
+.callbox .facts span { display: inline-flex; gap: 6px; align-items: center; }
+.callbox .controls { display: flex; gap: 14px; justify-content: center; padding: 20px 20px 28px; }
+.callbox .controls button { width: 56px; height: 56px; border-radius: 28px; border: 0; background: #24313A; color: #E6EDF2; display: grid; place-items: center; }
+.callbox .controls button[aria-pressed="true"] { background: #E6EDF2; color: #0E1418; }
+.callbox .controls button.end { background: #C0392B; color: #fff; width: 72px; }
+.callbox .controls button.end svg { transform: rotate(135deg); }
+.callbox .controls button.accept { background: #1F7A45; color: #fff; width: 72px; }
+.callbox .controls svg.i { width: 24px; height: 24px; }

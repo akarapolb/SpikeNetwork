@@ -67,7 +67,7 @@ export function createDrive({ relayUrl, shotsDir, pass = "drive test passphrase"
     start(exe, [], {
       SPIKE_DESKTOP_HOME: home,
       WEBVIEW2_USER_DATA_FOLDER: join(tmp, `${name}-wv`),
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} ${process.env.DRIVE_WV_ARGS || ""}`,
     });
     const p = new Page(name, port);
     await p.connect();

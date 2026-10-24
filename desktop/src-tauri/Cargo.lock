@@ -5011,6 +5011,7 @@ dependencies = [
  "anyhow",
  "hex",
  "qrcode",
+ "rand 0.8.8",
  "serde",
  "serde_json",
  "spike-cli",
