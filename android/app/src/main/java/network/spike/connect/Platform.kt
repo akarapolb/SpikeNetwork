@@ -206,28 +206,49 @@ object Notifier {
         ctx.getSystemService(NotificationManager::class.java).notify(NEWS_ID, n)
     }
 
-    private const val CALLS = "calls"
+    private const val CALLS = "calls_v2"
     private const val CALL_ID = 3
 
-    /** Says who is calling, with Answer taking the person to the call screen. Full-screen where the phone allows it. */
+    /**
+     * A real incoming-call notification: the system's call style with Answer and Decline buttons, and a
+     * full-screen intent that wakes the screen and shows the call over the lock screen where the phone allows it.
+     * The name is the only thing shown; nothing else about the call is in a notification.
+     */
     fun incomingCall(ctx: Context, name: String) {
         if (!allowed(ctx)) return
         ensureChannels(ctx)
         val nm = ctx.getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel(CALLS, "Incoming calls", NotificationManager.IMPORTANCE_HIGH))
+        nm.createNotificationChannel(
+            NotificationChannel(CALLS, "Incoming calls", NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(null, null) // the app rings and vibrates itself, in step with the call
+                enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setBypassDnd(false)
+            },
+        )
+        val person = androidx.core.app.Person.Builder().setName(name).setImportant(true).build()
+        val answer = PendingIntent.getActivity(
+            ctx, 2,
+            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra("incoming_call", true).putExtra("answer_call", true),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val decline = PendingIntent.getBroadcast(
+            ctx, 3, Intent(ctx, CallActionReceiver::class.java).setAction("decline"),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val n = NotificationCompat.Builder(ctx, CALLS)
             .setSmallIcon(android.R.drawable.stat_sys_phone_call)
-            .setContentTitle("Incoming call")
-            .setContentText("$name is calling")
+            .setStyle(NotificationCompat.CallStyle.forIncomingCall(person, decline, answer))
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)
             .setTimeoutAfter(45_000)
             .setContentIntent(open(ctx, true))
             .setFullScreenIntent(open(ctx, true), true)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(NotificationCompat.Builder(ctx, CALLS).setSmallIcon(android.R.drawable.stat_sys_phone_call).setContentTitle("Incoming call").build())
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
+        nm.cancel(CALL_ID) // a fresh alert every time, not an update of one Android already decided about
         nm.notify(CALL_ID, n)
     }
 

@@ -70,6 +70,7 @@ class MainActivity : FragmentActivity() {
     /** Opened by an incoming-call alert on a locked phone: show the call, and only the call, over the lock screen. */
     private var overLock = false
     private fun showOverLockIfCall(i: android.content.Intent?) {
+        if (i?.getBooleanExtra("answer_call", false) == true) CallManager.pendingAnswer = true
         android.util.Log.i("SpikeCall", "intent incoming_call=${i?.getBooleanExtra("incoming_call", false)}")
         android.util.Log.i("SpikeCall", "intent incoming_call=${i?.getBooleanExtra("incoming_call", false)} locked=${getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked}")
         if (i?.getBooleanExtra("incoming_call", false) != true) return

@@ -386,11 +386,19 @@ object CallManager {
                     ringedWhileLocked = !c.getSystemService(android.os.PowerManager::class.java).isInteractive ||
                         c.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
                 }
+                appCtx?.let { c ->
+                    val pm = c.getSystemService(android.os.PowerManager::class.java)
+                    if (!pm.isInteractive) {
+                        // Turn the screen on, as a phone call does; the alert's full-screen intent then shows the call.
+                        @Suppress("DEPRECATION")
+                        pm.newWakeLock(android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP, "spike:ring").acquire(15_000)
+                    }
+                }
                 callId = ev.getString("call"); offerSdp = ev.getString("sdp")
                 ui = CallUi(name, true, "ringing", verified = verified, video = ev.optBoolean("video"))
                 startRing()
                 Notifier.incomingCall(appCtx ?: return, name)
-                Trace.add("incoming call alert posted; lock-screen allowed=" + (if (android.os.Build.VERSION.SDK_INT >= 34) appCtx!!.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent().toString() else "n/a") + ", battery-exempt=" + appCtx!!.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(appCtx!!.packageName))
+                Trace.add("incoming call alert posted; channel importance=" + (appCtx!!.getSystemService(android.app.NotificationManager::class.java).getNotificationChannel("calls_v2")?.importance ?: -1) + " (4=high), lock-screen allowed=" + (if (android.os.Build.VERSION.SDK_INT >= 34) appCtx!!.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent().toString() else "n/a") + ", battery-exempt=" + appCtx!!.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(appCtx!!.packageName))
                 if (ev.optBoolean("glare")) answer()
             }
             "stop_ringing" -> if (ev.getString("call") == callId) stopRing()
@@ -443,6 +451,9 @@ object CallManager {
     /** A message for the person, shown by whoever is listening (the call screen's owner). */
     /** The call came in while the phone was locked or its screen was off: the app may only be shown for the call. */
     @Volatile var ringedWhileLocked = false
+
+    /** The person pressed Answer on the notification: answer as soon as the call screen is up. */
+    @Volatile var pendingAnswer = false
     var message by mutableStateOf<String?>(null)
     private fun scopeToast(m: String) { message = m }
 
@@ -473,14 +484,23 @@ object CallManager {
         if (msg != null) message = msg
     }
 
+    private var vibrator: android.os.Vibrator? = null
+
     private fun startRing() {
         val c = appCtx ?: return
+        try {
+            vibrator = (c.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager).defaultVibrator.also {
+                it.vibrate(android.os.VibrationEffect.createWaveform(longArrayOf(0, 900, 700), 0))
+            }
+        } catch (_: Exception) {}
         try {
             ringtone = RingtoneManager.getRingtone(c, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))?.also { it.play() }
         } catch (_: Exception) {}
     }
 
     private fun stopRing() {
+        try { vibrator?.cancel() } catch (_: Exception) {}
+        vibrator = null
         try { ringtone?.stop() } catch (_: Exception) {}
         ringtone = null
     }
@@ -563,6 +583,9 @@ fun CallScreen(u: CallUi) {
     var now by androidx.compose.runtime.remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(u.connectedAt) { while (u.connectedAt != 0L) { now = System.currentTimeMillis(); delay(1000) } }
     val answerGate = rememberMicGate(camera = u.video) { CallManager.answer() }
+    LaunchedEffect(u.status) {
+        if (u.status == "ringing" && CallManager.pendingAnswer) { CallManager.pendingAnswer = false; answerGate() }
+    }
     val dark = Color(0xFF0E1418)
     val remote = CallManager.remoteVideo
     val showRemote = u.video && remote != null
@@ -674,5 +697,12 @@ class CallService : android.app.Service() {
             try { ContextCompat.startForegroundService(ctx, android.content.Intent(ctx, CallService::class.java).putExtra("video", video)) } catch (_: Exception) {}
         }
         fun stop(ctx: Context) { ctx.stopService(android.content.Intent(ctx, CallService::class.java)) }
+    }
+}
+
+/** Decline pressed on the incoming-call notification. */
+class CallActionReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: android.content.Intent) {
+        if (intent.action == "decline") CallManager.decline()
     }
 }
