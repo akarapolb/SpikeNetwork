@@ -130,6 +130,11 @@ object CallManager {
     private val pendingRemote = mutableListOf<String>()
     private val localIce = mutableListOf<String>()
     private var iceJob: Job? = null
+    private var cfg: PeerConnection.RTCConfiguration? = null
+    private var discJob: Job? = null
+    private var giveUpJob: Job? = null
+    private var restarted = false
+    private var netCallback: android.net.ConnectivityManager.NetworkCallback? = null
     private var ringtone: Ringtone? = null
     private var appCtx: Context? = null
 
@@ -211,6 +216,7 @@ object CallManager {
         remoteSet = false
         pendingRemote.clear(); localIce.clear()
         val f = factory()
+        this.cfg = cfg
         val p = f.createPeerConnection(cfg, object : PeerConnection.Observer {
             override fun onIceCandidate(c: IceCandidate) {
                 synchronized(localIce) { localIce.add(c.sdp) }
@@ -221,6 +227,7 @@ object CallManager {
                 Log.i(TAG, "connection $s")
                 when (s) {
                     PeerConnection.PeerConnectionState.CONNECTED -> {
+                        discJob?.cancel(); giveUpJob?.cancel(); restarted = false
                         // What was negotiated, without any content: media lines and directions only.
                         for ((n, d) in listOf("local" to pc?.localDescription, "remote" to pc?.remoteDescription)) {
                             val lines = (d?.description ?: "").lines().filter { it.startsWith("m=") || it.startsWith("a=sendrecv") || it.startsWith("a=recvonly") || it.startsWith("a=sendonly") || it.startsWith("a=inactive") }
@@ -229,9 +236,19 @@ object CallManager {
                         val u = ui ?: return
                         if (u.connectedAt == 0L) { ui = u.copy(status = "connected", connectedAt = System.currentTimeMillis()); startStats() }
                     }
-                    PeerConnection.PeerConnectionState.FAILED -> scope.launch {
-                        try { Bridge.call("call_fail") } catch (_: Exception) {}
-                        endLocal("Call failed: the devices could not connect.")
+                    // A dropped connection (a network change, a Wi-Fi hiccup) is restarted before the call is given up on.
+                    PeerConnection.PeerConnectionState.DISCONNECTED -> {
+                        if (ui?.connectedAt != 0L) {
+                            discJob?.cancel()
+                            val mine = pc
+                            discJob = scope.launch { delay(3000); if (pc === mine) restartIce() }
+                        }
+                    }
+                    PeerConnection.PeerConnectionState.FAILED -> {
+                        if (ui?.connectedAt != 0L && !restarted) restartIce() else scope.launch {
+                            try { Bridge.call("call_fail") } catch (_: Exception) {}
+                            endLocal("Call failed: the devices could not connect.")
+                        }
                     }
                     else -> {}
                 }
@@ -316,6 +333,7 @@ object CallManager {
         if (ui != null) return
         ui = CallUi(name, false, "calling", verified = verified, video = video)
         appCtx?.let { CallService.start(it, video) }
+        watchNetwork()
         scope.launch {
             try {
                 val p = newPeer(video, iceServers())
@@ -339,6 +357,7 @@ object CallManager {
         stopRing()
         ui = u.copy(status = "connecting")
         appCtx?.let { CallService.start(it, u.video) }
+        watchNetwork()
         scope.launch {
             try {
                 val p = newPeer(u.video, iceServers())
@@ -373,6 +392,60 @@ object CallManager {
         val u = ui ?: return
         track?.setEnabled(u.muted) // was muted -> enable
         ui = u.copy(muted = !u.muted)
+    }
+
+    /**
+     * After a network change the connection is restarted on the same call (ADR 0028). Only the person who placed the
+     * call makes the new offer; the other side asks for one. If it does not come back within 20 seconds the call ends.
+     */
+    fun restartIce() {
+        val u = ui ?: return
+        val p = pc ?: return
+        if (u.connectedAt == 0L) return
+        restarted = true
+        giveUpJob?.cancel()
+        giveUpJob = scope.launch {
+            delay(20_000)
+            if (pc === p && p.connectionState() != PeerConnection.PeerConnectionState.CONNECTED) {
+                try { Bridge.call("call_fail") } catch (_: Exception) {}
+                endLocal("Call lost: the connection could not be restored.")
+            }
+        }
+        scope.launch {
+            try {
+                val servers = iceServers() // a fresh TURN login, in case the call has outlived the old one
+                if (servers.isNotEmpty()) cfg?.let { it.iceServers = servers; p.setConfiguration(it) }
+                if (u.incoming) { Bridge.call("call_restart_ask"); return@launch }
+                p.restartIce()
+                val offer = SdpOffer(p)
+                setLocal(p, offer)
+                Bridge.call("call_restart", args("sdp" to offer.description))
+            } catch (e: Exception) {
+                try { Bridge.call("call_fail") } catch (_: Exception) {}
+                endLocal("Call lost: " + (e.message ?: "unknown"))
+            }
+        }
+    }
+
+    /** Restart when the phone's network changes (Wi-Fi to mobile data and back) during a call. */
+    private fun watchNetwork() {
+        val c = appCtx ?: return
+        val cm = c.getSystemService(android.net.ConnectivityManager::class.java)
+        var last: android.net.Network? = null
+        val cb = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                val changed = last != null && last != network
+                last = network
+                if (changed && (ui?.connectedAt ?: 0L) != 0L) { Trace.add("network changed during a call: restarting the connection"); restartIce() }
+            }
+        }
+        try { cm.registerDefaultNetworkCallback(cb); netCallback = cb } catch (_: Exception) {}
+    }
+
+    private fun unwatchNetwork() {
+        val c = appCtx ?: return
+        try { netCallback?.let { c.getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(it) } } catch (_: Exception) {}
+        netCallback = null
     }
 
     fun toggleCamera() {
@@ -439,6 +512,29 @@ object CallManager {
                     endLocal("The other device's answer could not be used.")
                 }
             }
+            "restart_ask" -> if (ev.getString("call") == callId && ui?.incoming == false) restartIce()
+            "restart" -> {
+                if (ev.getString("call") != callId) return
+                val p = pc ?: return
+                try {
+                    setRemote(p, SessionDescription(SessionDescription.Type.OFFER, ev.getString("sdp")))
+                    val a = SdpAnswer(p)
+                    setLocal(p, a)
+                    Bridge.call("call_restart_answer", args("sdp" to a.description))
+                } catch (e: Exception) {
+                    try { Bridge.call("call_fail") } catch (_: Exception) {}
+                    endLocal("Call lost: " + (e.message ?: "unknown"))
+                }
+            }
+            "restart_answer" -> {
+                if (ev.getString("call") != callId) return
+                val p = pc ?: return
+                try { setRemote(p, SessionDescription(SessionDescription.Type.ANSWER, ev.getString("sdp"))) }
+                catch (e: Exception) {
+                    try { Bridge.call("call_fail") } catch (_: Exception) {}
+                    endLocal("Call lost: " + (e.message ?: "unknown"))
+                }
+            }
             "remote_ice" -> {
                 if (ev.getString("call") != callId) return
                 val cs = ev.getJSONArray("candidates")
@@ -481,6 +577,8 @@ object CallManager {
     private fun scopeToast(m: String) { message = m }
 
     private fun endLocal(msg: String?) {
+        unwatchNetwork()
+        discJob?.cancel(); giveUpJob?.cancel(); restarted = false
         stopRing()
         stats?.cancel(); stats = null
         iceJob?.cancel()

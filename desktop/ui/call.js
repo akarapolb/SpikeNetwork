@@ -51,8 +51,21 @@ function newPeer(servers) {
   pc.onconnectionstatechange = () => {
     const s = pc.connectionState;
     if (!cs) return;
-    if (s === "connected" && !cs.connectedAt) { cs.connectedAt = Date.now(); cs.status = "connected"; describePath(); drawCall(); }
-    if (s === "failed") { const id = cs.id; endLocal("Call failed: the devices could not connect."); invoke("call_fail").catch(() => {}); }
+    if (s === "connected") {
+      clearTimeout(cs.discTimer); clearTimeout(cs.giveUp); cs.restartedAt = 0;
+      if (!cs.connectedAt) { cs.connectedAt = Date.now(); cs.status = "connected"; }
+      cs.status = "connected"; describePath(); drawCall();
+    }
+    // A dropped connection (a network change, a Wi-Fi hiccup) is restarted before the call is given up on.
+    if (s === "disconnected" && cs.connectedAt) {
+      clearTimeout(cs.discTimer);
+      const me = cs;
+      cs.discTimer = setTimeout(() => { if (cs === me && me.pc.connectionState === "disconnected") restartIce(); }, 3000);
+    }
+    if (s === "failed") {
+      if (cs.connectedAt && !cs.restartedAt) restartIce();
+      else giveUpCall("Call failed: the devices could not connect.");
+    }
   };
   return pc;
 }
@@ -86,9 +99,33 @@ async function describePath() {
     drawCall();
   } catch (_) {}
 }
+function giveUpCall(message) { invoke("call_fail").catch(() => {}); endLocal(message); }
+
+/* After a network change the connection is restarted on the same call (ADR 0028). Only the person who placed the call
+   makes the new offer; the other side asks for one. If it does not come back within 20 seconds the call ends. */
+async function restartIce() {
+  if (!cs || !cs.pc || !cs.connectedAt) return;
+  const me = cs;
+  clearTimeout(cs.giveUp);
+  cs.restartedAt = Date.now();
+  cs.giveUp = setTimeout(() => { if (cs === me && me.pc.connectionState !== "connected") giveUpCall("Call lost: the connection could not be restored."); }, 20000);
+  try {
+    // fresh TURN login, in case the call has outlived the old one
+    const servers = await iceServers();
+    if (servers.length) { const c = cs.pc.getConfiguration(); c.iceServers = servers; cs.pc.setConfiguration(c); }
+    if (cs.incoming) { await invoke("call_restart_ask"); return; }
+    cs.pc.restartIce();
+    const offer = await cs.pc.createOffer({ iceRestart: true });
+    await cs.pc.setLocalDescription(offer);
+    await invoke("call_restart", { sdp: offer.sdp });
+  } catch (e) { if (cs === me) giveUpCall("Call lost: " + (e.message || e)); }
+}
+window.addEventListener("online", () => { if (cs && cs.connectedAt) restartIce(); });
+if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener("change", () => { if (cs && cs.connectedAt) restartIce(); });
+
 function stopMedia() {
   if (!cs) return;
-  clearTimeout(cs.iceTimer);
+  clearTimeout(cs.iceTimer); clearTimeout(cs.discTimer); clearTimeout(cs.giveUp);
   if (cs.local) cs.local.getTracks().forEach((t) => t.stop());
   if (cs.pc) { cs.pc.onconnectionstatechange = null; cs.pc.close(); }
   stopRing();
@@ -162,6 +199,20 @@ async function onCallEvent(ev) {
   if (ev.type === "connect") {
     try { cs.id = ev.call; await cs.pc.setRemoteDescription({ type: "answer", sdp: ev.sdp }); cs.remoteSet = true; cs.status = "connecting"; cs.code = await callCode(); for (const c of cs.pendingIce.splice(0)) await addRemote(c); drawCall(); }
     catch (e) { invoke("call_fail").catch(() => {}); endLocal("The other device's answer could not be used."); }
+    return;
+  }
+  if (ev.type === "restart_ask") { if (!cs.incoming) restartIce(); return; }
+  if (ev.type === "restart") {
+    try {
+      await cs.pc.setRemoteDescription({ type: "offer", sdp: ev.sdp });
+      const answer = await cs.pc.createAnswer();
+      await cs.pc.setLocalDescription(answer);
+      await invoke("call_restart_answer", { sdp: answer.sdp });
+    } catch (e) { giveUpCall("Call lost: " + (e.message || e)); }
+    return;
+  }
+  if (ev.type === "restart_answer") {
+    try { await cs.pc.setRemoteDescription({ type: "answer", sdp: ev.sdp }); } catch (e) { giveUpCall("Call lost: " + (e.message || e)); }
     return;
   }
   if (ev.type === "remote_ice") {

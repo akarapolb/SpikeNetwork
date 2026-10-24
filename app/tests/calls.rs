@@ -182,3 +182,28 @@ fn media_failure_ends_the_call_for_both() {
     assert_eq!(kinds(&ev), ["ended"], "{ev:?}");
     assert_eq!(ev[0]["result"], "failed");
 }
+
+#[test]
+fn a_network_change_restarts_the_connection_through_the_same_signalling() {
+    let (alice, bob) = pair();
+    alice.ok("call_start", json!({ "name": "Bob", "video": false, "sdp": "offer" }));
+    bob.events();
+    bob.ok("call_accept", json!({ "sdp": "answer" }));
+    alice.events();
+    // alice (the caller) moved from Wi-Fi to mobile data: she offers again
+    alice.ok("call_restart", json!({ "sdp": "offer 2" }));
+    let ev = bob.events();
+    assert_eq!(kinds(&ev), ["restart"], "{ev:?}");
+    assert_eq!(ev[0]["sdp"], "offer 2");
+    bob.ok("call_restart_answer", json!({ "sdp": "answer 2" }));
+    let ev = alice.events();
+    assert_eq!(kinds(&ev), ["restart_answer"], "{ev:?}");
+    assert_eq!(ev[0]["sdp"], "answer 2");
+    // bob's network changes: he asks alice to restart
+    bob.ok("call_restart_ask", json!({}));
+    let ev = alice.events();
+    assert_eq!(kinds(&ev), ["restart_ask"], "{ev:?}");
+    // the callee cannot offer, the caller cannot ask: nothing is sent
+    bob.ok("call_restart", json!({ "sdp": "nope" }));
+    assert!(alice.events().is_empty());
+}

@@ -79,6 +79,12 @@ pub enum CallEventDto {
     /// The other side answered: set this as the remote description.
     Connect { call: String, sdp: String },
     RemoteIce { call: String, candidates: Vec<String> },
+    /// The caller restarts the connection after a network change: apply this offer and answer with `call_restart_answer`.
+    Restart { call: String, sdp: String },
+    /// The answer to the restart offer we sent.
+    RestartAnswer { call: String, sdp: String },
+    /// The other side asks us (the caller) to restart.
+    RestartAsk { call: String },
     /// The call is over: tear down media. `result` is one of completed, missed, declined, no_answer,
     /// busy, answered_elsewhere, failed.
     Ended {
@@ -192,6 +198,26 @@ impl Session {
     /// The screen's media failed (ICE failed, certificate mismatch): end the call.
     pub async fn call_fail(&self) -> Result<()> {
         self.calls.step(Input::Fail);
+        self.call_flush().await;
+        Ok(())
+    }
+
+    /// After a network change: the caller's new offer (with fresh connection details).
+    pub async fn call_restart(&self, sdp: &str) -> Result<()> {
+        self.calls.step(Input::SendRestart { sdp: sdp.to_string() });
+        self.call_flush().await;
+        Ok(())
+    }
+
+    pub async fn call_restart_answer(&self, sdp: &str) -> Result<()> {
+        self.calls.step(Input::SendRestartAnswer { sdp: sdp.to_string() });
+        self.call_flush().await;
+        Ok(())
+    }
+
+    /// Our network changed and we did not place the call: ask the caller to restart.
+    pub async fn call_restart_ask(&self) -> Result<()> {
+        self.calls.step(Input::AskRestart);
         self.call_flush().await;
         Ok(())
     }
@@ -312,6 +338,9 @@ impl Session {
             Action::StopRinging { call } => CallEventDto::StopRinging { call },
             Action::Connect { call, sdp } => CallEventDto::Connect { call, sdp },
             Action::RemoteIce { call, candidates } => CallEventDto::RemoteIce { call, candidates },
+            Action::Restart { call, sdp } => CallEventDto::Restart { call, sdp },
+            Action::RestartAnswer { call, sdp } => CallEventDto::RestartAnswer { call, sdp },
+            Action::RestartAsk { call } => CallEventDto::RestartAsk { call },
             Action::Ended { call, peer, incoming, result, answered_at } => {
                 let seconds = answered_at.map_or(0, |t| now_ms().saturating_sub(t) / 1000);
                 if let Some(peer) = &peer {

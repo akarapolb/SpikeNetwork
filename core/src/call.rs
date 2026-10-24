@@ -37,6 +37,12 @@ pub enum Signal {
     Answer { call: String, sdp: String },
     Ice { call: String, candidates: Vec<String> },
     End { call: String, reason: Reason },
+    /// Mid-call, after a network change: the original caller's new offer with fresh connection details.
+    Restart { call: String, sdp: String },
+    /// The answer to a `Restart`.
+    RestartAnswer { call: String, sdp: String },
+    /// The person who did not place the call asks the caller to restart (it noticed its network change).
+    RestartAsk { call: String },
 }
 
 fn is_hex32(s: &str) -> bool {
@@ -49,7 +55,10 @@ impl Signal {
             Signal::Invite { call, .. }
             | Signal::Answer { call, .. }
             | Signal::Ice { call, .. }
-            | Signal::End { call, .. } => call,
+            | Signal::End { call, .. }
+            | Signal::Restart { call, .. }
+            | Signal::RestartAnswer { call, .. }
+            | Signal::RestartAsk { call } => call,
         }
     }
 
@@ -63,13 +72,16 @@ impl Signal {
         let sdp_ok = |sdp: &str| !sdp.is_empty() && sdp.len() <= MAX_SDP;
         let ok = is_hex32(s.call())
             && match &s {
-                Signal::Invite { sdp, .. } | Signal::Answer { sdp, .. } => sdp_ok(sdp),
+                Signal::Invite { sdp, .. }
+                | Signal::Answer { sdp, .. }
+                | Signal::Restart { sdp, .. }
+                | Signal::RestartAnswer { sdp, .. } => sdp_ok(sdp),
                 Signal::Ice { candidates, .. } => {
                     !candidates.is_empty()
                         && candidates.len() <= MAX_CANDIDATES
                         && candidates.iter().all(|c| c.len() <= MAX_CANDIDATE)
                 }
-                Signal::End { .. } => true,
+                Signal::End { .. } | Signal::RestartAsk { .. } => true,
             };
         if ok {
             Ok(s)
@@ -121,6 +133,11 @@ pub enum Input {
     Fail,
     /// Candidates gathered locally.
     LocalIce { candidates: Vec<String> },
+    /// The caller's new offer after a network change (only the person who placed the call sends this).
+    SendRestart { sdp: String },
+    SendRestartAnswer { sdp: String },
+    /// Ask the caller to restart, because our network changed.
+    AskRestart,
     Tick,
 }
 
@@ -134,6 +151,12 @@ pub enum Action {
     /// The callee answered: apply this answer SDP.
     Connect { call: String, sdp: String },
     RemoteIce { call: String, candidates: Vec<String> },
+    /// The caller restarts the connection: answer with `Input::SendRestartAnswer`.
+    Restart { call: String, sdp: String },
+    /// The answer to our restart offer: apply it.
+    RestartAnswer { call: String, sdp: String },
+    /// The other side asks us to restart (we placed the call).
+    RestartAsk { call: String },
     /// The call is over; write the call log and tear down media.
     Ended {
         call: String,
@@ -352,6 +375,27 @@ impl Machine {
                     _ => vec![],
                 }
             }
+            Input::SendRestart { sdp } => match &self.state {
+                State::Active { call, device, incoming: false, .. } => vec![Self::send(
+                    Target::PeerDevice(device.clone()),
+                    Signal::Restart { call: call.clone(), sdp },
+                )],
+                _ => vec![],
+            },
+            Input::SendRestartAnswer { sdp } => match &self.state {
+                State::Active { call, device, incoming: true, .. } => vec![Self::send(
+                    Target::PeerDevice(device.clone()),
+                    Signal::RestartAnswer { call: call.clone(), sdp },
+                )],
+                _ => vec![],
+            },
+            Input::AskRestart => match &self.state {
+                State::Active { call, device, incoming: true, .. } => vec![Self::send(
+                    Target::PeerDevice(device.clone()),
+                    Signal::RestartAsk { call: call.clone() },
+                )],
+                _ => vec![],
+            },
             Input::Tick => match &self.state {
                 State::Outgoing { started, .. } if now.saturating_sub(*started) >= RING_MS => {
                     let State::Outgoing { call, peer, refused, busy, peer_devices, .. } =
@@ -487,6 +531,32 @@ impl Machine {
                 _ => vec![],
             },
             Signal::End { call, reason } => self.recv_end(from, call, reason),
+            // Restarts only count inside the active call, from the device we are talking to, in the right direction:
+            // the caller offers, the callee answers or asks.
+            Signal::Restart { call, sdp } => match &self.state {
+                State::Active { call: mine, peer, device, incoming: true, .. }
+                    if *mine == call && *device == from.device && from.peer.as_deref() == Some(peer.as_str()) =>
+                {
+                    vec![Action::Restart { call, sdp }]
+                }
+                _ => vec![],
+            },
+            Signal::RestartAnswer { call, sdp } => match &self.state {
+                State::Active { call: mine, peer, device, incoming: false, .. }
+                    if *mine == call && *device == from.device && from.peer.as_deref() == Some(peer.as_str()) =>
+                {
+                    vec![Action::RestartAnswer { call, sdp }]
+                }
+                _ => vec![],
+            },
+            Signal::RestartAsk { call } => match &self.state {
+                State::Active { call: mine, peer, device, incoming: false, .. }
+                    if *mine == call && *device == from.device && from.peer.as_deref() == Some(peer.as_str()) =>
+                {
+                    vec![Action::RestartAsk { call }]
+                }
+                _ => vec![],
+            },
         }
     }
 
@@ -784,6 +854,71 @@ mod tests {
         let a = recv(&mut m, NOW + 10, contact("d1"), Signal::End { call: id(3), reason: Reason::Timeout });
         assert_eq!(ended(&a), Some(CallResult::Missed));
         assert!(m.is_idle());
+    }
+
+    fn active_pair(caller: bool) -> Machine {
+        let mut m = Machine::new();
+        if caller {
+            dial(&mut m, &id(1), 1);
+            recv(&mut m, NOW, contact("d1"), Signal::Answer { call: id(1), sdp: "ans".into() });
+        } else {
+            recv(&mut m, NOW, contact("d1"), invite(&id(1)));
+            m.step(NOW, Input::Accept { sdp: "ans".into() });
+        }
+        m
+    }
+
+    #[test]
+    fn a_network_change_restarts_the_connection_caller_offers_callee_answers() {
+        let mut caller = active_pair(true);
+        let mut callee = active_pair(false);
+        // the caller offers; only it may
+        let a = caller.step(NOW, Input::SendRestart { sdp: "o2".into() });
+        assert_eq!(
+            a,
+            vec![Action::Send {
+                to: Target::PeerDevice("d1".into()),
+                signal: Signal::Restart { call: id(1), sdp: "o2".into() }
+            }]
+        );
+        assert!(callee.step(NOW, Input::SendRestart { sdp: "x".into() }).is_empty(), "the callee never offers");
+        // the callee gets it, answers
+        let a = recv(&mut callee, NOW, contact("d1"), Signal::Restart { call: id(1), sdp: "o2".into() });
+        assert_eq!(a, vec![Action::Restart { call: id(1), sdp: "o2".into() }]);
+        let a = callee.step(NOW, Input::SendRestartAnswer { sdp: "a2".into() });
+        assert!(matches!(&a[0], Action::Send { signal: Signal::RestartAnswer { .. }, .. }));
+        assert!(caller.step(NOW, Input::SendRestartAnswer { sdp: "x".into() }).is_empty(), "the caller never answers");
+        // the caller applies the answer
+        let a = recv(&mut caller, NOW, contact("d1"), Signal::RestartAnswer { call: id(1), sdp: "a2".into() });
+        assert_eq!(a, vec![Action::RestartAnswer { call: id(1), sdp: "a2".into() }]);
+        // the callee, whose network changed, asks the caller to restart
+        let a = callee.step(NOW, Input::AskRestart);
+        assert!(matches!(&a[0], Action::Send { signal: Signal::RestartAsk { .. }, .. }));
+        let a = recv(&mut caller, NOW, contact("d1"), Signal::RestartAsk { call: id(1) });
+        assert_eq!(a, vec![Action::RestartAsk { call: id(1) }]);
+        assert!(caller.step(NOW, Input::AskRestart).is_empty(), "the caller restarts itself, it does not ask");
+    }
+
+    #[test]
+    fn restart_signals_from_anyone_else_or_the_wrong_way_or_outside_a_call_are_ignored() {
+        let mut caller = active_pair(true);
+        let mut callee = active_pair(false);
+        let eve = Origin { device: "e".into(), peer: Some("eve".into()) };
+        let r = Signal::Restart { call: id(1), sdp: "o".into() };
+        assert!(recv(&mut callee, NOW, eve.clone(), r.clone()).is_empty(), "another contact");
+        assert!(recv(&mut callee, NOW, contact("d9"), r.clone()).is_empty(), "another device of the contact");
+        assert!(recv(&mut callee, NOW, own("mine2"), r.clone()).is_empty(), "our own device");
+        assert!(recv(&mut caller, NOW, contact("d1"), r.clone()).is_empty(), "the caller never receives an offer");
+        assert!(recv(&mut callee, NOW, contact("d1"), Signal::RestartAnswer { call: id(1), sdp: "a".into() }).is_empty());
+        assert!(recv(&mut callee, NOW, contact("d1"), Signal::RestartAsk { call: id(1) }).is_empty());
+        assert!(recv(&mut callee, NOW, contact("d1"), Signal::Restart { call: id(2), sdp: "o".into() }).is_empty(), "another call");
+        let mut idle = Machine::new();
+        assert!(recv(&mut idle, NOW, contact("d1"), r).is_empty());
+        let mut ringing = Machine::new();
+        recv(&mut ringing, NOW, contact("d1"), invite(&id(1)));
+        assert!(recv(&mut ringing, NOW, contact("d1"), Signal::Restart { call: id(1), sdp: "o".into() }).is_empty());
+        assert!(Signal::parse(&Signal::Restart { call: id(1), sdp: String::new() }.to_json()).is_err());
+        assert!(Signal::parse(&Signal::RestartAsk { call: id(1) }.to_json()).is_ok());
     }
 
     #[test]

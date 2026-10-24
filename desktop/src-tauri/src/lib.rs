@@ -310,6 +310,21 @@ async fn call_ice_servers(state: State<'_, AppState>) -> Result<Vec<IceServerDto
 }
 
 #[tauri::command]
+async fn call_restart(state: State<'_, AppState>, sdp: String) -> Result<(), String> {
+    session(&state)?.call_restart(&sdp).await.map_err(err)
+}
+
+#[tauri::command]
+async fn call_restart_answer(state: State<'_, AppState>, sdp: String) -> Result<(), String> {
+    session(&state)?.call_restart_answer(&sdp).await.map_err(err)
+}
+
+#[tauri::command]
+async fn call_restart_ask(state: State<'_, AppState>) -> Result<(), String> {
+    session(&state)?.call_restart_ask().await.map_err(err)
+}
+
+#[tauri::command]
 async fn call_accept(state: State<'_, AppState>, sdp: String) -> Result<(), String> {
     session(&state)?.call_accept(&sdp).await.map_err(err)
 }
@@ -945,6 +960,9 @@ pub fn run() {
             app_status,
             call_start,
             call_ice_servers,
+            call_restart,
+            call_restart_answer,
+            call_restart_ask,
             call_accept,
             call_decline,
             call_hangup,

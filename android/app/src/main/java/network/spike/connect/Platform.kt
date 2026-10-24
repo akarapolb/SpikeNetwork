@@ -131,6 +131,7 @@ object Trace {
     @Synchronized
     fun add(what: String) {
         lines.addLast(fmt.format(java.util.Date()) + " " + what)
+        android.util.Log.i("SpikeCall", "trace: $what")
         while (lines.size > 40) lines.removeFirst()
     }
 
