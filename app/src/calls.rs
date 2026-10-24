@@ -29,6 +29,8 @@ pub(crate) struct Hub {
     queue: Mutex<VecDeque<Action>>,
     /// Who each call is with (conversation key, name), by call id.
     peers: Mutex<HashMap<String, (String, String)>>,
+    /// The TURN login last fetched, and when it stops being worth using (ms).
+    turn: Mutex<Option<(u64, Vec<IceServerDto>)>>,
     /// Which calls are video, by call id.
     video: Mutex<HashMap<String, bool>>,
     pub(crate) notify: tokio::sync::Notify,
@@ -57,6 +59,14 @@ impl Hub {
             self.notify.notify_one();
         }
     }
+}
+
+/// One ICE server for the screen's peer connection (the shape WebRTC's `iceServers` takes).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct IceServerDto {
+    pub urls: Vec<String>,
+    pub username: String,
+    pub credential: String,
 }
 
 /// What the screen has to act on.
@@ -95,6 +105,39 @@ fn result_name(r: CallResult) -> &'static str {
 impl Session {
     fn peer_of(&self, call: &str) -> Option<(String, String)> {
         self.calls.peers.lock().expect("calls lock").get(call).cloned()
+    }
+
+    /// The ICE servers a call should use: the relay operator's TURN server with a short-lived login, or none
+    /// if the relay has no TURN (a call then needs both devices to reach each other directly). A failure to ask
+    /// is not an error for the call: it falls back to no servers. The answer is kept until a few minutes
+    /// before it expires.
+    pub async fn call_ice_servers(&self) -> Vec<IceServerDto> {
+        {
+            let c = self.calls.turn.lock().expect("calls lock");
+            if let Some((until, servers)) = c.as_ref() {
+                if now_ms() + 120_000 < *until {
+                    return servers.clone();
+                }
+            }
+        }
+        let fetched = async {
+            let me = self.home.load_identity()?;
+            let target = self.target();
+            let _net = self.net.lock().await;
+            let mut relay = spike_cli::client::Relay::connect(target, &me).await?;
+            relay.turn_credentials().await
+        };
+        let got = match tokio::time::timeout(Duration::from_secs(4), fetched).await {
+            Ok(Ok(Some(t))) => Some(t),
+            _ => None,
+        };
+        let servers: Vec<IceServerDto> = got
+            .as_ref()
+            .map(|t| vec![IceServerDto { urls: t.urls.clone(), username: t.username.clone(), credential: t.credential.clone() }])
+            .unwrap_or_default();
+        let until = got.map_or(now_ms() + 60_000, |t| now_ms() + t.ttl_secs * 1000);
+        *self.calls.turn.lock().expect("calls lock") = Some((until, servers.clone()));
+        servers
     }
 
     /// Place a call to a contact. `sdp` is the offer the screen made; returns the call id.

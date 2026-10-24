@@ -86,6 +86,13 @@ pub struct Config {
     pub group_max_mailboxes_per_device: usize,
     /// Mailboxes one connection may be subscribed to.
     pub max_group_subs_per_conn: usize,
+    /// TURN server URLs the relay's operator runs (`turn:host:3478?transport=udp`, `turns:host:5349`, ...). With
+    /// `turn_secret`, signed-in devices may ask for short-lived credentials (ADR 0028).
+    pub turn_urls: Vec<String>,
+    /// The secret shared with the TURN server (coturn `static-auth-secret`).
+    pub turn_secret: Option<String>,
+    /// How long an issued TURN credential is valid.
+    pub turn_ttl: Duration,
     /// SQLite file for queues and prekeys; `None` keeps them in memory only.
     pub db_path: Option<PathBuf>,
     /// Terminate TLS in the relay. Without it the relay speaks plain WebSocket
@@ -117,6 +124,9 @@ impl Default for Config {
             group_max_bytes: 64 * 1024 * 1024,
             group_max_mailboxes_per_device: 200,
             max_group_subs_per_conn: 256,
+            turn_urls: Vec::new(),
+            turn_secret: None,
+            turn_ttl: Duration::from_secs(3600),
             db_path: None,
             tls: None,
         }
@@ -285,6 +295,7 @@ fn cost(m: &ClientMsg) -> f64 {
         // never starves, but not unlimited.
         ClientMsg::Ping => 0.0,
         ClientMsg::Ack { .. } | ClientMsg::GroupUnsubscribe { .. } => 0.25,
+        ClientMsg::TurnCredentials => 5.0,
         _ => 1.0,
     }
 }
@@ -581,6 +592,21 @@ fn dispatch(
             None
         }
         ClientMsg::Ping => Some(ServerMsg::Pong),
+        ClientMsg::TurnCredentials => Some(match (&cfg.turn_secret, cfg.turn_urls.is_empty()) {
+            (Some(secret), false) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let ttl = cfg.turn_ttl.as_secs();
+                let (username, credential) = spike_core::turn::credentials(secret.as_bytes(), &p.me, now, ttl);
+                ServerMsg::TurnCredentials { urls: cfg.turn_urls.clone(), username, credential, ttl_secs: ttl }
+            }
+            _ => ServerMsg::Error {
+                code: "no_turn".into(),
+                message: "this relay has no TURN server configured".into(),
+            },
+        }),
         ClientMsg::PublishPrekeys { keys } => {
             let r = on_publish(state, &p.me, &p.my_ed, &keys);
             if matches!(r, ServerMsg::Published { .. }) {

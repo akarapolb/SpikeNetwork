@@ -12,6 +12,15 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::Message;
 
+/// Credentials for the relay operator's TURN server (ADR 0028).
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct TurnServers {
+    pub urls: Vec<String>,
+    pub username: String,
+    pub credential: String,
+    pub ttl_secs: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Delivery {
     pub id: String,
@@ -611,6 +620,25 @@ impl Relay {
                         None => None,
                     })
                 }
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                _ => {}
+            }
+        }
+    }
+
+    /// Ask for credentials for the relay's TURN server. `None` if the relay has none (ADR 0028).
+    pub async fn turn_credentials(&mut self) -> Result<Option<TurnServers>> {
+        self.write(&ClientMsg::TurnCredentials).await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::TurnCredentials { urls, username, credential, ttl_secs } => {
+                    return Ok(Some(TurnServers { urls, username, credential, ttl_secs }))
+                }
+                ServerMsg::Error { code, .. } if code == "no_turn" => return Ok(None),
                 ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
                 ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
                     id,

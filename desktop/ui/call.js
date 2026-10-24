@@ -29,9 +29,12 @@ function callButtons(c) {
 }
 
 /* ---------- media ---------- */
-function newPeer() {
-  // No servers: addresses on this network only (ADR 0028, phase 1).
-  const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: "max-bundle" });
+/* The relay operator's TURN server, when there is one (ADR 0028): a call can then connect between networks. It only
+   forwards encrypted packets. With "Always use the relay" on, no direct address is shared with the other person. */
+function relayOnly() { try { return localStorage.getItem("callsRelayOnly") === "1"; } catch (_) { return false; } }
+async function iceServers() { try { return await invoke("call_ice_servers"); } catch (_) { return []; } }
+function newPeer(servers) {
+  const pc = new RTCPeerConnection({ iceServers: servers || [], bundlePolicy: "max-bundle", iceTransportPolicy: relayOnly() && servers && servers.length ? "relay" : "all" });
   cs.pc = pc; cs.pendingIce = []; cs.localIce = []; cs.remoteSet = false;
   pc.onicecandidate = (e) => {
     if (!e.candidate || !e.candidate.candidate) return;
@@ -98,7 +101,7 @@ async function startCall(name, video) {
   drawCall();
   try {
     cs.local = await getMedia(video);
-    const pc = newPeer();
+    const pc = newPeer(await iceServers());
     cs.local.getTracks().forEach((t) => pc.addTrack(t, cs.local));
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -114,7 +117,7 @@ async function answerCall() {
   cs.status = "connecting"; drawCall();
   try {
     cs.local = await getMedia(cs.video);
-    const pc = newPeer();
+    const pc = newPeer(await iceServers());
     cs.local.getTracks().forEach((t) => pc.addTrack(t, cs.local));
     await pc.setRemoteDescription({ type: "offer", sdp: cs.offer });
     cs.remoteSet = true;
@@ -228,6 +231,22 @@ function drawCall() {
       h("div", { class: "facts" }, ...facts)),
     h("div", { class: "controls" }, ...ctl)));
   if (c.connectedAt) drawCall.t = setInterval(() => { const s = r.querySelector(".sub"); if (s && cs) s.textContent = clockOf(Date.now() - cs.connectedAt); }, 1000);
+}
+
+/** Settings card: where calls may connect, and whether to hide this computer's address from the other person. */
+function callsCard() {
+  const note = h("span", { class: "note" }, "Checking whether your relay offers a TURN server…");
+  invoke("call_ice_servers").then((s) => {
+    note.textContent = s.length
+      ? "Your relay offers a TURN server, so calls can connect between different networks. It only forwards encrypted packets."
+      : "Your relay has no TURN server: calls work only between devices that can reach each other directly, such as on the same Wi-Fi.";
+    if (s.length) note.dataset.turn = "1";
+  }).catch(() => { note.textContent = "Could not ask the relay about TURN."; });
+  const box = h("input", { type: "checkbox", id: "calls-relay-only" });
+  box.checked = relayOnly();
+  box.addEventListener("change", () => { try { localStorage.setItem("callsRelayOnly", box.checked ? "1" : "0"); } catch (_) {} toast(box.checked ? "Calls will go through the relay's TURN server when it has one." : "Calls may connect directly."); });
+  return h("section", { class: "card", id: "calls-card" }, h("h2", { class: "eyebrow" }, "Calls"), note,
+    h("label", { style: "display:flex;gap:10px;align-items:flex-start" }, box, h("span", {}, h("b", { style: "font-weight:600" }, "Always use the relay for calls"), h("span", { class: "note", style: "display:block" }, "The other person then never sees this computer's own address, and your relay's operator sees that a call took place and how much data it carried. Needs a TURN server on the relay."))));
 }
 
 window.addEventListener("DOMContentLoaded", () => { callLoop(); });

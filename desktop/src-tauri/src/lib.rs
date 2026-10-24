@@ -8,7 +8,7 @@ pub mod api;
 pub mod updates;
 
 use api::{
-    ActionTypeDto, AgentsDto, BlockedDto, CallEventDto, DirectDto, GrantRequest, GroupDetailDto, GroupSendDto,
+    ActionTypeDto, AgentsDto, BlockedDto, CallEventDto, DirectDto, IceServerDto, GrantRequest, GroupDetailDto, GroupSendDto,
     InstalledDto, LinkedDto, MessageDto, MessageRequestDto, Overview, Session, SyncDto,
 };
 use spike_core::vault::KdfParams;
@@ -302,6 +302,11 @@ async fn call_start(
     sdp: String,
 ) -> Result<String, String> {
     session(&state)?.call_start(&name, video, &sdp).await.map_err(err)
+}
+
+#[tauri::command]
+async fn call_ice_servers(state: State<'_, AppState>) -> Result<Vec<IceServerDto>, String> {
+    Ok(session(&state)?.call_ice_servers().await)
 }
 
 #[tauri::command]
@@ -939,6 +944,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_status,
             call_start,
+            call_ice_servers,
             call_accept,
             call_decline,
             call_hangup,

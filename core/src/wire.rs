@@ -157,6 +157,9 @@ pub enum ClientMsg {
     GroupUnsubscribe {
         mailbox: String,
     },
+    /// Ask for short-lived credentials for the relay operator's TURN server (ADR 0028). The relay answers
+    /// `TurnCredentials`, or `Error` with code `no_turn` if it has none configured.
+    TurnCredentials,
     /// Keepalive: the relay answers `Pong`. A client waiting for deliveries sends one now
     /// and then, so a connection that died silently (a router dropped it) is noticed, and
     /// so the relay can close connections that have gone quiet.
@@ -264,6 +267,13 @@ pub enum ServerMsg {
         mailbox: String,
         entry: WireEntry,
         sealed: bool,
+    },
+    /// Reply to `TurnCredentials`: where the TURN server is, and a login that works until `ttl_secs` from now.
+    TurnCredentials {
+        urls: Vec<String>,
+        username: String,
+        credential: String,
+        ttl_secs: u64,
     },
     /// Reply to `Ping`.
     Pong,

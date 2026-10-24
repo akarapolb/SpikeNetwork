@@ -11,7 +11,7 @@ pub mod backup;
 pub mod bridge;
 mod calls;
 mod direct;
-pub use calls::CallEventDto;
+pub use calls::{CallEventDto, IceServerDto};
 pub use direct::DirectDto;
 
 use anyhow::{anyhow, bail, Context, Result};

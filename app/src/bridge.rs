@@ -266,6 +266,7 @@ impl Engine {
                 b(a, "video").unwrap_or(false),
                 &s(a, "sdp")?,
             ))?),
+            "call_ice_servers" => val(rt.block_on(x.call_ice_servers())),
             "call_accept" => val(rt.block_on(x.call_accept(&s(a, "sdp")?))?),
             "call_decline" => val(rt.block_on(x.call_decline(b(a, "all").unwrap_or(false)))?),
             "call_hangup" => val(rt.block_on(x.call_hangup())?),

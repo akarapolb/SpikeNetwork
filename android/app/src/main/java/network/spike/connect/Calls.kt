@@ -191,10 +191,22 @@ object CallManager {
         localVideo = t
     }
 
-    private fun newPeer(video: Boolean = false): PeerConnection {
-        val cfg = PeerConnection.RTCConfiguration(emptyList()).apply {
+    /** The relay operator's TURN server with a short-lived login, if the relay has one (ADR 0028). */
+    private suspend fun iceServers(): List<PeerConnection.IceServer> = try {
+        val a = Bridge.arr("call_ice_servers")
+        (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            val urls = o.getJSONArray("urls").let { u -> (0 until u.length()).map { u.getString(it) } }
+            PeerConnection.IceServer.builder(urls).setUsername(o.getString("username")).setPassword(o.getString("credential")).createIceServer()
+        }
+    } catch (_: Exception) { emptyList() }
+
+    private fun newPeer(video: Boolean = false, servers: List<PeerConnection.IceServer> = emptyList()): PeerConnection {
+        val cfg = PeerConnection.RTCConfiguration(servers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+            // "Always use the relay": nothing but TURN candidates, so no direct address is shared.
+            if (servers.isNotEmpty() && appCtx?.let { Prefs.callsRelayOnly(it) } == true) iceTransportsType = PeerConnection.IceTransportsType.RELAY
         }
         remoteSet = false
         pendingRemote.clear(); localIce.clear()
@@ -306,7 +318,7 @@ object CallManager {
         appCtx?.let { CallService.start(it, video) }
         scope.launch {
             try {
-                val p = newPeer(video)
+                val p = newPeer(video, iceServers())
                 val offer = SdpOffer(p)
                 setLocal(p, offer)
                 val done = CompletableDeferred<Unit>().also { ready = it }
@@ -329,7 +341,7 @@ object CallManager {
         appCtx?.let { CallService.start(it, u.video) }
         scope.launch {
             try {
-                val p = newPeer(u.video)
+                val p = newPeer(u.video, iceServers())
                 setRemote(p, SessionDescription(SessionDescription.Type.OFFER, sdp))
                 remoteSet = true
                 val a = SdpAnswer(p)
@@ -819,6 +831,7 @@ fun CallSetup() {
             add(Triple("Allowed to start by itself (" + android.os.Build.MANUFACTURER + ")", null, { openAutostart(ctx) }))
         }
     }
+    var relayOnly by androidx.compose.runtime.remember { mutableStateOf(Prefs.callsRelayOnly(ctx)) }
     Text("Calls on this phone", fontWeight = FontWeight.Medium)
     Muted("A call can only reach a locked phone if each of these is on. Phone makers differ; tap an item to open its settings. The last one has no on/off check: look for Spike Connect in your phone's autostart or protected-apps list.", 12.5.sp)
     for ((label, ok, open) in items) {
@@ -831,5 +844,12 @@ fun CallSetup() {
             Text(label, fontSize = 14.sp, modifier = Modifier.weight(1f))
             Ico(Ic.Chevron, size = 16.dp)
         }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Always use the relay for calls", fontWeight = FontWeight.Medium)
+            Muted("The other person then never sees this phone's own address; your relay's operator sees that a call happened and how much data it carried. Needs a TURN server on the relay; without one calls connect directly.", 12.5.sp)
+        }
+        androidx.compose.material3.Switch(relayOnly, { relayOnly = it; Prefs.setCallsRelayOnly(ctx, it) })
     }
 }

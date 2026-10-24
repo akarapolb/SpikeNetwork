@@ -25,3 +25,9 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = "1"
+
+# Only for the test TURN server in examples/ (a stand-in for coturn that checks the same credentials).
+[dev-dependencies]
+turn = "0.17"
+webrtc-util = "0.17"
+base64 = "0.22"

@@ -38,6 +38,9 @@ import javax.crypto.spec.GCMParameterSpec
 /** Small settings the app keeps for itself (never keys or messages). */
 object Prefs {
     private fun p(c: Context) = c.getSharedPreferences("spike_app", Context.MODE_PRIVATE)
+    /** Calls only through the relay's TURN server, so the other person never sees this phone's own address (ADR 0028). */
+    fun callsRelayOnly(c: Context) = p(c).getBoolean("calls_relay_only", false)
+    fun setCallsRelayOnly(c: Context, on: Boolean) = p(c).edit().putBoolean("calls_relay_only", on).apply()
     fun notifyInBackground(c: Context) = p(c).getBoolean("notify_background", false)
     fun setNotifyInBackground(c: Context, on: Boolean) = p(c).edit().putBoolean("notify_background", on).apply()
 

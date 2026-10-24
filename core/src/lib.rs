@@ -19,6 +19,7 @@ pub mod mailbox;
 pub mod merge;
 pub mod owner;
 pub mod session;
+pub mod turn;
 pub mod vault;
 pub mod verifier;
 pub mod wire;

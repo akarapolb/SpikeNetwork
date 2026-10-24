@@ -63,6 +63,18 @@ struct Args {
     /// Group mailboxes one connection may be subscribed to.
     #[arg(long, default_value_t = 256)]
     max_group_subs_per_conn: usize,
+    /// A TURN server this relay's operator runs, for calls between devices that cannot reach each other
+    /// directly (ADR 0028). Repeat or comma-separate: `turn:turn.example:3478`, `turns:turn.example:5349`.
+    /// Needs --turn-secret.
+    #[arg(long, value_delimiter = ',', requires = "turn_secret")]
+    turn_url: Vec<String>,
+    /// The secret the TURN server shares with this relay (coturn `static-auth-secret`). Signed-in devices get
+    /// credentials derived from it that expire after --turn-ttl-secs.
+    #[arg(long, env = "SPIKE_RELAY_TURN_SECRET", hide_env_values = true)]
+    turn_secret: Option<String>,
+    /// Seconds an issued TURN credential is valid.
+    #[arg(long, default_value_t = 3600)]
+    turn_ttl_secs: u64,
     /// Serve /healthz and /metrics (plain HTTP, content-free numbers) on this address.
     #[arg(long)]
     metrics_listen: Option<String>,
@@ -132,6 +144,9 @@ async fn main() -> std::io::Result<()> {
         group_max_bytes: a.group_max_bytes,
         group_max_mailboxes_per_device: a.group_max_mailboxes_per_device,
         max_group_subs_per_conn: a.max_group_subs_per_conn,
+        turn_urls: a.turn_url,
+        turn_secret: a.turn_secret,
+        turn_ttl: Duration::from_secs(a.turn_ttl_secs),
         db_path: a.db,
         tls,
         ..Config::default()
