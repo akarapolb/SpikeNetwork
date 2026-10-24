@@ -19,9 +19,13 @@ happened yet.
 
 ### Last run
 
-Filled in at the end of the session that wrote this file; see the commit message of the branch
-`claude/security-hardening` for the exact counts. (If this line still says that, the numbers were not recorded:
-re-run the commands in the review brief.)
+2026-10-24, Windows 11, branch `claude/security-hardening` (before the direct-connection, recovery and calls work
+was merged): `cargo test --workspace` 340 passed, 0 failed; desktop workspace 31 passed, 0 failed;
+`cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all --check` clean;
+`cargo deny check` clean on both lockfiles (one unused ignore entry is reported as a warning). An unsigned Android
+release APK builds with R8 (the debug receiver is absent from it); it was **not installed or run**. One run showed
+a Windows socket-buffer error in an unrelated test under heavy load and passed on rerun; the MLS lock-pin test
+needs LF line endings in `Cargo.lock` (fails in a git checkout with `autocrlf=true`).
 
 ## What has NOT been verified
 
