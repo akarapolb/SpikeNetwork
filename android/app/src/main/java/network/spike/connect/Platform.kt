@@ -235,10 +235,19 @@ class ListenerService : Service() {
         }
         Listener.background = true
         Listener.update(this)
+        // Keep the Wi-Fi radio awake while the screen is off, so a call can reach a locked phone.
+        if (wifiLock == null) {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            wifiLock = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "spike:listen").apply { setReferenceCounted(false); acquire() }
+        }
         return START_NOT_STICKY
     }
 
+    private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+
     override fun onDestroy() {
+        try { wifiLock?.release() } catch (_: Exception) {}
+        wifiLock = null
         Listener.background = false
         Listener.update(this)
         super.onDestroy()

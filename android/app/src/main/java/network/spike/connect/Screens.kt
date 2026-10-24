@@ -995,6 +995,15 @@ fun SettingsTab(m: AppModel) {
             } else {
                 Muted("Fingerprint or face unlock needs a fingerprint or face set up in the phone's settings.", 12.5.sp)
             }
+            if (!ctx.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)) {
+                Muted("To receive calls with the screen off, the phone must not put Spike Connect to sleep. Without this the phone drops the connection after a while and calls do not arrive.", 12.5.sp)
+                OutlineButton("Allow in the background (battery)") {
+                    ctx.startActivity(
+                        android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:" + ctx.packageName))
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }
             if (android.os.Build.VERSION.SDK_INT >= 34 && !ctx.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent()) {
                 Muted("Incoming calls can only appear over the lock screen if you allow full-screen notifications for Spike Connect. Without it you get a normal notification.", 12.5.sp)
                 OutlineButton("Allow calls on the lock screen") {
