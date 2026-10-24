@@ -206,6 +206,10 @@ object Notifier {
         ctx.getSystemService(NotificationManager::class.java).notify(NEWS_ID, n)
     }
 
+    /** The small window that shows only the call, over the lock screen (see [CallActivity]). */
+    private fun callWindow(ctx: Context) =
+        Intent(ctx, CallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+
     private const val CALLS = "calls_v2"
     private const val CALL_ID = 3
 
@@ -228,11 +232,10 @@ object Notifier {
         )
         val person = androidx.core.app.Person.Builder().setName(name).setImportant(true).build()
         val answer = PendingIntent.getActivity(
-            ctx, 2,
-            Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                .putExtra("incoming_call", true).putExtra("answer_call", true),
+            ctx, 2, callWindow(ctx).putExtra("answer_call", true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val show = PendingIntent.getActivity(ctx, 4, callWindow(ctx), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val decline = PendingIntent.getBroadcast(
             ctx, 3, Intent(ctx, CallActionReceiver::class.java).setAction("decline"),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -244,8 +247,8 @@ object Notifier {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)
             .setTimeoutAfter(45_000)
-            .setContentIntent(open(ctx, true))
-            .setFullScreenIntent(open(ctx, true), true)
+            .setContentIntent(show)
+            .setFullScreenIntent(show, true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
         nm.cancel(CALL_ID) // a fresh alert every time, not an update of one Android already decided about

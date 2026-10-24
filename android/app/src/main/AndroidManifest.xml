@@ -40,6 +40,14 @@
             android:name=".ListenerService"
             android:exported="false"
             android:foregroundServiceType="remoteMessaging" />
+        <activity
+            android:name=".CallActivity"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:launchMode="singleInstance"
+            android:taskAffinity=""
+            android:excludeFromRecents="true" />
         <receiver android:name=".CallActionReceiver" android:exported="false" />
         <service
             android:name=".CallService"

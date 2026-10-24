@@ -168,14 +168,14 @@ try {
   await desk.eval(`document.querySelector('[aria-label="Voice call Phone"]').click()`);
   // uiautomator cannot read a screen that is off, so look at what the window manager says.
   const shown = await until(() => /mCurrentFocus=.*network\.spike\.connect/.test(sh("dumpsys window")), 30000);
-  check(!!shown, "the call alert opens the app over the lock screen while the screen was off");
+  check(!!shown, "the call alert opens a call window over the lock screen while the screen was off");
   check(/mWakefulness=Awake/.test(sh("dumpsys power")), "and turns the screen on");
   shot("6-locked-ringing");
   await sleep(1500);
   check(screenText().includes("is calling"), "the phone shows who is calling");
   await tapText("Decline", true);
   await sleep(3000);
-  check(!/mCurrentFocus=.*network\.spike\.connect/.test(sh("dumpsys window")), "after the call the app does not stay open over the lock screen");
+  check(!/CallActivity/.test(sh("dumpsys activity activities | grep -E 'ResumedActivity|topResumedActivity'")), "after the call the call window closes by itself");
 } catch (e) {
   console.log("ERROR", e.message);
   try { shot("error"); } catch (_) {}

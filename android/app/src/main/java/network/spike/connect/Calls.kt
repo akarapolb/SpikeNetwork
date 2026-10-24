@@ -8,6 +8,8 @@ import android.media.Ringtone
 import android.media.RingtoneManager
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -704,5 +706,34 @@ class CallService : android.app.Service() {
 class CallActionReceiver : android.content.BroadcastReceiver() {
     override fun onReceive(context: Context, intent: android.content.Intent) {
         if (intent.action == "decline") CallManager.decline()
+    }
+}
+
+/**
+ * Shows an incoming or running call, and nothing else of the app, so it may light the screen and appear over the lock
+ * screen (declared in the manifest). It closes itself when the call ends, so the app is never left open on a locked phone.
+ */
+class CallActivity : androidx.activity.ComponentActivity() {
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        enableEdgeToEdge()
+        Bridge.ensureOpen(applicationContext)
+        if (intent.getBooleanExtra("answer_call", false)) CallManager.pendingAnswer = true
+        setContent {
+            SpikeTheme {
+                val u = CallManager.ui
+                LaunchedEffect(u == null) { if (u == null) finish() }
+                if (u != null) CallScreen(u)
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra("answer_call", false)) CallManager.pendingAnswer = true
     }
 }
