@@ -501,6 +501,7 @@ object CallManager {
     }
 
     private fun stopRing() {
+        appCtx?.let { Notifier.clearIncomingCall(it) } // the alert goes as soon as it is answered, declined or over
         try { vibrator?.cancel() } catch (_: Exception) {}
         vibrator = null
         try { ringtone?.stop() } catch (_: Exception) {}
