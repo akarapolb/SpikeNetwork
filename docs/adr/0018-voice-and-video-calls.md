@@ -1,6 +1,6 @@
 # ADR 0018: Voice and video calls (draft)
 
-Status: **Draft** (not accepted, not implemented)
+Status: **Superseded by ADR 0028** (kept for the original reasoning)
 Date: 2026-10-19
 
 ## Context
