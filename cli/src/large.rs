@@ -609,7 +609,7 @@ async fn publish_commit(
         &m.mailbox_key(),
         &m.mailbox_id(),
         GroupKind::Commit,
-        Some(rec.cursor + 1),
+        Some(rec.cursor.saturating_add(1)),
         &blob,
         seal.as_ref().map(|(i, k)| (i.as_str(), k)),
     )
@@ -1488,6 +1488,11 @@ async fn sync_group(
         }
         let mut moved = false;
         for e in page.entries {
+            // Positions only move forward. A relay that repeats or rewinds them (or sends the end of the
+            // range) would otherwise make this loop spin forever or leave the cursor where no commit fits.
+            if e.seq <= rec.cursor {
+                bail!("the relay sent mailbox entries out of order");
+            }
             let Ok(inner) = outer::open(&m, &gid, generation, kind_of(e.kind), &e.blob) else {
                 refuse(
                     &mut events,

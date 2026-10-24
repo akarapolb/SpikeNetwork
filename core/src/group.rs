@@ -85,6 +85,10 @@ struct Signed<'a> {
     author: &'a str,
 }
 
+/// Highest version a state may carry. Versions are signed by members, so a hostile one could pick
+/// `u64::MAX` and make every later `version + 1` overflow (a crash with overflow checks on).
+pub const MAX_VERSION: u64 = 1 << 48;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GroupState {
     /// 128-bit random id, hex.
@@ -144,7 +148,10 @@ impl GroupState {
         let next = Self::sign(
             author,
             self.group.clone(),
-            self.version + 1,
+            self.version
+                .checked_add(1)
+                .filter(|v| *v <= MAX_VERSION)
+                .ok_or(Error::BadGroup("too many changes"))?,
             Some(self.hash()),
             draft,
         )?;
@@ -314,7 +321,8 @@ impl GroupState {
     pub fn verify_transition(&self, prev: &GroupState) -> Result<()> {
         self.verify_signature()?;
         if self.group != prev.group
-            || self.version != prev.version + 1
+            || self.version > MAX_VERSION
+            || prev.version.checked_add(1) != Some(self.version)
             || self.prev.as_deref() != Some(prev.hash().as_str())
         {
             return Err(Error::BadGroup("does not follow the previous state"));
@@ -403,6 +411,10 @@ impl Chain {
     pub fn from_checkpoint(state: GroupState) -> Result<Self> {
         if state.version == 1 {
             return Self::new(state);
+        }
+        // A member can sign any number; with overflow checks on, arithmetic on a huge one is a crash.
+        if state.version > MAX_VERSION {
+            return Err(Error::BadGroup("version out of range"));
         }
         state.verify_signature()?;
         if !state.is_member(&state.author) {
@@ -543,7 +555,11 @@ impl Chain {
     /// The highest version up to which every version has at least one state held.
     fn highest_contiguous(&self) -> u64 {
         let mut v = self.base;
-        while self.states.values().any(|s| s.version == v + 1) {
+        while self
+            .states
+            .values()
+            .any(|s| s.version == v.saturating_add(1))
+        {
             v += 1;
         }
         v
@@ -558,6 +574,33 @@ fn beats(a: &GroupState, a_hash: &str, b: &GroupState, b_hash: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_huge_version_is_refused_not_a_crash() {
+        let p = people();
+        let g = pilot(&p, AddBy::Admins);
+        for v in [MAX_VERSION + 1, u64::MAX - 1, u64::MAX] {
+            let huge =
+                GroupState::sign(&p.alice, g.group.clone(), v, Some(g.hash()), g.draft()).unwrap();
+            // As the first state a device sees (auto-join from a contact)...
+            assert!(Chain::from_checkpoint(huge.clone()).is_err(), "{v}");
+            // ...and as a follower of a state it knows.
+            let mut chain = Chain::new(g.clone()).unwrap();
+            assert!(chain.add(huge).is_err(), "{v}");
+        }
+        // The largest allowed version is a valid checkpoint, but nothing can follow it.
+        let top = GroupState::sign(
+            &p.alice,
+            g.group.clone(),
+            MAX_VERSION,
+            Some(g.hash()),
+            g.draft(),
+        )
+        .unwrap();
+        let chain = Chain::from_checkpoint(top.clone()).unwrap();
+        assert!(top.successor(&p.alice, |_| {}).is_err());
+        assert_eq!(chain.base(), MAX_VERSION);
+    }
 
     fn key_hex(k: &OwnerKey) -> String {
         hex::encode(k.public())
