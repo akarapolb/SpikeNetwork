@@ -207,10 +207,21 @@ object Notifier {
     }
 
     /** The small window that shows only the call, over the lock screen (see [CallActivity]). */
-    private fun callWindow(ctx: Context) =
+    fun callWindow(ctx: Context) =
         Intent(ctx, CallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
-    private const val CALLS = "calls_v2"
+    const val CALLS = "calls_v2"
+
+    fun ensureCallChannel(ctx: Context) {
+        ctx.getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CALLS, "Incoming calls", NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(null, null) // the app rings and vibrates itself, in step with the call
+                enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setBypassDnd(false)
+            },
+        )
+    }
     private const val CALL_ID = 3
 
     /**
@@ -222,14 +233,7 @@ object Notifier {
         if (!allowed(ctx)) return
         ensureChannels(ctx)
         val nm = ctx.getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(
-            NotificationChannel(CALLS, "Incoming calls", NotificationManager.IMPORTANCE_HIGH).apply {
-                setSound(null, null) // the app rings and vibrates itself, in step with the call
-                enableVibration(false)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                setBypassDnd(false)
-            },
-        )
+        ensureCallChannel(ctx)
         val person = androidx.core.app.Person.Builder().setName(name).setImportant(true).build()
         val answer = PendingIntent.getActivity(
             ctx, 2, callWindow(ctx).putExtra("answer_call", true),

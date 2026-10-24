@@ -3,6 +3,7 @@ package network.spike.connect
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.provider.Settings as AndroidSettings
 import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -396,6 +398,13 @@ object CallManager {
                         pm.newWakeLock(android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP, "spike:ring").acquire(15_000)
                     }
                 }
+                // With "display over other apps" allowed, open the call window ourselves: it does not depend on how
+                // this phone's maker treats full-screen alerts.
+                appCtx?.let { c ->
+                    if (android.provider.Settings.canDrawOverlays(c)) {
+                        try { c.startActivity(Notifier.callWindow(c)); Trace.add("opened the call window directly") } catch (e: Exception) { Trace.add("could not open the call window: ${e.message?.take(50)}") }
+                    }
+                }
                 callId = ev.getString("call"); offerSdp = ev.getString("sdp")
                 ui = CallUi(name, true, "ringing", verified = verified, video = ev.optBoolean("video"))
                 startRing()
@@ -736,5 +745,91 @@ class CallActivity : androidx.activity.ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getBooleanExtra("answer_call", false)) CallManager.pendingAnswer = true
+    }
+}
+
+/** Where a phone maker hides its "autostart" or "protected apps" switch. Tried in order; the first that exists is opened. */
+private val AUTOSTART_SCREENS = listOf(
+    "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
+    "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+    "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
+    "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+    "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
+    "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+    "com.huawei.systemmanager" to "com.huawei.systemmanager.optimize.process.ProtectActivity",
+    "com.oneplus.security" to "com.oneplus.security.chainlaunch.view.ChainLaunchAppListActivity",
+    "com.samsung.android.lool" to "com.samsung.android.sm.battery.ui.BatteryActivity",
+    "com.asus.mobilemanager" to "com.asus.mobilemanager.autostart.AutoStartActivity",
+)
+
+private fun openAutostart(ctx: Context) {
+    val pm = ctx.packageManager
+    for ((pkg, cls) in AUTOSTART_SCREENS) {
+        val i = android.content.Intent().setClassName(pkg, cls).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (i.resolveActivity(pm) != null) {
+            try { ctx.startActivity(i); return } catch (_: Exception) {}
+        }
+    }
+    ctx.startActivity(
+        android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:" + ctx.packageName))
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+    )
+}
+
+private fun settingsIntent(action: String, ctx: Context, vararg extras: Pair<String, String>, uri: Boolean = false): android.content.Intent {
+    val i = if (uri) android.content.Intent(action, android.net.Uri.parse("package:" + ctx.packageName)) else android.content.Intent(action)
+    for ((k, v) in extras) i.putExtra(k, v)
+    return i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+}
+
+/**
+ * Everything a phone needs switched on for a call to reach it with the screen off. Phone makers differ (some also
+ * keep a private "autostart" list that kills apps in the background), so each item says whether it is on and opens
+ * the right settings page. Re-checked every time the person comes back to this screen.
+ */
+@Composable
+fun CallSetup() {
+    val ctx = LocalContext.current
+    var tick by androidx.compose.runtime.remember { mutableStateOf(0) }
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(owner) {
+        val o = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) tick++ }
+        owner.lifecycle.addObserver(o)
+        onDispose { owner.lifecycle.removeObserver(o) }
+    }
+    Notifier.ensureCallChannel(ctx)
+    val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
+    val items = androidx.compose.runtime.remember(tick) {
+        buildList<Triple<String, Boolean?, () -> Unit>> {
+            add(Triple("Notifications allowed", nm.areNotificationsEnabled(), {
+                ctx.startActivity(settingsIntent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS, ctx, AndroidSettings.EXTRA_APP_PACKAGE to ctx.packageName))
+            }))
+            add(Triple("Incoming-call alerts set to urgent", (nm.getNotificationChannel(Notifier.CALLS)?.importance ?: 4) >= android.app.NotificationManager.IMPORTANCE_HIGH, {
+                ctx.startActivity(settingsIntent(AndroidSettings.ACTION_CHANNEL_NOTIFICATION_SETTINGS, ctx, AndroidSettings.EXTRA_APP_PACKAGE to ctx.packageName, AndroidSettings.EXTRA_CHANNEL_ID to Notifier.CALLS))
+            }))
+            if (android.os.Build.VERSION.SDK_INT >= 34) add(Triple("Calls over the lock screen", nm.canUseFullScreenIntent(), {
+                ctx.startActivity(settingsIntent(AndroidSettings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, ctx, uri = true))
+            }))
+            add(Triple("Not put to sleep by the battery saver", ctx.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName), {
+                ctx.startActivity(settingsIntent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, ctx, uri = true))
+            }))
+            add(Triple("Display over other apps (opens the call at once)", AndroidSettings.canDrawOverlays(ctx), {
+                ctx.startActivity(settingsIntent(AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION, ctx, uri = true))
+            }))
+            add(Triple("Allowed to start by itself (" + android.os.Build.MANUFACTURER + ")", null, { openAutostart(ctx) }))
+        }
+    }
+    Text("Calls on this phone", fontWeight = FontWeight.Medium)
+    Muted("A call can only reach a locked phone if each of these is on. Phone makers differ; tap an item to open its settings. The last one has no on/off check: look for Spike Connect in your phone's autostart or protected-apps list.", 12.5.sp)
+    for ((label, ok, open) in items) {
+        Row(Modifier.clickable { open() }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                when (ok) { true -> "On"; false -> "Off"; null -> "Check" },
+                color = when (ok) { true -> Color(0xFF1F7A45); false -> Color(0xFFC0392B); null -> Color(0xFF7A4A00) },
+                fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.size(width = 48.dp, height = 20.dp),
+            )
+            Text(label, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            Ico(Ic.Chevron, size = 16.dp)
+        }
     }
 }
