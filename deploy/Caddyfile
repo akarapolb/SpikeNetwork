@@ -1,0 +1,4 @@
+# Caddy gets and renews the HTTPS certificate by itself and passes WebSocket traffic to the relay.
+{$DOMAIN} {
+	reverse_proxy relay:8787
+}

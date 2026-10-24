@@ -1,0 +1,7 @@
+target
+.git
+android
+desktop
+docs
+spikes
+**/node_modules
