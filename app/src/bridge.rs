@@ -83,6 +83,15 @@ impl Engine {
     fn set(&self, session: Option<Session>) {
         *self.session.lock().expect("session lock") = session.map(Arc::new);
     }
+    /// Start listening for direct connections if the person turned them on. A failure (the port is
+    /// taken) is not fatal: the relay carries everything, and the Settings screen shows the state.
+    fn resume_direct(&self) {
+        if let Ok(x) = self.session() {
+            if let Err(e) = self.rt.block_on(x.direct_resume()) {
+                eprintln!("direct connections could not start: {e:#}");
+            }
+        }
+    }
 
     /// Run one command. Blocking: call it from a background thread.
     pub fn call(&self, command: &str, args_json: &str) -> String {
@@ -123,6 +132,7 @@ impl Engine {
                 return Ok(Value::Null);
             }
             "lock" => {
+                self.resume_direct();
                 self.set(None);
                 return Ok(Value::Null);
             }
@@ -232,6 +242,22 @@ impl Engine {
                     &bytes,
                     cap,
                 ))?)
+            }
+            // Direct connections on the local network (ADR 0027).
+            "direct_status" => val(x.direct_status()?),
+            "direct_enable" => val(rt.block_on(x.direct_enable())?),
+            "direct_disable" => val(x.direct_disable()?),
+            "direct_set_address" => {
+                val(x.direct_set_address(&s(a, "name")?, &s(a, "address").unwrap_or_default())?)
+            }
+            // Wait up to `ms` for a message that arrived directly; the sync totals, or null.
+            "direct_wait" => {
+                let ms = a
+                    .get("ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(20_000)
+                    .min(120_000);
+                val(rt.block_on(x.direct_wait(ms)))
             }
             "save_attachment" => {
                 let (name, bytes) = rt.block_on(x.attachment(&s(a, "id")?))?;

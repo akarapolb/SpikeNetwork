@@ -61,7 +61,8 @@ export function createDrive({ relayUrl, shotsDir, pass = "drive test passphrase"
   }
 
   async function launch(name, port) {
-    const exe = join(root, "desktop", "src-tauri", "target", "debug", "spike-desktop.exe");
+    // SPIKE_DESKTOP_EXE: a build made elsewhere (the usual one is locked while the app is running).
+    const exe = process.env.SPIKE_DESKTOP_EXE || join(root, "desktop", "src-tauri", "target", "debug", "spike-desktop.exe");
     const home = join(tmp, name);
     start(exe, [], {
       SPIKE_DESKTOP_HOME: home,

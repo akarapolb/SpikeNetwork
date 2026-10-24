@@ -35,6 +35,10 @@ Deliberately different, because the feature does not exist yet and a control tha
 - The chat list searches names, not message history.
 - A one-to-one chat shows no per-device delivery line (the engine does not record it).
 
+## Direct connections (ADR 0027)
+
+Settings has **Direct connections** (off by default): with it on, the phone listens on a port and hands messages straight to a contact's device on the same Wi-Fi without the relay; the relay stays the fallback (and is still needed for the very first message to a contact, which starts the session). It shows the address to give the other device, an address field per contact, and counters. The other device's address is typed once; the reverse is learned. Driver: `node android/drive_direct.mjs` (uses its own relay port, 8797, kills only that relay, and needs `SPIKE_DESKTOP_EXE=<path>` if the usual desktop build is locked by a running app). The emulator needs `svc power stayon true` or the app gets locked when the screen goes off; the driver sets it.
+
 ## Build
 
 Needs the JDK 17, the Android SDK (platform 35, build-tools 35, NDK 27), `cargo-ndk` and the Rust targets

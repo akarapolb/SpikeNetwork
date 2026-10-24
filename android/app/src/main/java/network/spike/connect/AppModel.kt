@@ -123,4 +123,11 @@ class AppModel(private val scope: CoroutineScope) {
             }
         }
     }
+
+    /** Something arrived directly from another device: show it (the engine already stored it). */
+    fun directArrived() {
+        scope.launch {
+            try { refresh() } catch (_: Exception) {}
+        }
+    }
 }

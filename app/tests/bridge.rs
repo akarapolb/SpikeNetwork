@@ -281,3 +281,65 @@ fn a_second_phone_is_linked_through_the_bridge() {
     // Giving up with nothing started is harmless.
     old.ok("link_cancel", json!({}));
 }
+
+#[test]
+fn two_phones_chat_directly_with_no_relay_and_the_screen_hears_about_it() {
+    let url = relay();
+    let (alice, bob) = (Phone::new("alice", &url), Phone::new("bob", &url));
+    alice.ok("sync", json!({}));
+    bob.ok("sync", json!({}));
+    alice.ok("add_contact", json!({ "name": "Bob", "card": bob.card() }));
+    bob.ok(
+        "add_contact",
+        json!({ "name": "Alice", "card": alice.card() }),
+    );
+    // A session needs a relay once; after that the relay can go.
+    alice.ok("send", json!({ "name": "Bob", "text": "by relay" }));
+    assert_eq!(bob.ok("sync", json!({}))["received"], 1);
+
+    assert_eq!(alice.ok("direct_status", json!({}))["enabled"], false);
+    let a = alice.ok("direct_enable", json!({}));
+    let b = bob.ok("direct_enable", json!({}));
+    assert_eq!(
+        (a["listening"].clone(), b["listening"].clone()),
+        (json!(true), json!(true))
+    );
+    let port = b["port"].as_u64().unwrap();
+    alice.ok(
+        "direct_set_address",
+        json!({ "name": "Bob", "address": format!("127.0.0.1:{port}") }),
+    );
+    assert!(alice.call(
+        "direct_set_address",
+        json!({ "name": "Bob", "address": "nonsense" })
+    )["err"]
+        .is_string());
+
+    // The relay is gone.
+    for p in [&alice, &bob] {
+        p.ok("set_relay", json!({ "url": "ws://127.0.0.1:1" }));
+    }
+    let bob = Arc::new(bob);
+    let waiting = {
+        let b = bob.clone();
+        std::thread::spawn(move || b.ok("direct_wait", json!({ "ms": 15000 })))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    alice.ok("send", json!({ "name": "Bob", "text": "no relay needed" }));
+    let heard = waiting.join().unwrap();
+    assert_eq!(heard["received"], 1, "{heard}");
+    let thread = bob.ok("conversation", json!({ "name": "Alice" }));
+    assert_eq!(thread.as_array().unwrap().len(), 2);
+    assert_eq!(thread[1]["body"], "no relay needed");
+
+    // Bob answers the same way: he learned Alice's address from her call.
+    bob.ok("send", json!({ "name": "Alice", "text": "got it" }));
+    assert_eq!(
+        alice.ok("direct_wait", json!({ "ms": 5000 }))["received"],
+        1
+    );
+    assert_eq!(bob.ok("direct_wait", json!({ "ms": 100 })), Value::Null);
+
+    // Turning it off stops listening.
+    assert_eq!(bob.ok("direct_disable", json!({}))["listening"], false);
+}

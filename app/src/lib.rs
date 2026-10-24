@@ -8,6 +8,7 @@
 //! corrupt it if they overlapped.
 
 pub mod bridge;
+mod direct;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -31,9 +32,11 @@ use spike_core::vault::KdfParams;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use zeroize::Zeroizing;
+
+pub use direct::DirectDto;
 
 pub const MIN_PASSPHRASE_CHARS: usize = 10;
 pub const DEFAULT_RELAY: &str = "ws://127.0.0.1:8787";
@@ -58,9 +61,11 @@ struct RelaySettings {
 
 /// An unlocked state directory plus the relay it talks to.
 pub struct Session {
-    home: Home,
-    relay: Mutex<RelaySettings>,
-    net: tokio::sync::Mutex<()>,
+    home: Arc<Home>,
+    relay: Arc<Mutex<RelaySettings>>,
+    net: Arc<tokio::sync::Mutex<()>>,
+    /// Direct connections on the local network (ADR 0027).
+    direct: direct::State,
     /// Set while this device waits to be linked: nothing else may read the relay mailbox.
     paused: AtomicBool,
     /// This (new) device is waiting to be linked: its code and, once the
@@ -76,6 +81,45 @@ pub struct Session {
 }
 
 // ------------------------------------------------------------------ DTOs
+fn target_for(rs: &RelaySettings, home: &Home) -> Target {
+    Target {
+        url: rs.url.clone(),
+        opts: TransportOpts {
+            ca_file: rs.ca_pem.is_some().then(|| home.path().join(CA_FILE)),
+            allow_insecure: rs.allow_insecure,
+        },
+    }
+}
+
+/// Count one outcome into a sync's totals. True if it changes what the screen shows.
+pub(crate) fn tally(out: &mut SyncDto, o: &Outcome) -> bool {
+    match o {
+        Outcome::Message { .. } | Outcome::SentCopy { .. } => out.received += 1,
+        Outcome::AgentRequest { verdict, .. } if verdict == "pending" => out.agent_requests += 1,
+        Outcome::AgentRemotePending { .. } => out.agent_requests += 1,
+        Outcome::MessageRequest { new: true, .. } => out.message_requests += 1,
+        Outcome::GroupMessage { .. } => out.received += 1,
+        Outcome::GroupInvite { .. } => out.message_requests += 1,
+        Outcome::GroupJoined { .. }
+        | Outcome::GroupChanged { .. }
+        | Outcome::GroupHistory { .. }
+        | Outcome::LargeInvite { .. }
+        | Outcome::GroupInviteSettled { .. } => out.groups += 1,
+        Outcome::GroupRemoved { group, .. } => {
+            out.groups += 1;
+            out.notes.push(format!(
+                "You were removed from {group}. Its history stays on this computer."
+            ));
+        }
+        Outcome::UnknownSender { .. } => out.notes.push(
+            "A message from someone who is not in your contacts and did not introduce themselves was dropped."
+                .into(),
+        ),
+        Outcome::Rejected { reason } => out.notes.push(format!("Ignored a change: {reason}")),
+        _ => return false,
+    }
+    true
+}
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct DeviceDto {
@@ -377,9 +421,10 @@ impl Session {
         }
         write_ca(&home, &settings)?;
         Ok(Self {
-            home,
-            relay: Mutex::new(settings),
-            net: tokio::sync::Mutex::new(()),
+            home: Arc::new(home),
+            relay: Arc::new(Mutex::new(settings)),
+            net: Arc::new(tokio::sync::Mutex::new(())),
+            direct: direct::State::default(),
             paused: AtomicBool::new(false),
             link_new: Mutex::new(None),
             link_old: Mutex::new(None),
@@ -445,14 +490,7 @@ impl Session {
     }
 
     fn target(&self) -> Target {
-        let rs = self.settings();
-        Target {
-            url: rs.url,
-            opts: TransportOpts {
-                ca_file: rs.ca_pem.is_some().then(|| self.home.path().join(CA_FILE)),
-                allow_insecure: rs.allow_insecure,
-            },
-        }
+        target_for(&self.settings(), &self.home)
     }
 
     /// Connect and sign in to the relay, to show the person whether it works.
@@ -746,37 +784,7 @@ impl Session {
             notes: vec![],
         };
         ops::recv(&self.home, self.target(), Some(idle), |o| {
-            let mut changed = true;
-            match o {
-                Outcome::Message { .. } | Outcome::SentCopy { .. } => out.received += 1,
-                Outcome::AgentRequest { verdict, .. } if verdict == "pending" => {
-                    out.agent_requests += 1
-                }
-                Outcome::AgentRemotePending { .. } => out.agent_requests += 1,
-                Outcome::MessageRequest { new: true, .. } => out.message_requests += 1,
-                Outcome::GroupMessage { .. } => out.received += 1,
-                Outcome::GroupInvite { .. } => out.message_requests += 1,
-                Outcome::GroupJoined { .. }
-                | Outcome::GroupChanged { .. }
-                | Outcome::GroupHistory { .. }
-                | Outcome::LargeInvite { .. }
-                | Outcome::GroupInviteSettled { .. } => out.groups += 1,
-                Outcome::GroupRemoved { group, .. } => {
-                    out.groups += 1;
-                    out.notes.push(format!(
-                        "You were removed from {group}. Its history stays on this computer."
-                    ));
-                }
-                Outcome::UnknownSender { .. } => out.notes.push(
-                    "A message from someone who is not in your contacts and did not introduce themselves was dropped."
-                        .into(),
-                ),
-                Outcome::Rejected { reason } => {
-                    out.notes.push(format!("Ignored a change: {reason}"))
-                }
-                _ => changed = false,
-            }
-            if changed {
+            if tally(&mut out, &o) {
                 progress(&out, self.attention().unwrap_or(0));
             }
         })

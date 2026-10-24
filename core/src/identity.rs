@@ -15,6 +15,7 @@ const CARD_CTX: &[u8] = b"spike-card-v1";
 const AUTH_CTX: &[u8] = b"spike-relay-auth-v1";
 const PREKEY_CTX: &[u8] = b"spike-prekey-v1";
 const FP_CTX: &[u8] = b"spike-fp-v1";
+const DIRECT_CTX: &[u8] = b"spike-direct-sig-v1";
 
 /// Most prekeys a relay stores per device, and the most an account keeps.
 pub const MAX_PREKEYS: usize = 50;
@@ -109,6 +110,12 @@ impl Identity {
         self.account.sign([AUTH_CTX, nonce].concat()).to_bytes()
     }
 
+    /// Signature a device makes in a direct connection's handshake (ADR 0027). Its own context, so
+    /// a signature made for a relay challenge can never be presented as one.
+    pub fn sign_direct(&self, msg: &[u8]) -> [u8; 64] {
+        self.account.sign([DIRECT_CTX, msg].concat()).to_bytes()
+    }
+
     /// Generate a new *fallback* prekey (a last-resort key a relay hands out
     /// when all one-time prekeys are used up), sign it, and mark it published.
     /// The previous fallback private key is kept until the next rotation so
@@ -152,6 +159,11 @@ impl Identity {
 /// Verify a relay-auth signature made by [`Identity::sign_auth`].
 pub fn verify_auth(ed25519: &[u8; 32], nonce: &[u8], sig: &[u8; 64]) -> Result<()> {
     verify(ed25519, &[AUTH_CTX, nonce].concat(), sig)
+}
+
+/// Verify a signature made by [`Identity::sign_direct`].
+pub fn verify_direct(ed25519: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> Result<()> {
+    verify(ed25519, &[DIRECT_CTX, msg].concat(), sig)
 }
 
 fn verify(ed25519: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> Result<()> {

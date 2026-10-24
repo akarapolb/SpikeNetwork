@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod client;
+pub mod direct;
 pub mod groups;
 pub mod large;
 #[cfg(feature = "test-hooks")]

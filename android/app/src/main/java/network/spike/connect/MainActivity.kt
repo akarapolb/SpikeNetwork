@@ -76,7 +76,8 @@ private fun Root() {
     }
     DisposableEffect(Unit) {
         Listener.onRead = { ok, news -> m.listened(ok, news) }
-        onDispose { Listener.onRead = null }
+        Listener.onDirect = { _ -> m.directArrived() }
+        onDispose { Listener.onRead = null; Listener.onDirect = null }
     }
     LaunchedEffect(m.status) {
         Listener.ready = m.status == "ready"

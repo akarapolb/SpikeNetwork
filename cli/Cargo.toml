@@ -20,7 +20,7 @@ test-hooks = ["spike-mls/test-hooks"]
 rand = "0.8"
 spike-core = { path = "../core" }
 spike-mls = { path = "../mls" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }

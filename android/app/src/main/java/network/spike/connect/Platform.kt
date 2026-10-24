@@ -56,6 +56,9 @@ object Listener {
     /** Called after each read, from a background thread: whether the relay answered, and how many new things came. */
     @Volatile var onRead: ((ok: Boolean, news: Int) -> Unit)? = null
 
+    /** Called when something arrived directly from another device on the network (ADR 0027): already stored, show it. */
+    @Volatile var onDirect: ((news: Int) -> Unit)? = null
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
 
@@ -64,10 +67,28 @@ object Listener {
         val want = ready && !paused && (visible || background)
         if (want && job?.isActive != true) {
             val app = ctx.applicationContext
-            job = scope.launch { loop(app) }
+            job = scope.launch { launch { directLoop(app) }; loop(app) }
         } else if (!want) {
             job?.cancel()
             job = null
+        }
+    }
+
+    /** Direct deliveries are stored by the engine's own listener; this only tells the screen. */
+    private suspend fun directLoop(ctx: Context) {
+        while (currentCoroutineContext().isActive) {
+            try {
+                val r = Bridge.call("direct_wait", args("ms" to 20000))
+                if (r is org.json.JSONObject) {
+                    val news = r.getInt("received") + r.getInt("groups") + r.getInt("message_requests")
+                    if (news > 0 && !visible) Notifier.news(ctx, news)
+                    onDirect?.invoke(news)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                delay(4000)
+            }
         }
     }
 

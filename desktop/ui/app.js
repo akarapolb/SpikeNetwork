@@ -431,8 +431,26 @@ function settingsMain() {
     if (f.size > 65536) return toast("That file is too large to be a certificate.");
     try { const n = await invoke("set_relay_ca", { pem: await f.text() }); toast(`Trusting ${n} certificate${n > 1 ? "s" : ""} from ${f.name}.`); await refresh(); syncNow(); } catch (x) { toast(String(x)); } } });
   return [h("div", { class: "head" }, h("h1", {}, "Settings")), h("div", { class: "scroll" }, h("div", { class: "page" },
+async function refreshDirect() { try { st.direct = await invoke("direct_status"); } catch (_) { st.direct = null; } render(); }
+/** Direct connections (ADR 0027): messages between two devices on the same network without the relay. */
+function directCard() {
+  const d = st.direct;
+  if (!d) return null;
+  const set = async (cmd) => { try { st.direct = await invoke(cmd); toast(st.direct.listening ? "Direct connections are on." : "Direct connections are off."); } catch (e) { toast(String(e)); await refreshDirect(); return; } render(); };
+  return h("section", { class: "card", id: "direct-card" }, h("h2", { class: "eyebrow" }, "Direct connections"),
+    h("label", { class: "toggle" }, h("input", { id: "direct-toggle", type: "checkbox", checked: d.enabled || null, onchange: (e) => set(e.target.checked ? "direct_enable" : "direct_disable") }),
+      h("span", {}, h("b", { style: "font-weight:600" }, "Send and receive directly on this network"), h("div", { class: "note" }, "Messages go straight to your contact's device when it is on the same Wi-Fi, and through the relay otherwise. Turning this on opens a port on this computer; only devices of people you have added can use it. Anyone on the network can see which two devices talk, when, and how much, never what."))),
+    d.enabled ? h("div", { class: "status soft", id: "direct-status" }, h("b", {}, d.listening ? "Listening." : "Not listening."),
+      h("span", { class: "mono", id: "direct-addresses", style: "overflow-wrap:anywhere" }, d.addresses.length ? "Give this to your other device: " + d.addresses.join("  ") : d.listening ? `Port ${d.port}` : ""),
+      h("span", { class: "note" }, `Sent directly: ${d.sent_direct}. Sent by the relay after a direct try failed: ${d.sent_fallback}. Received directly: ${d.received}.`)) : null,
+    d.enabled ? d.contacts.map((c) => { const inp = h("input", { "aria-label": `Direct address for ${c.name}`, class: "mono", value: c.address, placeholder: c.learned[0] || "192.168.1.20:8788" });
+      return h("div", { class: "devrow", style: "flex-wrap:wrap" }, h("span", { style: "min-width:90px;font-weight:600" }, c.name), h("div", { class: "field", style: "flex:1;min-width:180px" }, inp),
+        h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("direct_set_address", { name: c.name, address: inp.value }); toast(inp.value.trim() ? "Address saved." : "Address cleared."); await refreshDirect(); } catch (e) { toast(String(e)); } } }, "Save"),
+        c.learned.length ? h("div", { class: "note", style: "flex-basis:100%" }, "Last seen at " + c.learned.join(", ")) : null); }) : null);
+}
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Your identity"), h("span", { class: "mono", style: "font-size:16px;overflow-wrap:anywhere" }, me.fingerprint),
       h("span", { class: "note" }, `${me.devices} device${me.devices > 1 ? "s" : ""}${me.approver ? " · this device approves agent requests" : ""}. Contacts compare this when they verify you.`),
+  if (!st.directLoaded) { st.directLoaded = true; refreshDirect(); }
       h("h2", { class: "eyebrow", style: "margin-top:8px" }, "Your identity card"), h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Your identity card", onfocus: (e) => e.target.select() }, me.card),
       h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(me.card); toast("Card copied. Send it to your contact."); } catch (_) { toast("Select the text above and copy it."); } } }, "Copy card")),
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Home relay"), h("div", { class: "field" }, relay),
@@ -449,6 +467,7 @@ function settingsMain() {
         h("span", {}, h("b", { style: "font-weight:600" }, "Allow plain ws:// on a network I trust"), h("div", { class: "note" }, "Messages stay end-to-end encrypted, but anyone on the network can see which devices talk, when, and how much. Use it only on a private network you control; never over the internet."))),
       st.ov.relay_trust.allow_insecure ? h("div", { class: "status warn", role: "alert" }, h("b", {}, "Plain connections are allowed."), h("span", {}, "Turn this off unless you are on a network you control.")) : null),
     st.blocked.length ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Blocked people"),
+    directCard(),
       h("span", { class: "note" }, "Their messages are dropped when they arrive. (The relay still carries them until then: it cannot tell who sent a message.)"),
       st.blocked.map((b) => h("div", { class: "devrow" }, h("span", { style: "flex:1;min-width:0" }, h("span", { class: "mono", style: "overflow-wrap:anywhere" }, b.fingerprint), h("div", { class: "note" }, "blocked " + new Date(b.at).toLocaleDateString())),
         h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("unblock", { owner: b.owner }); toast("Unblocked. Only a new conversation from them will be seen."); await refreshBlocked(); } catch (e) { toast(String(e)); } } }, "Unblock")))) : null,

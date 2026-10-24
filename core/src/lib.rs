@@ -8,6 +8,7 @@
 pub mod action;
 pub mod agent;
 pub mod attachment;
+pub mod direct;
 pub mod envelope;
 pub mod group;
 pub mod identity;

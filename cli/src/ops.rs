@@ -198,10 +198,12 @@ pub(crate) async fn send_to_device(
     plaintext: &[u8],
 ) -> Result<bool> {
     let me = pool.me;
-    let relay = pool.get(url).await?;
     let new = !sessions.has_session(card);
+    // Starting a session needs one of the device's prekeys, which only a relay can hand out.
     if new {
-        let prekey = relay
+        let prekey = pool
+            .get(url)
+            .await?
             .claim_prekey(&card.device_id())
             .await?
             .ok_or_else(|| anyhow!("device has no prekeys on {url}; it must connect once first"))?;
@@ -210,7 +212,14 @@ pub(crate) async fn send_to_device(
     let blob = sessions.encrypt(card, plaintext)?;
     // The ratchet has advanced; persist before the message leaves the device.
     home.save_sessions(sessions)?;
-    relay.send(&card.device_id(), &blob).await?;
+    // Direct first (ADR 0027): only an acknowledgement from the device itself counts.
+    if !new && crate::direct::enabled(home) {
+        match crate::direct::try_send(home, me, card, &blob).await {
+            Ok(()) => return Ok(false),
+            Err(e) => crate::direct::note_fallback(&e),
+        }
+    }
+    pool.get(url).await?.send(&card.device_id(), &blob).await?;
     Ok(new)
 }
 
@@ -381,18 +390,33 @@ pub async fn deliver_envelope(
     deliver(home, relay.into(), name, env).await
 }
 
+/// Prekeys and device lists, through the home relay.
+async fn housekeeping(
+    home: &Home,
+    base: &Target,
+    me: &mut Identity,
+    name: &str,
+) -> Result<Vec<String>> {
+    let mut relay = Relay::connect(base.clone(), me).await?;
+    top_up_prekeys(&mut relay, home, me).await?;
+    let mut notes = sync_own_list(&mut relay, home).await?;
+    notes.extend(refresh_contacts(&mut relay, home, Some(name)).await?);
+    Ok(notes)
+}
+
 async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Result<SendReport> {
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
 
-    // Our home relay: keep prekeys topped up and both device lists current.
-    let mut notes;
-    {
-        let mut home_relay = Relay::connect(base.clone(), &me).await?;
-        top_up_prekeys(&mut home_relay, home, &mut me).await?;
-        notes = sync_own_list(&mut home_relay, home).await?;
-        notes.extend(refresh_contacts(&mut home_relay, home, Some(name)).await?);
-    }
+    // Our home relay: keep prekeys topped up and both device lists current. With direct
+    // connections on this is best effort: two devices whose relay is out of reach can still talk.
+    let notes = match housekeeping(home, &base, &mut me, name).await {
+        Ok(n) => n,
+        Err(e) if crate::direct::enabled(home) => {
+            vec![format!("the relay could not be reached ({e:#})")]
+        }
+        Err(e) => return Err(e),
+    };
     if !home.this_device_is_listed()? {
         bail!("this device has been removed from your identity and can no longer send");
     }
@@ -519,81 +543,180 @@ pub async fn recv(
     top_up_prekeys(&mut relay, home, &mut me).await?;
     sync_own_list(&mut relay, home).await?;
     while let Some(d) = relay.next_delivery(idle).await? {
-        let mut outcome = process(home, &mut me, &mut sessions, &d.blob)?;
-        if matches!(outcome, Outcome::UnknownSender { .. }) {
-            refresh_contacts(&mut relay, home, None).await?;
-            sync_own_list(&mut relay, home).await?;
-            outcome = process(home, &mut me, &mut sessions, &d.blob)?;
-        }
-        if matches!(outcome, Outcome::UnknownSender { .. }) {
-            // Perhaps someone from one of our groups whose devices we have not fetched yet.
-            for n in crate::groups::refresh_member_cards(home, &base, &me).await? {
-                eprintln!("note: {n}");
-            }
-            outcome = process(home, &mut me, &mut sessions, &d.blob)?;
-        }
-        // Still nobody we know: a stranger writing to us becomes a message request if they
-        // introduced themselves properly (ADR 0021); otherwise it is dropped.
-        if let Outcome::UnknownSender { identity_key, .. } = &outcome {
-            let key = *identity_key;
-            outcome = crate::requests::on_stranger(home, &mut me, &d.blob, key)?;
-        } else if matches!(outcome, Outcome::Invalid) {
-            // A later message of a session that is still a request.
-            if let Some(o) = crate::requests::on_pending(home, &mut me, &d.blob)? {
-                outcome = o;
-            }
-        }
-        // A waiting decision for an invite settled the moment it arrived: that moved the inviter's
-        // session into the main store on disk, so what we hold in memory is out of date.
-        if matches!(outcome, Outcome::GroupInviteSettled { .. }) {
-            sessions = home.load_sessions()?;
-        }
+        let outcome = classify(
+            home,
+            &base,
+            &mut me,
+            &mut sessions,
+            Some(&mut relay),
+            &d.blob,
+        )
+        .await?;
         // Acknowledge first: the request is now durably handled on our side, and
         // an answer that fails can be asked for again.
         relay.ack(&d.id).await?;
-        if let Outcome::SyncRequest { from_device, msg } = &outcome {
-            if let Err(e) = answer_request(home, &base, &me, &mut sessions, from_device, msg).await
-            {
-                eprintln!("note: could not answer a request from your other device: {e:#}");
-            }
-        }
-        let decided = matches!(&outcome, Outcome::AgentRequest { verdict, .. } if verdict != "pending")
-            || matches!(&outcome, Outcome::AgentRemoteDecision { .. });
-        let waiting = match &outcome {
-            Outcome::AgentRequest { id, verdict, .. } if verdict == "pending" => Some(id.clone()),
-            _ => None,
-        };
-        on(outcome);
-        if let Some(id) = waiting {
-            if let Err(e) = announce_pending(home, &base, &id).await {
-                eprintln!("note: could not tell your other devices about a request: {e:#}");
-            }
-            me = home.load_identity()?;
-            sessions = home.load_sessions()?;
-        }
-        // Replies owed to other group members (states they asked for or need).
-        match crate::groups::flush_outbox(home, base.clone()).await {
-            Ok(0) => {}
-            Ok(_) => {
-                me = home.load_identity()?;
-                sessions = home.load_sessions()?;
-            }
-            Err(e) => eprintln!("note: could not answer a group member yet: {e:#}"),
-        }
-        if decided {
-            // `deliver` keeps its own copy of the ratchet state on disk; reload ours after it.
-            if let Err(e) = flush_receipts(home, base.clone()).await {
-                eprintln!("note: could not send an agent receipt yet: {e:#}");
-            }
-            me = home.load_identity()?;
-            sessions = home.load_sessions()?;
-        }
+        follow_up(home, &base, &mut me, &mut sessions, outcome, &mut on).await?;
     }
     // We have collected everything the relay held for us as of `started`.
     if idle.is_some() {
         home.set_last_sync(started)?;
     }
     Ok(())
+}
+
+/// A blob that has been opened and stored, and what is still owed because of it.
+pub struct Received {
+    me: Identity,
+    sessions: Sessions,
+    outcome: Outcome,
+}
+
+impl Received {
+    pub fn outcome(&self) -> &Outcome {
+        &self.outcome
+    }
+}
+
+/// Open and store one blob, however it reached us (relay delivery or direct connection, ADR 0027).
+/// A message from a device we do not know yet triggers one refresh of contacts' device lists
+/// through `relay`, then a retry. Without a relay (a direct delivery) a short-lived connection is
+/// tried for that refresh and its failure is ignored.
+async fn classify(
+    home: &Home,
+    base: &Target,
+    me: &mut Identity,
+    sessions: &mut Sessions,
+    relay: Option<&mut Relay>,
+    blob: &[u8],
+) -> Result<Outcome> {
+    let mut outcome = process(home, me, sessions, blob)?;
+    let mut tmp: Option<Relay>;
+    let borrowed = relay.is_some();
+    let mut relay = relay;
+    if matches!(outcome, Outcome::UnknownSender { .. }) {
+        if relay.is_none() {
+            tmp = tokio::time::timeout(Duration::from_secs(3), Relay::connect(base.clone(), me))
+                .await
+                .ok()
+                .and_then(Result::ok);
+            relay = tmp.as_mut();
+        }
+        if let Some(r) = relay {
+            let refreshed = async {
+                refresh_contacts(r, home, None).await?;
+                sync_own_list(r, home).await
+            }
+            .await;
+            if borrowed {
+                refreshed?;
+            }
+        }
+        outcome = process(home, me, sessions, blob)?;
+    }
+    if matches!(outcome, Outcome::UnknownSender { .. }) {
+        // Perhaps someone from one of our groups whose devices we have not fetched yet.
+        match crate::groups::refresh_member_cards(home, base, me).await {
+            Ok(notes) => notes.iter().for_each(|n| eprintln!("note: {n}")),
+            Err(e) if borrowed => return Err(e),
+            Err(_) => {}
+        }
+        outcome = process(home, me, sessions, blob)?;
+    }
+    // Still nobody we know: a stranger writing to us becomes a message request if they
+    // introduced themselves properly (ADR 0021); otherwise it is dropped.
+    if let Outcome::UnknownSender { identity_key, .. } = &outcome {
+        let key = *identity_key;
+        outcome = crate::requests::on_stranger(home, me, blob, key)?;
+    } else if matches!(outcome, Outcome::Invalid) {
+        // A later message of a session that is still a request.
+        if let Some(o) = crate::requests::on_pending(home, me, blob)? {
+            outcome = o;
+        }
+    }
+    // A waiting decision for an invite settled the moment it arrived: that moved the inviter's
+    // session into the main store on disk, so what we hold in memory is out of date.
+    if matches!(outcome, Outcome::GroupInviteSettled { .. }) {
+        *sessions = home.load_sessions()?;
+    }
+    Ok(outcome)
+}
+
+/// Everything owed after a blob was stored and acknowledged: answer requests from our own other
+/// devices, tell them about a waiting approval, send what group members are owed, and so on.
+async fn follow_up(
+    home: &Home,
+    base: &Target,
+    me: &mut Identity,
+    sessions: &mut Sessions,
+    outcome: Outcome,
+    on: &mut impl FnMut(Outcome),
+) -> Result<()> {
+    if let Outcome::SyncRequest { from_device, msg } = &outcome {
+        if let Err(e) = answer_request(home, base, me, sessions, from_device, msg).await {
+            eprintln!("note: could not answer a request from your other device: {e:#}");
+        }
+    }
+    let decided = matches!(&outcome, Outcome::AgentRequest { verdict, .. } if verdict != "pending")
+        || matches!(&outcome, Outcome::AgentRemoteDecision { .. });
+    let waiting = match &outcome {
+        Outcome::AgentRequest { id, verdict, .. } if verdict == "pending" => Some(id.clone()),
+        _ => None,
+    };
+    on(outcome);
+    if let Some(id) = waiting {
+        if let Err(e) = announce_pending(home, base, &id).await {
+            eprintln!("note: could not tell your other devices about a request: {e:#}");
+        }
+        *me = home.load_identity()?;
+        *sessions = home.load_sessions()?;
+    }
+    // Replies owed to other group members (states they asked for or need).
+    match crate::groups::flush_outbox(home, base.clone()).await {
+        Ok(0) => {}
+        Ok(_) => {
+            *me = home.load_identity()?;
+            *sessions = home.load_sessions()?;
+        }
+        Err(e) => eprintln!("note: could not answer a group member yet: {e:#}"),
+    }
+    if decided {
+        // `deliver` keeps its own copy of the ratchet state on disk; reload ours after it.
+        if let Err(e) = flush_receipts(home, base.clone()).await {
+            eprintln!("note: could not send an agent receipt yet: {e:#}");
+        }
+        *me = home.load_identity()?;
+        *sessions = home.load_sessions()?;
+    }
+    Ok(())
+}
+
+/// First half of receiving a blob that arrived over a direct connection (ADR 0027): open and
+/// store it. The caller acknowledges it to the sender, then calls [`finish_direct`]. The caller
+/// must hold the same lock that serialises sends and syncs.
+pub async fn receive_direct(home: &Home, base: &Target, blob: &[u8]) -> Result<Received> {
+    let mut me = home.load_identity()?;
+    let mut sessions = home.load_sessions()?;
+    let outcome = classify(home, base, &mut me, &mut sessions, None, blob).await?;
+    Ok(Received {
+        me,
+        sessions,
+        outcome,
+    })
+}
+
+/// Second half: whatever the blob made us owe (replies, receipts), then hand the outcome to `on`.
+pub async fn finish_direct(
+    home: &Home,
+    base: &Target,
+    r: Received,
+    mut on: impl FnMut(Outcome),
+) -> Result<()> {
+    let Received {
+        mut me,
+        mut sessions,
+        outcome,
+    } = r;
+    follow_up(home, base, &mut me, &mut sessions, outcome, &mut on).await
 }
 
 fn now_ms() -> u64 {

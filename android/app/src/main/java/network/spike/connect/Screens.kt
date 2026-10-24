@@ -930,6 +930,7 @@ fun SettingsTab(m: AppModel) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Can see", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = C.AmberText)
                     for (t in listOf("Device IDs", "Message sizes", "When devices connect")) Text(t, fontSize = 14.sp)
+        DirectCard(m)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Never sees", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = C.Green)
@@ -1140,6 +1141,54 @@ fun NewGroupScreen(m: AppModel) {
                     else Bridge.obj("group_create", args("name" to name, "members" to members))
                     m.notice = "Invited ${r.getInt("reached")} of ${r.getInt("people")} people."
                     m.open(Screen.GroupChat(r.getString("group")))
+                }
+            }
+        }
+    }
+}
+
+// ---- direct connections (ADR 0027) ----------------------------------------------------------------------------
+
+/** Send and receive directly with a contact's device on the same network, without the relay. */
+@Composable
+fun DirectCard(m: AppModel) {
+    var d by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    LaunchedEffect(Unit) { try { d = Bridge.obj("direct_status") } catch (_: Exception) {} }
+    val st = d ?: return
+    val enabled = st.getBoolean("enabled")
+    Text("Direct connections", fontWeight = FontWeight.SemiBold)
+    CardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Send and receive directly on this Wi-Fi", fontWeight = FontWeight.Medium)
+                Muted("Messages go straight to your contact's device when it is on the same network, and through the relay otherwise. Turning this on opens a port on this phone; only devices of people you have added can use it. The network can see which devices talk, when and how much, never what.", 12.5.sp)
+            }
+            Switch(enabled, { want ->
+                m.run { d = Bridge.obj(if (want) "direct_enable" else "direct_disable") }
+            }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+        }
+        if (enabled) {
+            val addrs = st.getJSONArray("addresses").let { a -> (0 until a.length()).map { a.getString(it) } }
+            Text(
+                if (!st.getBoolean("listening")) "Not listening."
+                else if (addrs.isEmpty()) "Listening on port ${st.getInt("port")}."
+                else "Listening. Give this to your other device: ${addrs.joinToString("  ")}",
+                fontFamily = Mono, fontSize = 12.sp,
+            )
+            Muted("Sent directly ${st.getLong("sent_direct")}, by the relay after a direct try failed ${st.getLong("sent_fallback")}, received directly ${st.getLong("received")}.", 12.5.sp)
+            val contacts = st.getJSONArray("contacts")
+            for (i in 0 until contacts.length()) {
+                val c = contacts.getJSONObject(i)
+                val name = c.getString("name")
+                var addr by remember(name, c.getString("address")) { mutableStateOf(c.getString("address")) }
+                val learned = c.getJSONArray("learned")
+                Field("Direct address for $name", addr, { addr = it }, placeholder = if (learned.length() > 0) learned.getString(0) else "192.168.1.20:8788")
+                OutlineButton("Save address for $name", small = true) {
+                    m.run {
+                        Bridge.call("direct_set_address", args("name" to name, "address" to addr.trim()))
+                        d = Bridge.obj("direct_status")
+                        m.notice = if (addr.isBlank()) "Address cleared." else "Address saved."
+                    }
                 }
             }
         }

@@ -8,7 +8,7 @@ pub mod api;
 pub mod updates;
 
 use api::{
-    ActionTypeDto, AgentsDto, BlockedDto, GrantRequest, GroupDetailDto, GroupSendDto, InstalledDto,
+    ActionTypeDto, AgentsDto, BlockedDto, DirectDto, GrantRequest, GroupDetailDto, GroupSendDto, InstalledDto,
     LinkedDto, MessageDto, MessageRequestDto, Overview, Session, SyncDto,
 };
 use spike_core::vault::KdfParams;
@@ -124,7 +124,16 @@ fn start_listener(app: &tauri::AppHandle, state: &State<'_, AppState>) {
     let Some(session) = state.session.lock().expect("session lock").clone() else {
         return;
     };
-    let handle = tauri::async_runtime::spawn(listen(app.clone(), Arc::downgrade(&session)));
+    let weak = Arc::downgrade(&session);
+    let handle = tauri::async_runtime::spawn({
+        let app = app.clone();
+        async move {
+            tokio::select! {
+                _ = listen(app.clone(), weak.clone()) => {}
+                _ = watch_direct(app, weak) => {}
+            }
+        }
+    });
     *state.listener.lock().expect("listener lock") = Some(handle);
 }
 
@@ -138,6 +147,30 @@ macro_rules! dbg_log {
 
 async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
     use serde_json::json;
+/// Direct connections (ADR 0027): start listening if the person turned them on, and tell the
+/// screen when something arrived that way. Holds no strong reference while it waits.
+async fn watch_direct(app: tauri::AppHandle, weak: Weak<Session>) {
+    let Some(s) = weak.upgrade() else { return };
+    if let Err(e) = s.direct_resume().await {
+        let _ = app.emit("direct-error", format!("{e:#}"));
+    }
+    let signal = s.direct_signal();
+    drop(s);
+    loop {
+        signal.notified().await;
+        let Some(s) = weak.upgrade() else { return };
+        if let Some(r) = s.direct_wait(0).await {
+            if let Some(w) = app.get_webview_window("main") {
+                if !w.is_focused().unwrap_or(true) {
+                    let _ = w.request_user_attention(Some(tauri::UserAttentionType::Informational));
+                }
+            }
+            set_title(&app, s.attention().unwrap_or(0));
+            let _ = app.emit("synced", r);
+        }
+    }
+}
+
     dbg_log!("started");
     let mut retry = Duration::from_millis(200);
     let mut online = None;
@@ -260,6 +293,32 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
 
 #[tauri::command]
 fn overview(state: State<'_, AppState>) -> Result<Overview, String> {
+#[tauri::command]
+fn direct_status(state: State<'_, AppState>) -> Result<DirectDto, String> {
+    session(&state)?.direct_status().map_err(err)
+}
+
+#[tauri::command]
+async fn direct_enable(state: State<'_, AppState>) -> Result<DirectDto, String> {
+    session(&state)?.direct_enable().await.map_err(err)
+}
+
+#[tauri::command]
+fn direct_disable(state: State<'_, AppState>) -> Result<DirectDto, String> {
+    session(&state)?.direct_disable().map_err(err)
+}
+
+#[tauri::command]
+fn direct_set_address(
+    state: State<'_, AppState>,
+    name: String,
+    address: String,
+) -> Result<(), String> {
+    session(&state)?
+        .direct_set_address(&name, &address)
+        .map_err(err)
+}
+
     session(&state)?.overview().map_err(err)
 }
 
@@ -829,6 +888,10 @@ mod tests {
     }
 
     #[test]
+            direct_status,
+            direct_enable,
+            direct_disable,
+            direct_set_address,
     fn saved_files_never_overwrite_each_other() {
         let dir = std::env::temp_dir().join(format!("spike-desktop-dl-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
