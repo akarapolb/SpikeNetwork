@@ -33,6 +33,8 @@ const ERROR_CODES: [&str; 19] = [
 #[derive(Default)]
 pub struct Metrics {
     pub connections_current: AtomicI64,
+    /// Wake-up pushes attempted (UnifiedPush).
+    pub pushes_sent: AtomicU64,
     pub connections_total: AtomicU64,
     pub auth_ok: AtomicU64,
     pub auth_failed: AtomicU64,

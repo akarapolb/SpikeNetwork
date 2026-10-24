@@ -18,7 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// - 1: the original tables (databases from before versioning are treated as version 1).
 /// - 2: indexes on `expires`, so the expiry purge no longer scans whole tables.
 /// - 3: group mailboxes and their entries (ADR 0025).
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -177,6 +177,13 @@ const V1: &str = "CREATE TABLE IF NOT EXISTS messages (
 const V2: &str = "CREATE INDEX IF NOT EXISTS messages_expires ON messages(expires);
      CREATE INDEX IF NOT EXISTS blob_chunks_expires ON blob_chunks(expires);";
 
+/// Version 4: where to send a wake-up for a device that is not connected (UnifiedPush, ADR 0028).
+const V4: &str = "CREATE TABLE IF NOT EXISTS push_endpoints (
+         device  TEXT PRIMARY KEY,
+         url     TEXT    NOT NULL,
+         updated INTEGER NOT NULL
+     );";
+
 /// Version 3: group mailboxes. A mailbox is an append-only log with relay-assigned positions and
 /// one public key every request must be signed with; its entries are opaque to the relay. The
 /// relay stores no member list and no group id, only these random mailbox ids.
@@ -247,7 +254,7 @@ fn migrate(conn: &mut Connection, path: Option<&Path>) -> Result<(), StoreError>
             }
         }
     }
-    let steps: [(i64, &str); 3] = [(1, V1), (2, V2), (3, V3)];
+    let steps: [(i64, &str); 4] = [(1, V1), (2, V2), (3, V3), (4, V4)];
     for (version, sql) in steps {
         if found >= version {
             continue;
@@ -437,6 +444,29 @@ impl Store {
             params![device, k.key, k.sig, now_ms()],
         )?;
         Ok(())
+    }
+
+    /// Remember where to send a wake-up for `device`, replacing any earlier one.
+    pub fn set_push(&self, device: &str, url: &str) -> rusqlite::Result<()> {
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO push_endpoints (device, url, updated) VALUES (?1, ?2, ?3)
+             ON CONFLICT(device) DO UPDATE SET url = excluded.url, updated = excluded.updated",
+            rusqlite::params![device, url, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_push(&self, device: &str) -> rusqlite::Result<()> {
+        self.conn.lock().unwrap().execute("DELETE FROM push_endpoints WHERE device = ?1", [device])?;
+        Ok(())
+    }
+
+    pub fn push_url(&self, device: &str) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT url FROM push_endpoints WHERE device = ?1", [device], |r| r.get(0))
+            .optional()
     }
 
     /// Age of the device's stored fallback prekey, if any.

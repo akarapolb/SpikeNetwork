@@ -160,6 +160,13 @@ pub enum ClientMsg {
     /// Ask for short-lived credentials for the relay operator's TURN server (ADR 0028). The relay answers
     /// `TurnCredentials`, or `Error` with code `no_turn` if it has none configured.
     TurnCredentials,
+    /// Register the URL of this device's push endpoint (UnifiedPush, ADR 0028). While the device is not connected,
+    /// a message queued for it makes the relay send one content-free POST there so the device wakes up and reads.
+    RegisterPush {
+        url: String,
+    },
+    /// Forget this device's push endpoint.
+    UnregisterPush,
     /// Keepalive: the relay answers `Pong`. A client waiting for deliveries sends one now
     /// and then, so a connection that died silently (a router dropped it) is noticed, and
     /// so the relay can close connections that have gone quiet.
@@ -275,6 +282,10 @@ pub enum ServerMsg {
         credential: String,
         ttl_secs: u64,
     },
+    /// Reply to `RegisterPush`.
+    PushRegistered,
+    /// Reply to `UnregisterPush`.
+    PushCleared,
     /// Reply to `Ping`.
     Pong,
     Error {

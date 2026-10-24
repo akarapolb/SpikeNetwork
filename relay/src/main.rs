@@ -75,6 +75,17 @@ struct Args {
     /// Seconds an issued TURN credential is valid.
     #[arg(long, default_value_t = 3600)]
     turn_ttl_secs: u64,
+    /// Do not send wake-up pushes to the UnifiedPush endpoints devices register (ADR 0028). By default the relay
+    /// sends one content-free POST to a registered https endpoint when a message waits for a device that is offline.
+    #[arg(long)]
+    no_push: bool,
+    /// Also allow http:// and private addresses for push endpoints. For tests and local setups only: a push endpoint
+    /// is a URL a client chose, and the relay must not be made to call into its own network.
+    #[arg(long)]
+    push_allow_insecure: bool,
+    /// Seconds between wake-up pushes to one device.
+    #[arg(long, default_value_t = 5)]
+    push_min_interval_secs: u64,
     /// Serve /healthz and /metrics (plain HTTP, content-free numbers) on this address.
     #[arg(long)]
     metrics_listen: Option<String>,
@@ -147,6 +158,9 @@ async fn main() -> std::io::Result<()> {
         turn_urls: a.turn_url,
         turn_secret: a.turn_secret,
         turn_ttl: Duration::from_secs(a.turn_ttl_secs),
+        push_enabled: !a.no_push,
+        push_allow_insecure: a.push_allow_insecure,
+        push_min_interval: Duration::from_secs(a.push_min_interval_secs),
         db_path: a.db,
         tls,
         ..Config::default()

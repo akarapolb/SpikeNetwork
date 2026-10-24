@@ -9,6 +9,7 @@
 //! blocking thread so a slow disk cannot stall the connections of everyone else (ADR 0022).
 
 pub mod limits;
+pub mod push;
 pub mod metrics;
 pub mod store;
 pub mod tls;
@@ -93,6 +94,12 @@ pub struct Config {
     pub turn_secret: Option<String>,
     /// How long an issued TURN credential is valid.
     pub turn_ttl: Duration,
+    /// Send wake-up pushes to endpoints devices register (UnifiedPush, ADR 0028).
+    pub push_enabled: bool,
+    /// Also allow `http://` and private addresses for push endpoints (tests and local setups only).
+    pub push_allow_insecure: bool,
+    /// At most one wake-up per device this often, however many messages arrive.
+    pub push_min_interval: Duration,
     /// SQLite file for queues and prekeys; `None` keeps them in memory only.
     pub db_path: Option<PathBuf>,
     /// Terminate TLS in the relay. Without it the relay speaks plain WebSocket
@@ -127,6 +134,9 @@ impl Default for Config {
             turn_urls: Vec::new(),
             turn_secret: None,
             turn_ttl: Duration::from_secs(3600),
+            push_enabled: true,
+            push_allow_insecure: false,
+            push_min_interval: Duration::from_secs(5),
             db_path: None,
             tls: None,
         }
@@ -159,6 +169,8 @@ struct Shared {
     metrics: Metrics,
     limits: Arc<IpLimits>,
     started: Instant,
+    /// Devices to wake (their ids); `None` when pushes are off. A worker task reads it (see `push_worker`).
+    push_tx: Option<mpsc::Sender<String>>,
 }
 
 pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
@@ -173,13 +185,23 @@ pub async fn serve_with_metrics(
     cfg: Config,
 ) -> std::io::Result<()> {
     let store = Store::open(cfg.db_path.as_deref()).map_err(std::io::Error::other)?;
+    let (push_tx, push_rx) = if cfg.push_enabled {
+        let (tx, rx) = mpsc::channel(256);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let state = Arc::new(Shared {
         state: Mutex::default(),
         store,
         metrics: Metrics::default(),
         limits: IpLimits::new(cfg.max_conns_per_ip, cfg.conn_rate_per_ip),
         started: Instant::now(),
+        push_tx,
     });
+    if let Some(rx) = push_rx {
+        tokio::spawn(push_worker(state.clone(), rx, cfg.push_allow_insecure, cfg.push_min_interval));
+    }
     let acceptor = cfg.tls.as_ref().map(tls::acceptor).transpose()?;
     let cfg = Arc::new(cfg);
     {
@@ -296,6 +318,7 @@ fn cost(m: &ClientMsg) -> f64 {
         ClientMsg::Ping => 0.0,
         ClientMsg::Ack { .. } | ClientMsg::GroupUnsubscribe { .. } => 0.25,
         ClientMsg::TurnCredentials => 5.0,
+        ClientMsg::RegisterPush { .. } | ClientMsg::UnregisterPush => 3.0,
         _ => 1.0,
     }
 }
@@ -592,6 +615,21 @@ fn dispatch(
             None
         }
         ClientMsg::Ping => Some(ServerMsg::Pong),
+        ClientMsg::RegisterPush { url } => Some(if state.push_tx.is_none() {
+            err("no_push", "this relay does not send wake-up pushes")
+        } else {
+            match push::parse(&url, cfg.push_allow_insecure) {
+                Err(why) => err("bad_request", why),
+                Ok(_) => match state.store.set_push(&p.me, &url) {
+                    Ok(()) => ServerMsg::PushRegistered,
+                    Err(_) => internal(),
+                },
+            }
+        }),
+        ClientMsg::UnregisterPush => Some(match state.store.clear_push(&p.me) {
+            Ok(()) => ServerMsg::PushCleared,
+            Err(_) => internal(),
+        }),
         ClientMsg::TurnCredentials => Some(match (&cfg.turn_secret, cfg.turn_urls.is_empty()) {
             (Some(secret), false) => {
                 let now = std::time::SystemTime::now()
@@ -734,6 +772,12 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
     };
     Metrics::inc(&state.metrics.messages_accepted);
     Metrics::add(&state.metrics.bytes_accepted, blob.len() as u64);
+    // Nobody connected for this device: if it left a push endpoint, ask the worker to wake it.
+    if st.online.get(to).is_none_or(|v| v.is_empty()) {
+        if let Some(tx) = &state.push_tx {
+            let _ = tx.try_send(to.to_string());
+        }
+    }
     for (_, live) in st.online.get(to).into_iter().flatten() {
         // A connection that is not keeping up (its queue is full) misses the live copy; the message
         // is in the database and arrives with the backlog when it reconnects.
@@ -748,6 +792,34 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
         }
     }
     Some(ServerMsg::Accepted { id })
+}
+
+/// Sends the wake-up pushes. One at a time per device at most every `min_interval`, a few devices in parallel, and an
+/// endpoint that says it is gone is forgotten. A failure is silent: the message is queued, and the device reads it the
+/// next time it connects, as it always did.
+async fn push_worker(state: Arc<Shared>, mut rx: mpsc::Receiver<String>, allow_insecure: bool, min_interval: Duration) {
+    let throttle = Arc::new(push::Throttle::new(min_interval));
+    let gate = Arc::new(tokio::sync::Semaphore::new(16));
+    while let Some(device) = rx.recv().await {
+        if !throttle.due(&device) {
+            continue;
+        }
+        let Ok(permit) = gate.clone().try_acquire_owned() else { continue };
+        let state = state.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let dev = device.clone();
+            let s2 = state.clone();
+            let url = tokio::task::spawn_blocking(move || s2.store.push_url(&dev)).await.ok().and_then(Result::ok).flatten();
+            let Some(url) = url else { return };
+            let Ok(ep) = push::parse(&url, allow_insecure) else { return };
+            Metrics::inc(&state.metrics.pushes_sent);
+            if push::send(&ep, allow_insecure).await == push::Outcome::Gone {
+                let s3 = state.clone();
+                let _ = tokio::task::spawn_blocking(move || s3.store.clear_push(&device)).await;
+            }
+        });
+    }
 }
 
 fn on_ack(state: &Shared, me: &str, id: &str) {
