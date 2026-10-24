@@ -88,4 +88,6 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
     implementation("com.google.zxing:core:3.5.3")
+    // Voice calls (ADR 0028): WebRTC for Android, from Maven Central.
+    implementation("io.getstream:stream-webrtc-android:1.3.10")
 }

@@ -170,6 +170,35 @@ object Notifier {
         ctx.getSystemService(NotificationManager::class.java).notify(NEWS_ID, n)
     }
 
+    private const val CALLS = "calls"
+    private const val CALL_ID = 3
+
+    /** Says who is calling, with Answer taking the person to the call screen. Full-screen where the phone allows it. */
+    fun incomingCall(ctx: Context, name: String) {
+        if (!allowed(ctx)) return
+        ensureChannels(ctx)
+        val nm = ctx.getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(CALLS, "Incoming calls", NotificationManager.IMPORTANCE_HIGH))
+        val n = NotificationCompat.Builder(ctx, CALLS)
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setContentTitle("Incoming call")
+            .setContentText("$name is calling")
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setOngoing(true)
+            .setTimeoutAfter(45_000)
+            .setContentIntent(open(ctx))
+            .setFullScreenIntent(open(ctx), true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(NotificationCompat.Builder(ctx, CALLS).setSmallIcon(android.R.drawable.stat_sys_phone_call).setContentTitle("Incoming call").build())
+            .build()
+        nm.notify(CALL_ID, n)
+    }
+
+    fun clearIncomingCall(ctx: Context) {
+        ctx.getSystemService(NotificationManager::class.java).cancel(CALL_ID)
+    }
+
     fun clearNews(ctx: Context) {
         ctx.getSystemService(NotificationManager::class.java).cancel(NEWS_ID)
     }

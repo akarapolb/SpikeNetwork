@@ -415,6 +415,7 @@ private fun ChatRow(
 fun ConversationScreen(
     m: AppModel, title: String, sub: String, verified: Boolean, square: Boolean, caption: String,
     onSend: suspend (String) -> Unit, onInfo: () -> Unit,
+    onCall: (() -> Unit)? = null,
     attach: (suspend (String, java.io.File) -> Unit)? = null,
 ) {
     var text by remember { mutableStateOf("") }
@@ -449,6 +450,10 @@ fun ConversationScreen(
                     if (verified) Ico(Ic.ShieldCheck, C.Green, 16.dp)
                 }
                 Muted(sub, 12.5.sp)
+            }
+            if (onCall != null) {
+                val gate = rememberMicGate(onCall)
+                Box(Modifier.size(44.dp).clip(CircleShape).clickable { gate() }.semantics { contentDescription = "Voice call" }, contentAlignment = Alignment.Center) { Ico(IcHandset) }
             }
             Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onInfo).semantics { contentDescription = "Details" }, contentAlignment = Alignment.Center) { Ico(Ic.Info) }
         }

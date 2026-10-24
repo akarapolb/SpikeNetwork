@@ -12,3 +12,7 @@
     public static int d(...);
     public static int i(...);
 }
+
+# WebRTC (voice calls) is reached from native code by name.
+-keep class org.webrtc.** { *; }
+-dontwarn org.webrtc.**

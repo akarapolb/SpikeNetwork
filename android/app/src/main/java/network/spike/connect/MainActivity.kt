@@ -111,6 +111,7 @@ private fun Root() {
         onDispose { Listener.onRead = null; Listener.onDirect = null }
     }
     LaunchedEffect(m.status) {
+        if (m.status == "ready") CallManager.start(ctx) else CallManager.stop()
         Listener.ready = m.status == "ready"
         Listener.update(ctx)
         if (m.status == "ready" && Prefs.notifyInBackground(ctx) && Notifier.allowed(ctx)) ListenerService.start(ctx)
@@ -135,6 +136,8 @@ private fun Root() {
             "new", "locked" -> GateScreen(m)
             else -> Ready(m)
         }
+        CallManager.ui?.let { CallScreen(it) }
+        LaunchedEffect(CallManager.message) { CallManager.message?.let { m.notice = it; CallManager.message = null } }
         m.notice?.let { text ->
             Row(
                 Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp).clip(RoundedCornerShape(14.dp))
@@ -174,6 +177,7 @@ private fun Ready(m: AppModel) {
                 if (n == 1) "Encrypted for ${s.name}'s device and your own other devices" else "Encrypted separately for each of ${s.name}'s $n devices and your own other devices",
                 { t -> Bridge.call("send", args("name" to s.name, "text" to t)) },
                 { m.open(Screen.Verify(s.name)) },
+                { CallManager.call(s.name, c?.verified == true) },
                 { fileName, f -> Bridge.call("send_file", args("name" to s.name, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
             )
         }
@@ -187,6 +191,7 @@ private fun Ready(m: AppModel) {
                 if (g?.large == true) "One encrypted copy for everyone in the group" else "Encrypted separately for every device of every member",
                 { t -> Bridge.call("group_send", args("id" to s.id, "text" to t)) },
                 { m.open(Screen.Members(s.id)) },
+                null, // group calls come last (ADR 0028)
                 // Files in large groups are not built yet (the engine refuses them).
                 if (g?.large == true) null else { fileName, f -> Bridge.call("group_send_file", args("id" to s.id, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
             )
