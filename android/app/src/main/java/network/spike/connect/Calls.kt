@@ -374,6 +374,7 @@ object CallManager {
     }
 
     private suspend fun handle(ev: JSONObject) {
+        Trace.add("call event: ${ev.getString("type")}" + (if (ev.has("result")) " (${ev.getString("result")})" else "") + " screen=" + (appCtx?.getSystemService(android.os.PowerManager::class.java)?.isInteractive.let { if (it == true) "on" else "off" }))
         when (ev.getString("type")) {
             "ring" -> {
                 if (ui != null) return
@@ -389,6 +390,7 @@ object CallManager {
                 ui = CallUi(name, true, "ringing", verified = verified, video = ev.optBoolean("video"))
                 startRing()
                 Notifier.incomingCall(appCtx ?: return, name)
+                Trace.add("incoming call alert posted; lock-screen allowed=" + (if (android.os.Build.VERSION.SDK_INT >= 34) appCtx!!.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent().toString() else "n/a") + ", battery-exempt=" + appCtx!!.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(appCtx!!.packageName))
                 if (ev.optBoolean("glare")) answer()
             }
             "stop_ringing" -> if (ev.getString("call") == callId) stopRing()

@@ -1013,6 +1013,15 @@ fun SettingsTab(m: AppModel) {
                     )
                 }
             }
+            var showTrace by remember { mutableStateOf(false) }
+            Row(Modifier.clickable { showTrace = !showTrace }, verticalAlignment = Alignment.CenterVertically) {
+                Text("Call diagnostics", fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                Muted(if (showTrace) "Hide" else "Show", 12.5.sp)
+            }
+            if (showTrace) {
+                val t = Trace.all()
+                Muted(if (t.isEmpty()) "Nothing yet. Make a call to this phone, then look here." else t.takeLast(25).joinToString(System.lineSeparator()), 11.5.sp)
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Alerts while the app is closed", fontWeight = FontWeight.Medium)

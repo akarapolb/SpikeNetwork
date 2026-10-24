@@ -99,10 +99,12 @@ object Listener {
     private suspend fun loop(ctx: Context) {
         while (currentCoroutineContext().isActive) {
             try {
-                Bridge.call("wait_for_push", args("ms" to 20000))
+                val pushed = Bridge.call("wait_for_push", args("ms" to 20000)) == true
+                if (pushed) Trace.add("relay says something is waiting")
                 if (!currentCoroutineContext().isActive || paused) break
                 val r = Bridge.obj("sync")
                 val news = r.getInt("received") + r.getInt("groups") + r.getInt("message_requests")
+                if (news > 0) Trace.add("read from the relay: $news new")
                 if (news > 0 && !visible) Notifier.news(ctx, news)
                 onRead?.invoke(true, news)
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -110,11 +112,27 @@ object Listener {
             } catch (e: Exception) {
                 // No relay, or locked: try again shortly.
                 android.util.Log.w("SpikeListen", "read failed: ${e.message}")
+                Trace.add("relay read failed: ${e.message?.take(60)}")
                 onRead?.invoke(false, 0)
                 delay(4000)
             }
         }
     }
+}
+
+/** The last few things the listener and the call code did, with times and no content, so a person can report why a call did not arrive. */
+object Trace {
+    private val lines = java.util.ArrayDeque<String>()
+    private val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+
+    @Synchronized
+    fun add(what: String) {
+        lines.addLast(fmt.format(java.util.Date()) + " " + what)
+        while (lines.size > 40) lines.removeFirst()
+    }
+
+    @Synchronized
+    fun all(): List<String> = lines.toList()
 }
 
 object Notifier {
