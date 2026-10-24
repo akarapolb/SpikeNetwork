@@ -655,7 +655,7 @@ fun CallScreen(u: CallUi) {
         }
         val mine = CallManager.localVideo
         if (u.video && !u.camOff && mine != null) {
-            VideoView(mine, mirror = true, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp).size(width = 100.dp, height = 140.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp)))
+            VideoView(mine, mirror = true, Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 12.dp, bottom = 120.dp).size(width = 100.dp, height = 140.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp)))
         }
     }
 }

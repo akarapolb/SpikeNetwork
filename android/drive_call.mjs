@@ -155,6 +155,7 @@ try {
   console.log("   desktop camera:", JSON.stringify(await desk.eval(`const t=cs.local.getVideoTracks()[0]; const s=await cs.pc.getStats(); let m=null; s.forEach(x=>{ if(x.type==='media-source'&&x.kind==='video') m={frames:x.frames,fps:x.framesPerSecond,w:x.width}; }); return {state:t.readyState,muted:t.muted,enabled:t.enabled,label:t.label,hidden:document.hidden,vis:document.visibilityState,src:m};`)));
   check(ps && ps.vrx > 20, "the phone receives the desktop's video");
   check(dv && dv.packets > 20, "the desktop receives video from the phone's camera");
+  if (process.env.DEMO) { console.log("   DEMO: video call is up on the phone and the desktop; leaving it open for 120 s"); await sleep(120000); }
   shot("5-phone-video-call");
   await desk.shot("video-call");
   await tapText("Hang up", true);
