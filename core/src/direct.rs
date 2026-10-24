@@ -345,7 +345,7 @@ mod tests {
     fn a_signature_made_for_a_relay_cannot_stand_in_for_a_direct_one() {
         let a = Identity::generate().unwrap();
         let nonce = [7u8; 32];
-        let relay_sig = a.sign_auth(&nonce);
+        let relay_sig = a.sign_auth(&nonce, "relay.example");
         assert!(verify_direct(&a.ed_public(), &nonce, &relay_sig).is_err());
         assert!(verify_direct(&a.ed_public(), &nonce, &a.sign_direct(&nonce)).is_ok());
     }

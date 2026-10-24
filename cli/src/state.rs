@@ -20,6 +20,8 @@ const CONTACTS: &str = "contacts.enc";
 const MESSAGES: &str = "messages.db";
 const OWNER: &str = "owner.enc";
 const LAMPORT: &str = "lamport.enc";
+/// Largest clock value taken from a received message (2^48: more than any real use will count).
+const MAX_LAMPORT: u64 = 1 << 48;
 const READ: &str = "read.enc";
 const LAST_SYNC: &str = "lastsync.enc";
 const DEVICE_LIST: &str = "devicelist.enc";
@@ -380,13 +382,15 @@ impl Home {
 
     /// Next value of this device's logical clock (monotonic, persisted).
     pub fn next_lamport(&self) -> Result<u64> {
-        let n = self.lamport() + 1;
+        let n = self.lamport().saturating_add(1);
         self.write(LAMPORT, n.to_string().as_bytes())?;
         Ok(n)
     }
 
     /// Fold in a clock value seen on a received message.
     pub fn observe_lamport(&self, seen: u64) -> Result<()> {
+        // A peer chooses `seen`. Cap it so a hostile value cannot push the clock to the end of the range.
+        let seen = seen.min(MAX_LAMPORT);
         if seen > self.lamport() {
             self.write(LAMPORT, seen.to_string().as_bytes())?;
         }

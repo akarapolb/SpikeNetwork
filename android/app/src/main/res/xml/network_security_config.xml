@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No cleartext through the Android network stack, and only the system's certificate authorities (no
+     user-installed ones). The Rust engine opens its own sockets and enforces wss:// itself (plain ws:// is refused
+     unless the person opts in for a private network); this is the second lock on the door for anything Java-side. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

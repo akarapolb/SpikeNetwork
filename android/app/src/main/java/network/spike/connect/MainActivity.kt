@@ -1,6 +1,7 @@
 package network.spike.connect
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.isImeVisible
@@ -36,6 +37,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/** Minutes away from the app before the keys are forgotten and the passphrase is asked again (alerts off). */
+const val AUTO_LOCK_MINUTES = 2
 
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,12 +52,26 @@ class MainActivity : FragmentActivity() {
             statusBarStyle = SystemBarStyle.light(clear, clear),
             navigationBarStyle = SystemBarStyle.light(clear, clear),
         )
+        applyScreenPrivacy()
         Bridge.ensureOpen(applicationContext)
         setContent {
             SpikeTheme {
                 Surface(Modifier.fillMaxSize(), color = C.Bg) { Root() }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyScreenPrivacy() // the setting may have changed on the Settings screen
+    }
+
+    /** Keep messages out of screenshots, screen recordings and the recent-apps thumbnail unless the person allows them. */
+    fun refreshScreenPrivacy() = applyScreenPrivacy()
+
+    private fun applyScreenPrivacy() {
+        if (Prefs.allowScreenshots(this)) window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        else window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
     }
 }
 
@@ -61,14 +81,25 @@ private fun Root() {
     val scope = rememberCoroutineScope()
     val m = remember { AppModel(scope) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val autoLock = remember { arrayOfNulls<kotlinx.coroutines.Job>(1) }
 
     LaunchedEffect(Unit) { m.run { m.loadStatus() } }
     // Listen to the relay while the app is on screen (and, with alerts on, while the service runs).
     val ctx = androidx.compose.ui.platform.LocalContext.current
     DisposableEffect(lifecycle) {
         val obs = LifecycleEventObserver { _, e ->
-            if (e == Lifecycle.Event.ON_START) { Listener.visible = true; Notifier.clearNews(ctx) }
-            if (e == Lifecycle.Event.ON_STOP) Listener.visible = false
+            if (e == Lifecycle.Event.ON_START) { Listener.visible = true; Notifier.clearNews(ctx); autoLock[0]?.cancel(); autoLock[0] = null }
+            if (e == Lifecycle.Event.ON_STOP) {
+                Listener.visible = false
+                // Away from the app: forget the keys after a while, unless alerts need the engine to keep reading.
+                if (m.status == "ready" && !Prefs.notifyInBackground(ctx)) {
+                    autoLock[0] = scope.launch {
+                        delay(AUTO_LOCK_MINUTES * 60_000L)
+                        try { Bridge.call("lock") } catch (_: Exception) {}
+                        m.loadStatus()
+                    }
+                }
+            }
             Listener.update(ctx)
         }
         lifecycle.addObserver(obs)

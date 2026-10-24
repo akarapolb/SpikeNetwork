@@ -40,6 +40,10 @@ object Prefs {
     private fun p(c: Context) = c.getSharedPreferences("spike_app", Context.MODE_PRIVATE)
     fun notifyInBackground(c: Context) = p(c).getBoolean("notify_background", false)
     fun setNotifyInBackground(c: Context, on: Boolean) = p(c).edit().putBoolean("notify_background", on).apply()
+
+    /** Screenshots, screen recording and the recent-apps thumbnail. Off in release builds (FLAG_SECURE), on in debug. */
+    fun allowScreenshots(c: Context) = p(c).getBoolean("allow_screenshots", BuildConfig.DEBUG)
+    fun setAllowScreenshots(c: Context, on: Boolean) = p(c).edit().putBoolean("allow_screenshots", on).apply()
 }
 
 /**

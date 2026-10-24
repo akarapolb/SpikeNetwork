@@ -154,12 +154,15 @@ pub fn seal_file(name: &str, plain: &[u8]) -> Result<(Attachment, Vec<Vec<u8>>)>
 }
 
 /// A name that is safe to create in a chosen directory: no path separators,
-/// no parent-directory tricks, no control characters, not hidden, bounded length.
+/// no parent-directory tricks, no control characters (including the invisible ones that reorder
+/// text, which can make a name ending in "fdp.exe" read as a PDF), no Windows device names
+/// (`CON`, `NUL`, `COM1`...), no trailing dots or spaces (Windows drops them), not hidden,
+/// bounded length.
 pub fn safe_file_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or("");
     let cleaned: String = base
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_invisible_format(*c))
         .map(|c| {
             if matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') {
                 '_'
@@ -168,7 +171,10 @@ pub fn safe_file_name(name: &str) -> String {
             }
         })
         .collect();
-    let trimmed = cleaned.trim().trim_start_matches('.').trim();
+    let trimmed = cleaned
+        .trim()
+        .trim_start_matches('.')
+        .trim_matches(|c: char| c == '.' || c.is_whitespace());
     let mut s: String = if trimmed.is_empty() {
         "attachment".into()
     } else {
@@ -177,7 +183,34 @@ pub fn safe_file_name(name: &str) -> String {
     while s.len() > 200 {
         s.pop();
     }
+    // Windows treats `CON`, `con.txt` and `COM1.tar.gz` as devices, not files.
+    let stem = s.split('.').next().unwrap_or("").trim_end();
+    let upper = stem.to_ascii_uppercase();
+    let reserved = matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || (upper.len() == 4
+        && (upper.starts_with("COM") || upper.starts_with("LPT"))
+        && upper.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        s.insert(0, '_');
+    }
     s
+}
+
+/// Format characters that draw nothing or change the direction of the text around them.
+fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+    )
 }
 
 #[cfg(test)]
@@ -285,5 +318,16 @@ mod tests {
         assert_eq!(safe_file_name("a\nb\u{0}c.txt"), "abc.txt");
         assert_eq!(safe_file_name("report: final?.pdf"), "report_ final_.pdf");
         assert_eq!(safe_file_name(&"x".repeat(500)).len(), 200);
+        // Invisible text-direction controls cannot disguise an extension.
+        assert_eq!(safe_file_name("invoice\u{202E}fdp.exe"), "invoicefdp.exe");
+        assert_eq!(safe_file_name("a\u{200B}b.txt"), "ab.txt");
+        // Windows device names and trailing dots or spaces.
+        assert_eq!(safe_file_name("CON"), "_CON");
+        assert_eq!(safe_file_name("nul.txt"), "_nul.txt");
+        assert_eq!(safe_file_name("COM1.tar.gz"), "_COM1.tar.gz");
+        assert_eq!(safe_file_name("lpt9"), "_lpt9");
+        assert_eq!(safe_file_name("COM10"), "COM10");
+        assert_eq!(safe_file_name("console.txt"), "console.txt");
+        assert_eq!(safe_file_name("report.pdf. . "), "report.pdf");
     }
 }

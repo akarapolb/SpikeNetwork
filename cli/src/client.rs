@@ -87,7 +87,9 @@ const PONG_WAIT: Duration = Duration::from_secs(15);
 
 impl Relay {
     pub async fn connect(target: impl Into<Target>, me: &Identity) -> Result<Self> {
-        let ws = dial(&target.into()).await?;
+        let target = target.into();
+        let audience = target.audience();
+        let ws = dial(&target).await?;
         let mut r = Self {
             ws,
             pending: VecDeque::new(),
@@ -106,7 +108,7 @@ impl Relay {
         let nonce = hex::decode(nonce)?;
         r.write(&ClientMsg::Auth {
             ed25519: hex::encode(me.ed_public()),
-            sig: hex::encode(me.sign_auth(&nonce)),
+            sig: hex::encode(me.sign_auth(&nonce, &audience)),
         })
         .await?;
         loop {

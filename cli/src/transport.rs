@@ -34,6 +34,19 @@ pub struct Target {
     pub opts: TransportOpts,
 }
 
+impl Target {
+    /// The name the sign-in answer is bound to: the `host[:port]` of the relay URL (see
+    /// `spike_core::identity::auth_audience`).
+    pub fn audience(&self) -> String {
+        self.url
+            .parse::<Uri>()
+            .ok()
+            .and_then(|u| u.authority().map(|a| a.as_str().to_string()))
+            .map(|a| spike_core::identity::auth_audience(&a))
+            .unwrap_or_default()
+    }
+}
+
 impl From<&str> for Target {
     fn from(url: &str) -> Self {
         Target {

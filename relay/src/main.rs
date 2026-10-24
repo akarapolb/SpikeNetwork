@@ -41,6 +41,10 @@ struct Args {
     /// Repeat or comma-separate. Without it the header is ignored.
     #[arg(long, value_delimiter = ',', value_parser = Cidr::parse)]
     trusted_proxy: Vec<Cidr>,
+    /// The name clients dial this relay by (`relay.example` or `relay.example:8443`). Needed only when a
+    /// reverse proxy rewrites the Host header; otherwise the Host header is used.
+    #[arg(long)]
+    auth_audience: Option<String>,
     /// Largest entry in a group mailbox, in bytes.
     #[arg(long, default_value_t = 256 * 1024)]
     group_max_entry: usize,
@@ -119,6 +123,7 @@ async fn main() -> std::io::Result<()> {
         req_burst: a.req_burst,
         trusted_proxies: a.trusted_proxy,
         metrics_token: a.metrics_token,
+        auth_audience: a.auth_audience,
         ttl: Duration::from_secs(a.ttl_secs),
         queue_cap: a.queue_cap,
         group_max_entry: a.group_max_entry,

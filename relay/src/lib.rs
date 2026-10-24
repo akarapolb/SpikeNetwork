@@ -69,6 +69,9 @@ pub struct Config {
     pub trusted_proxies: Vec<Cidr>,
     /// If set, `/metrics` needs `Authorization: Bearer <token>`.
     pub metrics_token: Option<String>,
+    /// The name clients sign into their sign-in answer (`host[:port]`, as they dial it). Unset means
+    /// the `Host` header of the upgrade request is used, which is right unless a proxy rewrites it.
+    pub auth_audience: Option<String>,
     /// Largest entry in a group mailbox, in bytes (ADR 0025).
     pub group_max_entry: usize,
     /// How long a group message is kept. Short: a member who is away longer reads it from a device
@@ -107,6 +110,7 @@ impl Default for Config {
             req_burst: 200.0,
             trusted_proxies: Vec::new(),
             metrics_token: None,
+            auth_audience: None,
             group_max_entry: 256 * 1024,
             group_message_ttl: Duration::from_secs(30 * 24 * 3600),
             group_handshake_ttl: Duration::from_secs(180 * 24 * 3600),
@@ -130,11 +134,11 @@ const MAX_RATE_LIMIT_STREAK: u32 = 200;
 #[derive(Default)]
 struct State {
     /// Device id -> its live connections, oldest first. A new message is pushed to all of them.
-    online: HashMap<String, Vec<(u64, mpsc::UnboundedSender<ServerMsg>)>>,
+    online: HashMap<String, Vec<(u64, mpsc::Sender<ServerMsg>)>>,
     /// Mailbox id -> the connections subscribed to it: one stored copy, pushed to each. The
     /// senders are *weak*: only `online` keeps a connection's channel open, so evicting a
     /// connection (dropping its sender there) still ends it, subscribed or not.
-    groups: HashMap<String, Vec<(u64, mpsc::WeakUnboundedSender<ServerMsg>)>>,
+    groups: HashMap<String, Vec<(u64, mpsc::WeakSender<ServerMsg>)>>,
     next_conn: u64,
 }
 
@@ -187,7 +191,15 @@ pub async fn serve_with_metrics(
         tokio::spawn(serve_metrics(ml, state.clone(), cfg.metrics_token.clone()));
     }
     loop {
-        let (stream, peer) = listener.accept().await?;
+        // An accept error (out of file descriptors, a client that reset while queued) is routine
+        // under load: back off briefly and keep serving instead of ending the relay.
+        let (stream, peer) = match listener.accept().await {
+            Ok(x) => x,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let (state, cfg, acceptor) = (state.clone(), cfg.clone(), acceptor.clone());
         tokio::spawn(async move {
             let peer_ip = peer.ip();
@@ -243,8 +255,17 @@ where
     S: futures_util::Sink<Message> + Unpin,
 {
     let s = serde_json::to_string(m).map_err(|_| ())?;
-    tx.send(Message::Text(s)).await.map_err(|_| ())
+    // A peer that stops reading must not hold a connection (and what is queued for it) forever.
+    tokio::time::timeout(WRITE_TIMEOUT, tx.send(Message::Text(s)))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
 }
+
+/// Messages that may wait to be written to one connection before it counts as too slow for live pushes.
+const OUT_QUEUE: usize = 32;
+/// Longest one write to a client may take.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Who is on the other end of a connection, once it has signed in.
 struct Peer {
@@ -252,7 +273,7 @@ struct Peer {
     my_ed: [u8; 32],
     /// This connection, and a weak handle to push to it (see `State::groups`).
     conn_id: u64,
-    out: mpsc::WeakUnboundedSender<ServerMsg>,
+    out: mpsc::WeakSender<ServerMsg>,
     /// The mailboxes this connection is subscribed to.
     subs: Mutex<HashSet<String>>,
 }
@@ -260,6 +281,8 @@ struct Peer {
 /// What a request costs the connection's token bucket.
 fn cost(m: &ClientMsg) -> f64 {
     match m {
+        // Pings have their own, small bucket (see `handle`): free of the request budget so keepalive
+        // never starves, but not unlimited.
         ClientMsg::Ping => 0.0,
         ClientMsg::Ack { .. } | ClientMsg::GroupUnsubscribe { .. } => 0.25,
         _ => 1.0,
@@ -302,9 +325,16 @@ where
     // Remember the forwarded-for header from the upgrade request: it is only believed if the
     // connection came from a trusted proxy (decided below).
     let forwarded = Arc::new(Mutex::new(None::<String>));
+    let host_seen = Arc::new(Mutex::new(None::<String>));
     let seen = forwarded.clone();
+    let host_cell = host_seen.clone();
     #[allow(clippy::result_large_err)]
     let callback = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
+        *host_cell.lock().unwrap() = req
+            .headers()
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         *seen.lock().unwrap() = req
             .headers()
             .get("x-forwarded-for")
@@ -312,9 +342,14 @@ where
             .map(str::to_string);
         Ok(resp)
     };
-    let ws = tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(ws_cfg))
-        .await
-        .map_err(|_| ())?;
+    // A client that opens a connection and says nothing must not hold it (or a slot) open.
+    let ws = tokio::time::timeout(
+        cfg.auth_timeout,
+        tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(ws_cfg)),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
     let _admission = match admission {
         Some(a) => a,
         None => {
@@ -352,10 +387,17 @@ where
         state.metrics.error("bad_request");
         return Err(());
     };
+    // The answer must be signed for this relay's name, so a relay that passes our challenge to a
+    // client cannot use the client's signature to sign in here as that client.
+    let audience = cfg
+        .auth_audience
+        .clone()
+        .or_else(|| host_seen.lock().unwrap().clone())
+        .unwrap_or_default();
     let verified = (|| {
         let ed: [u8; 32] = hex::decode(ed25519).ok()?.try_into().ok()?;
         let sig: [u8; 64] = hex::decode(sig).ok()?.try_into().ok()?;
-        verify_auth(&ed, &nonce, &sig).ok()?;
+        verify_auth(&ed, &nonce, &audience, &sig).ok()?;
         Some((device_id_from_ed(&ed), ed))
     })();
     let Some((me, my_ed)) = verified else {
@@ -368,7 +410,7 @@ where
 
     // 2. Register (a device may hold a few live connections; the oldest beyond the cap is closed)
     // and flush the queue. The database work runs on a blocking thread.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel();
+    let (out_tx, mut out_rx) = mpsc::channel(OUT_QUEUE);
     let out_for_peer = out_tx.downgrade();
     let registered = {
         let (state, me) = (state.clone(), me.clone());
@@ -404,6 +446,8 @@ where
         // 3. Serve.
         let mut claims = 0usize;
         let mut bucket = TokenBucket::new(cfg.req_rate, cfg.req_burst);
+        // Clients ping every 25 s; ten at once and two a second is far more than any honest one needs.
+        let mut ping_bucket = TokenBucket::new(if cfg.req_rate > 0.0 { 2.0 } else { 0.0 }, 10.0);
         let mut limited_streak = 0u32;
         let idle = tokio::time::sleep(cfg.idle_timeout);
         tokio::pin!(idle);
@@ -434,7 +478,12 @@ where
                     };
                     // Slow down a connection that asks too fast, and hang up on one that never does.
                     let c = cost(&msg);
-                    if c > 0.0 && !bucket.allow(c) {
+                    let over = if matches!(msg, ClientMsg::Ping) {
+                        !ping_bucket.allow(1.0)
+                    } else {
+                        c > 0.0 && !bucket.allow(c)
+                    };
+                    if over {
                         Metrics::inc(&state.metrics.rate_limited_requests);
                         state.metrics.error("rate_limited");
                         limited_streak += 1;
@@ -489,7 +538,7 @@ where
 fn register(
     state: &Shared,
     me: &str,
-    out_tx: mpsc::UnboundedSender<ServerMsg>,
+    out_tx: mpsc::Sender<ServerMsg>,
 ) -> rusqlite::Result<(u64, Vec<ServerMsg>, usize, Option<u64>)> {
     let mut st = state.state.lock().unwrap();
     st.next_conn += 1;
@@ -660,8 +709,10 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
     Metrics::inc(&state.metrics.messages_accepted);
     Metrics::add(&state.metrics.bytes_accepted, blob.len() as u64);
     for (_, live) in st.online.get(to).into_iter().flatten() {
+        // A connection that is not keeping up (its queue is full) misses the live copy; the message
+        // is in the database and arrives with the backlog when it reconnects.
         if live
-            .send(ServerMsg::Deliver {
+            .try_send(ServerMsg::Deliver {
                 id: id.clone(),
                 blob: blob_hex.to_string(),
             })
@@ -680,6 +731,10 @@ fn on_ack(state: &Shared, me: &str, id: &str) {
 }
 
 fn on_publish(state: &Shared, me: &str, my_ed: &[u8; 32], keys: &[WirePrekey]) -> ServerMsg {
+    // Count first: checking signatures is the expensive part, and a frame can hold thousands of keys.
+    if keys.len() > MAX_PREKEYS {
+        return err("too_large", "too many prekeys in one request");
+    }
     // Reject the whole batch if any key is not signed by this device: a relay
     // that stores forgeries would hand them to senders.
     for w in keys {
@@ -974,14 +1029,18 @@ fn on_group_append(
                     },
                     sealed,
                 };
-                // A connection that went away fails the send: forget it.
-                subs.retain(|(_, tx)| {
-                    let ok = tx.upgrade().is_some_and(|tx| tx.send(push.clone()).is_ok());
-                    if ok {
-                        Metrics::inc(&m.group_pushes);
-                    }
-                    ok
-                });
+                // A connection that went away fails the send: forget it. One that is merely slow (its
+                // queue is full) skips this push and reads the entry from the mailbox by sequence number.
+                subs.retain(
+                    |(_, tx)| match tx.upgrade().map(|tx| tx.try_send(push.clone())) {
+                        Some(Ok(())) => {
+                            Metrics::inc(&m.group_pushes);
+                            true
+                        }
+                        Some(Err(mpsc::error::TrySendError::Full(_))) => true,
+                        _ => false,
+                    },
+                );
             }
             ServerMsg::GroupAppended {
                 mailbox: mailbox.into(),

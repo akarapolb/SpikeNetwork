@@ -31,6 +31,8 @@ const SENT_MEMORY: usize = 64;
 
 const L_MAILBOX: &str = "spike-mailbox";
 const L_BUNDLE: &str = "spike-join-bundle";
+/// Largest mailbox generation accepted from a join bundle (the inviter picks it; later code adds one).
+const MAX_GENERATION: u64 = 1 << 32;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -795,8 +797,13 @@ impl Group {
         if pt.len() != 40 {
             return Err(Error::Bundle);
         }
+        // The inviter chose this number; later code adds one to it. Refuse one near the end of the range.
+        let generation = u64::from_be_bytes(pt[..8].try_into().expect("8 bytes"));
+        if generation > MAX_GENERATION {
+            return Err(Error::Bundle);
+        }
         Ok(Mailbox {
-            generation: u64::from_be_bytes(pt[..8].try_into().expect("8 bytes")),
+            generation,
             secret: pt[8..].try_into().expect("32 bytes"),
         })
     }

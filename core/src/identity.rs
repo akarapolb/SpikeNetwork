@@ -12,7 +12,7 @@ use vodozemac::{Ed25519PublicKey, Ed25519Signature};
 
 pub(crate) const CARD_PREFIX: &str = "spike1:";
 const CARD_CTX: &[u8] = b"spike-card-v1";
-const AUTH_CTX: &[u8] = b"spike-relay-auth-v1";
+const AUTH_CTX: &[u8] = b"spike-relay-auth-v2";
 const PREKEY_CTX: &[u8] = b"spike-prekey-v1";
 const FP_CTX: &[u8] = b"spike-fp-v1";
 const DIRECT_CTX: &[u8] = b"spike-direct-sig-v1";
@@ -105,9 +105,11 @@ impl Identity {
         &mut self.account
     }
 
-    /// Signature a device presents to a relay to prove it holds its key.
-    pub fn sign_auth(&self, nonce: &[u8]) -> [u8; 64] {
-        self.account.sign([AUTH_CTX, nonce].concat()).to_bytes()
+    /// Signature a device presents to a relay to prove it holds its key. It covers the relay's
+    /// name (`audience`, see [`auth_audience`]) as well as the challenge, so a relay that forwards
+    /// its own challenge from another relay cannot reuse the answer there.
+    pub fn sign_auth(&self, nonce: &[u8], audience: &str) -> [u8; 64] {
+        self.account.sign(auth_message(nonce, audience)).to_bytes()
     }
 
     /// Signature a device makes in a direct connection's handshake (ADR 0027). Its own context, so
@@ -157,8 +159,30 @@ impl Identity {
 }
 
 /// Verify a relay-auth signature made by [`Identity::sign_auth`].
-pub fn verify_auth(ed25519: &[u8; 32], nonce: &[u8], sig: &[u8; 64]) -> Result<()> {
-    verify(ed25519, &[AUTH_CTX, nonce].concat(), sig)
+pub fn verify_auth(ed25519: &[u8; 32], nonce: &[u8], audience: &str, sig: &[u8; 64]) -> Result<()> {
+    verify(ed25519, &auth_message(nonce, audience), sig)
+}
+
+fn auth_message(nonce: &[u8], audience: &str) -> Vec<u8> {
+    let audience = auth_audience(audience);
+    let mut m = Vec::with_capacity(AUTH_CTX.len() + 2 + audience.len() + nonce.len());
+    m.extend_from_slice(AUTH_CTX);
+    m.extend_from_slice(&(audience.len() as u16).to_be_bytes());
+    m.extend_from_slice(audience.as_bytes());
+    m.extend_from_slice(nonce);
+    m
+}
+
+/// The name a client and a relay agree a connection is for: the `host[:port]` the client dialled
+/// (which is what the relay sees as the `Host` header), lower-cased, with a default port (80, 443)
+/// dropped and a trailing dot removed.
+pub fn auth_audience(host_port: &str) -> String {
+    let h = host_port.trim().to_ascii_lowercase();
+    let h = h
+        .strip_suffix(":443")
+        .or_else(|| h.strip_suffix(":80"))
+        .unwrap_or(&h);
+    h.trim_end_matches('.').to_string()
 }
 
 /// Verify a signature made by [`Identity::sign_direct`].
@@ -240,4 +264,30 @@ pub fn is_valid_device_id(s: &str) -> bool {
     s.len() == 32
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+#[cfg(test)]
+mod audience_tests {
+    use super::*;
+
+    #[test]
+    fn audience_is_normalised() {
+        assert_eq!(auth_audience("Relay.Example.org:443"), "relay.example.org");
+        assert_eq!(auth_audience("relay.example.org."), "relay.example.org");
+        assert_eq!(auth_audience("127.0.0.1:80"), "127.0.0.1");
+        assert_eq!(auth_audience("127.0.0.1:8787"), "127.0.0.1:8787");
+        assert_eq!(auth_audience("host:8080"), "host:8080");
+    }
+
+    #[test]
+    fn auth_signature_covers_the_audience() {
+        let id = Identity::generate().unwrap();
+        let sig = id.sign_auth(b"nonce", "a.example");
+        assert!(verify_auth(&id.ed_public(), b"nonce", "A.example:443", &sig).is_ok());
+        assert!(verify_auth(&id.ed_public(), b"nonce", "b.example", &sig).is_err());
+        assert!(verify_auth(&id.ed_public(), b"other", "a.example", &sig).is_err());
+        // The length prefix keeps (audience, nonce) splits from colliding.
+        let sig2 = id.sign_auth(b"xnonce", "a.exampl");
+        assert!(verify_auth(&id.ed_public(), b"nonce", "a.examplx", &sig2).is_err());
+    }
 }
