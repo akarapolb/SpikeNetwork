@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -18,10 +20,40 @@ android {
         ndk { abiFilters += listOf("x86_64", "arm64-v8a") }
     }
 
+    // Signing: keep the keystore and its passwords out of the repository. Put them in android/keystore.properties
+    // (git-ignored) or in the environment (CI): storeFile, storePassword, keyAlias, keyPassword.
+    // Without them `assembleRelease` still builds, but the APK is unsigned and cannot be installed.
+    val keystoreProps = Properties().apply {
+        val f = rootProject.file("keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    fun signing(name: String): String? = keystoreProps.getProperty(name) ?: System.getenv("SPIKE_" + name.uppercase())
+    val releaseSigning = if (signing("storeFile") != null) {
+        signingConfigs.create("release") {
+            storeFile = file(signing("storeFile")!!)
+            storePassword = signing("storePassword")
+            keyAlias = signing("keyAlias")
+            keyPassword = signing("keyPassword")
+            // v2+ only: the v1 (JAR) scheme is weaker and every minSdk 26 phone supports v2.
+            enableV1Signing = false
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    } else null
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isDebuggable = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseSigning != null) signingConfig = releaseSigning
         }
+    }
+    // No dependency-info block in the APK: it is signed with our key, and a reproducible build must not depend on it.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

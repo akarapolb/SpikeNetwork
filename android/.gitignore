@@ -4,3 +4,7 @@ local.properties
 app/src/main/jniLibs/
 *.apk
 camera-card.json
+
+keystore.properties
+*.jks
+*.keystore

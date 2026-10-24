@@ -945,7 +945,15 @@ fun SettingsTab(m: AppModel) {
                 OutlineButton("Copy my card", small = true) { copy(ctx, o.me.card); m.notice = "Card copied." }
                 OutlineButton("Lock now", small = true) { m.run { Bridge.call("lock"); m.loadStatus() } }
             }
-            Muted("The passphrase is asked again after the app restarts.", 12.5.sp)
+            Muted("The passphrase is asked again after the app restarts, and after ${AUTO_LOCK_MINUTES} minutes away from the app unless alerts are on.", 12.5.sp)
+            var shots by remember { mutableStateOf(Prefs.allowScreenshots(ctx)) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Allow screenshots", fontWeight = FontWeight.Medium)
+                    Muted("Off hides messages from screenshots, screen recording and the recent-apps picture.", 12.5.sp)
+                }
+                Switch(shots, { shots = it; Prefs.setAllowScreenshots(ctx, it); (ctx as? MainActivity)?.refreshScreenPrivacy() }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+            }
         }
         Text("Unlocking and alerts", fontWeight = FontWeight.SemiBold)
         CardBox {
