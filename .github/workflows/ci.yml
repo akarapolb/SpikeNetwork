@@ -125,3 +125,29 @@ jobs:
           tool: cargo-deny
       - run: cargo deny --manifest-path Cargo.toml check
       - run: cargo deny --manifest-path desktop/src-tauri/Cargo.toml check
+
+  # The Android app: the Rust library for the emulator's architecture, then the debug APK. Not exercised in CI
+  # yet (it was built and run by hand), so a failure here informs but does not block.
+  android:
+    name: android app (informational)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: x86_64-linux-android,aarch64-linux-android
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: cargo-ndk
+      - name: Build the native library
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          bash android/build-native.sh --release
+      - name: Build the debug APK
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          ./gradlew --no-daemon :app:assembleDebug

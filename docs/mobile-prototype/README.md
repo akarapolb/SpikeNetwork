@@ -3,7 +3,7 @@
 Clickable design prototype of the Spike Connect mobile app: eleven phone screens (390×844).
 Live canvas (private, owner-only until shared): https://claude.ai/artifact/MvZutgjnWvxnDPEN3BTRJi
 
-**Status: design only.** No app code exists yet. Multi-device and agent features shown here are proposed, not built (see `../multi-device-design.html` and `../engineering-plan.md`).
+**Status: the design, and now a first implementation.** The Android app in `../../android/` follows these screens (see its README for what is built and what differs; ADR 0026). Multi-device and agent features shown here are proposed, not built (see `../multi-device-design.html` and `../engineering-plan.md`).
 
 ## Screens
 | File | Screen | Notes |

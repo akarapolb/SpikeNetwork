@@ -1,0 +1,21 @@
+[package]
+name = "spike-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Spike Connect app logic shared by the desktop and mobile apps: one Session with plain DTOs"
+
+[dependencies]
+spike-core = { path = "../core" }
+spike-cli = { path = "../cli" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+hex = "0.4"
+zeroize = "1"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+[dev-dependencies]
+spike-relay = { path = "../relay" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }

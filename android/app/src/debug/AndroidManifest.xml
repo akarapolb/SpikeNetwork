@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug builds only: lets a test script run bridge commands, as the desktop test script does over the
+             DevTools protocol. Send a broadcast to network.spike.connect/.DebugReceiver with string extras
+             cmd and args, then read the answer from logcat under the tag SpikeDebug.
+             Never in a release build. -->
+        <receiver android:name=".DebugReceiver" android:exported="true" />
+    </application>
+</manifest>

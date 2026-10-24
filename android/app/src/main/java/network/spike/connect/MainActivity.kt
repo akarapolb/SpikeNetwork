@@ -1,0 +1,142 @@
+package network.spike.connect
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Draw edge to edge with dark status and navigation icons: the screens are light.
+        val clear = android.graphics.Color.TRANSPARENT
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(clear, clear),
+            navigationBarStyle = SystemBarStyle.light(clear, clear),
+        )
+        Bridge.ensureOpen(applicationContext)
+        setContent {
+            SpikeTheme {
+                Surface(Modifier.fillMaxSize(), color = C.Bg) { Root() }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Root() {
+    val scope = rememberCoroutineScope()
+    val m = remember { AppModel(scope) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+
+    LaunchedEffect(Unit) { m.run { m.loadStatus() } }
+    // Listen to the relay only while the app is on screen.
+    LaunchedEffect(m.status) {
+        if (m.status == "ready") {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { m.listen() }
+        }
+    }
+    BackHandler(enabled = m.status == "ready" && m.screen != null) {
+        when (val s = m.screen) {
+            is Screen.Members -> m.open(Screen.GroupChat(s.id))
+            is Screen.Verify -> m.open(Screen.Chat(s.name))
+            else -> m.open(null)
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        when (m.status) {
+            "loading" -> Text("Loading…", Modifier.align(Alignment.Center), color = C.Muted)
+            "new", "locked" -> GateScreen(m)
+            else -> Ready(m)
+        }
+        m.notice?.let { text ->
+            Row(
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp).clip(RoundedCornerShape(14.dp))
+                    .background(C.Text).padding(start = 16.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f, fill = false).padding(vertical = 12.dp))
+                Box(Modifier.clickable { m.notice = null }.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                    Text("OK", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Ready(m: AppModel) {
+    val o = m.overview
+    when (val s = m.screen) {
+        null -> Column(Modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f)) {
+                when (m.tab) {
+                    Tab.Chats -> ChatsTab(m)
+                    Tab.Agents -> AgentsTab(m)
+                    Tab.Devices -> DevicesTab(m)
+                    Tab.Settings -> SettingsTab(m)
+                }
+            }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
+            TabBar(m)
+        }
+        is Screen.Chat -> {
+            val c = o?.contacts?.firstOrNull { it.name == s.name }
+            val n = c?.devices ?: 1
+            ConversationScreen(
+                m, s.name, "End-to-end encrypted · $n ${if (n == 1) "device" else "devices"}", c?.verified == true, false,
+                if (n == 1) "Encrypted for ${s.name}'s device and your own other devices" else "Encrypted separately for each of ${s.name}'s $n devices and your own other devices",
+                { t -> Bridge.call("send", args("name" to s.name, "text" to t)) },
+                { m.open(Screen.Verify(s.name)) },
+            )
+        }
+        is Screen.GroupChat -> {
+            val g = m.group
+            val people = g?.members?.size ?: 0
+            ConversationScreen(
+                m, g?.name ?: "Group",
+                "$people ${if (people == 1) "person" else "people"} · ${if (g?.large == true) "large group (MLS)" else "end-to-end encrypted"}",
+                false, true,
+                if (g?.large == true) "One encrypted copy for everyone in the group" else "Encrypted separately for every device of every member",
+                { t -> Bridge.call("group_send", args("id" to s.id, "text" to t)) },
+                { m.open(Screen.Members(s.id)) },
+            )
+        }
+        is Screen.Members -> MembersScreen(m, s.id)
+        is Screen.Invite -> InviteScreen(m, s.id)
+        is Screen.Verify -> VerifyScreen(m, s.name)
+        Screen.NewGroup -> NewGroupScreen(m)
+        Screen.AddContact -> AddContactScreen(m)
+        Screen.Requests -> RequestsScreen(m)
+    }
+}

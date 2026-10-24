@@ -13,6 +13,11 @@ ignore = [
     # (hax-lib-macros, from the formal-verification annotations in libcrux, which hpke-rs uses), reached through
     # openmls (ADR 0025, crate `spike-mls`). It is not in the compiled program. Re-check when openmls or hpke-rs move.
     { id = "RUSTSEC-2026-0173", reason = "unmaintained compile-time proc-macro, only via openmls -> hpke-rs -> libcrux" },
+    # 2026-10-24: crypto-bigint 0.5.5 has timing-variability issues; the fix is in 0.7.6, a different major line, so
+    # `cargo update` cannot reach it. The only user is p256 (elliptic-curve 0.13) via hpke-rs-rust-crypto via openmls,
+    # i.e. the P-256 ciphersuites. Large groups use ciphersuite 1 (DHKEM X25519, ADR 0025 section 2), which never runs
+    # P-256 code. Re-check when hpke-rs or p256 move to the newer crypto-bigint.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 only via p256 via openmls/hpke-rs; we use the X25519 ciphersuite, so no P-256 code runs" },
 ]
 
 [licenses]

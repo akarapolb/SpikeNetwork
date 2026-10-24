@@ -1,0 +1,70 @@
+# Spike Connect for Android
+
+A native Android app (Kotlin, Jetpack Compose) whose screens follow the mobile prototype
+(`docs/mobile-prototype/`) and whose engine is the same Rust code as the desktop app.
+
+```
+Compose screens (Kotlin)  --JSON-->  libspike_mobile.so (mobile/, JNI)  -->  spike-app (app/)  -->  spike-cli, spike-core, spike-mls
+```
+
+- `mobile/`: the native library. Three JNI functions (`open`, `call`, `close`), all strings.
+- `app/src/bridge.rs`: the JSON command bridge, the same commands the desktop app has (`overview`, `send`,
+  `sync`, `group_create_large`, ..., plus `wait_for_push` for instant delivery and `qr_matrix` for drawing a
+  QR code). Keys never cross it.
+- `android/app/src/main/java/network/spike/connect/`: `Bridge.kt` (the door), `Model.kt` (parsing),
+  `AppModel.kt` (state, and the loop that waits for the relay and syncs), `Theme.kt` (the prototype's palette,
+  fonts, components), `Icons.kt` (the prototype's line icons, generated from its SVGs), `Screens.kt` (the
+  screens), `MainActivity.kt`.
+- Fonts (IBM Plex Sans, Schibsted Grotesk, IBM Plex Mono, SIL OFL 1.1) are bundled in `res/font`; see
+  `FONTS-LICENSE.txt`.
+
+## What follows the prototype, and what does not
+
+Built to match: 1 Create identity (and unlock), 2 Chats (status chips, search, message-requests row, rows
+with avatars, tags and unread badges, the four-tab bar), 3 Conversation, 4 Verify, 5 Your devices, 7 Network
+and privacy (as Settings), 8 Agent approval and 9 Agents (as the Agents tab: waiting requests with
+approve and deny, allowed agents), 10 Add a contact, 11 Message requests. Large and small groups use the same
+style (not in the prototype).
+
+Deliberately different, because the feature does not exist yet and a control that does nothing would mislead:
+- "Your name" and "unlock with fingerprint or face" on the create screen are left out.
+- Add a contact has **My code** (a real QR of your card), **Paste a card** and **Share**; **scanning with the
+  camera** is not built.
+- 6 Link a new device and the "contact added a device" notice are not built; the button says so.
+- The chat list searches names, not message history. Files, voice and the on-device assistant are not built.
+- A one-to-one chat shows no per-device delivery line (the engine does not record it).
+
+## Build
+
+Needs the JDK 17, the Android SDK (platform 35, build-tools 35, NDK 27), `cargo-ndk` and the Rust targets
+`x86_64-linux-android` and `aarch64-linux-android`.
+
+```
+export ANDROID_NDK_HOME=<sdk>/ndk/27.2.12479018 JAVA_HOME=<jdk17> ANDROID_HOME=<sdk>
+bash android/build-native.sh --release            # builds libspike_mobile.so into jniLibs/
+cd android && ./gradlew assembleDebug             # app/build/outputs/apk/debug/app-debug.apk
+```
+
+`local.properties` (`sdk.dir=...`) is not committed.
+
+## Try it against a real relay on this PC
+
+```
+target/debug/spike-relay.exe --listen 127.0.0.1:8787
+adb reverse tcp:8787 tcp:8787      # the phone reaches the PC's relay as its own localhost (no plain ws:// opt-in)
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+node android/drive_mobile.mjs [screenshot-dir]
+```
+
+`drive_mobile.mjs` drives the real phone app (through uiautomator and adb) and the real desktop app (through
+the DevTools protocol) against that relay: create the identity on the phone, add each other, a one-to-one chat
+both ways, a large group both ways, with nobody syncing by hand. Debug builds also have a `DebugReceiver` that
+runs a bridge command from `adb shell am broadcast` and logs the answer under the tag `SpikeDebug`; it is not in
+release builds.
+
+## Known limits
+
+- The app listens to the relay only while it is on screen (no foreground service, no push notifications).
+- Only the emulator (x86_64) has been run. The arm64 library builds but has not been run on a phone.
+- Debug builds only; no signing, no Play Store packaging.
+- The listener's passphrase screen has no biometric unlock. Nothing here has been independently reviewed.
