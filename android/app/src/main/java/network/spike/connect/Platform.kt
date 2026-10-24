@@ -25,6 +25,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -285,17 +286,42 @@ class ListenerService : Service() {
         }
         Listener.background = true
         Listener.update(this)
+        // The system may have stopped the app and restarted this service (or the phone restarted): with the person's
+        // opt-in, open the engine again without them, so calls and messages keep arriving.
+        scope.launch {
+            try {
+                Bridge.ensureOpen(applicationContext)
+                val st = Bridge.obj("app_status")
+                if (!st.getBoolean("unlocked")) {
+                    val p = BackgroundUnlock.passphrase(applicationContext)
+                    if (p != null && st.getBoolean("exists")) {
+                        Bridge.call("unlock", args("passphrase" to p))
+                        Trace.add("reopened after the system stopped the app")
+                    }
+                }
+                if (Bridge.obj("app_status").getBoolean("unlocked")) {
+                    Listener.ready = true
+                    Listener.update(applicationContext)
+                    CallManager.start(applicationContext)
+                }
+            } catch (e: Exception) {
+                Trace.add("could not reopen in the background: ${e.message?.take(60)}")
+            }
+        }
         // Keep the Wi-Fi radio awake while the screen is off, so a call can reach a locked phone.
         if (wifiLock == null) {
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
             wifiLock = wm.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "spike:listen").apply { setReferenceCounted(false); acquire() }
         }
-        return START_NOT_STICKY
+        // Sticky only for people who allowed the app to reopen itself; otherwise a stopped service stays stopped.
+        return if (BackgroundUnlock.enabled(this)) START_STICKY else START_NOT_STICKY
     }
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
 
     override fun onDestroy() {
+        scope.cancel()
         try { wifiLock?.release() } catch (_: Exception) {}
         wifiLock = null
         Listener.background = false
@@ -422,6 +448,66 @@ object BioLock {
             done(null, "Your fingerprints changed, so type your passphrase and turn fingerprint unlock on again.")
         } catch (e: Exception) {
             done(null, e.message ?: "could not start")
+        }
+    }
+}
+
+/**
+ * Lets the app reopen itself in the background after the system stopped it or the phone restarted (opt-in). The
+ * passphrase is kept sealed under a hardware-backed key that needs no fingerprint, so the background service can use it
+ * with nobody there. Without this the passphrase is asked again after a restart, which is safer: anyone who can unlock
+ * this phone and run this app could read messages with it on. It is off by default and says so where it is turned on.
+ */
+object BackgroundUnlock {
+    private const val ALIAS = "spike_bg_v1"
+    private fun p(c: Context) = c.getSharedPreferences("spike_bg", Context.MODE_PRIVATE)
+    fun enabled(c: Context): Boolean = p(c).contains("blob")
+
+    private fun key(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
+        val spec = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .build()
+        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply { init(spec) }.generateKey()
+    }
+
+    fun enable(c: Context, passphrase: String) {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+        val sealed = cipher.doFinal(passphrase.toByteArray())
+        p(c).edit()
+            .putString("iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .putString("blob", Base64.encodeToString(sealed, Base64.NO_WRAP))
+            .apply()
+        // A running service decided at its start whether the system may restart it: start it again to say yes.
+        if (Prefs.notifyInBackground(c)) try { ListenerService.start(c) } catch (_: Exception) {}
+    }
+
+    fun disable(c: Context) {
+        p(c).edit().clear().apply()
+        if (Prefs.notifyInBackground(c)) try { ListenerService.start(c) } catch (_: Exception) {}
+        try { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS) } catch (_: Exception) {}
+    }
+
+    fun passphrase(c: Context): String? = try {
+        val iv = p(c).getString("iv", null)
+        val blob = p(c).getString("blob", null)
+        if (iv == null || blob == null) null else {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+                init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
+            }
+            String(cipher.doFinal(Base64.decode(blob, Base64.NO_WRAP)))
+        }
+    } catch (_: Exception) { null }
+}
+
+/** Starts the listener again after the phone restarts or the app is updated, if the person allowed that. */
+class BootReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (Prefs.notifyInBackground(context) && BackgroundUnlock.enabled(context) && Notifier.allowed(context)) {
+            try { ListenerService.start(context) } catch (_: Exception) {}
         }
     }
 }

@@ -996,6 +996,32 @@ fun SettingsTab(m: AppModel) {
                 Muted("Fingerprint or face unlock needs a fingerprint or face set up in the phone's settings.", 12.5.sp)
             }
             CallSetup()
+            var bg by remember { mutableStateOf(BackgroundUnlock.enabled(ctx)) }
+            var askBg by remember { mutableStateOf(false) }
+            var bgPass by remember { mutableStateOf("") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Keep receiving after a restart", fontWeight = FontWeight.Medium)
+                    Muted("Lets the app open itself again, without you, after the phone restarts or the system stops it, so calls and messages keep arriving. Your passphrase is then kept sealed by this phone's hardware, with no fingerprint needed: anyone who can unlock this phone and open this app could read your messages. Needs \"Alerts while the app is closed\".", 12.5.sp)
+                }
+                Switch(bg, { want ->
+                    if (!want) { BackgroundUnlock.disable(ctx); bg = false } else askBg = true
+                }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+            }
+            if (askBg) {
+                Field("Passphrase", bgPass, { bgPass = it }, password = true, helper = "Type it once so it can be sealed for the background.")
+                PrimaryButton("Turn on", enabled = bgPass.isNotEmpty()) {
+                    val typed = bgPass
+                    m.run {
+                        // The engine says whether it is the right passphrase before anything is stored.
+                        Bridge.call("unlock", args("passphrase" to typed))
+                        BackgroundUnlock.enable(ctx, typed)
+                        bg = true; askBg = false; bgPass = ""
+                        m.notice = "On. The app can reopen itself after a restart."
+                        m.refresh()
+                    }
+                }
+            }
             var showTrace by remember { mutableStateOf(false) }
             Row(Modifier.clickable { showTrace = !showTrace }, verticalAlignment = Alignment.CenterVertically) {
                 Text("Call diagnostics", fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))

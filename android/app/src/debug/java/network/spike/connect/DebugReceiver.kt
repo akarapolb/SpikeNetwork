@@ -20,6 +20,13 @@ class DebugReceiver : BroadcastReceiver() {
             Log.i("SpikeDebug", "$tag#end")
             return
         }
+        if (cmd == "_bgunlock") {
+            // Turn on "Keep receiving after a restart" with this passphrase (tests only).
+            BackgroundUnlock.enable(context, args)
+            Log.i("SpikeDebug", "$tag#0 {\"ok\":\"bg unlock on\"}")
+            Log.i("SpikeDebug", "$tag#end")
+            return
+        }
         val pending = goAsync()
         thread {
             try {

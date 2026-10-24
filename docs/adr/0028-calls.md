@@ -94,3 +94,30 @@ One honest design point on candidates: the caller must include its candidates in
 - Test-harness note: this WebView2 ends the fake camera at once unless it runs with `--disable-gpu`; the drivers pass that flag.
 - Ringing a locked phone, learned on a real Samsung phone: the connection and the alert were fine from the start (the in-app Call diagnostics showed every call arriving); the screen did not wake until the call was shown by its own small `CallActivity` (declared show-when-locked and turn-screen-on, task separate from the app so only the call is ever visible) opened from a call-style notification with Answer and Decline, plus a wake lock and vibration. Settings has a "Calls on this phone" checklist (notifications, urgent call channel, lock-screen calls, battery, display over other apps, and each maker's autostart list) so other makers' switches are one tap away; with "display over other apps" on, the call window is opened directly and no longer depends on a maker's full-screen-alert rules. Not tested on makers other than Samsung and the emulator. A self-managed Telecom `ConnectionService` would be the next step for the most consistent behaviour across makers.
 - **Not built:** TURN (cross-network calls) and group calls; Android video is tried only with the emulator's virtual camera; the call log entry in the conversation, any screen, WebRTC on either platform, the Android alert/foreground service, the emulator-to-desktop audio driver, a test with two devices on the callee side (the state machine covers it; the end-to-end test does not).
+
+## Update: phase 3 built, 2026-10-24
+
+- **TURN (calls across networks).** The relay (`--turn-url`, `--turn-secret`, `--turn-ttl-secs`) hands a signed-in device a
+  short-lived login for the operator's TURN server (`ClientMsg::TurnCredentials`; coturn's `use-auth-secret` scheme,
+  `core/src/turn.rs`, verified against the RFC 2202 vector). Both apps fetch one when a call starts and pass it to WebRTC;
+  Settings has "Always use the relay for calls" (relay candidates only: the other person never sees this device's address).
+  `docs/turn.md` is the coturn guide. `relay/examples/turn_test_server.rs` is a stand-in that accepts the same logins;
+  `desktop/drive_turn.mjs` proves a call whose both ends use relay candidates only connects and carries audio, and that
+  with the setting off the same call goes direct. Not tried: real coturn, TLS TURN (`turns:`), a phone on mobile data.
+- **Network changes mid-call.** Three new signals (`Restart`, `RestartAnswer`, `RestartAsk`), valid only inside the
+  active call, from the device on the other end, in the right direction (the caller offers, the callee answers or asks).
+  A dropped connection (3 s) or a network change restarts ICE on the same call with a fresh TURN login; if it does not
+  recover in 20 s the call ends. `desktop/drive_restart.mjs` (two desktops) and `android/drive_net.mjs` (the emulator's
+  Wi-Fi switched off for 12 s and on) show the call carrying on; the phone logs "network changed during a call".
+- **Closed app.** Spike calls are registered with Android's calling framework (a self-managed `ConnectionService`,
+  `Telecom.kt`): the system accepts the call, asks the app for its UI, and treats it as a call. If it refuses, the old alert
+  is used. "Keep receiving after a restart" (off by default) seals the passphrase under a hardware key that needs no
+  fingerprint, so the listener service, now sticky, reopens the engine itself after the system kills the app
+  (`android/drive_bg.mjs`: process killed with `kill -9`, the service came back, a call rang with nobody opening the app).
+  A boot receiver starts it after a restart, but that path is not driven here (the system refuses a boot broadcast sent
+  from `adb`). The trade-off is stated where the switch is: anyone who can unlock the phone and open the app could read messages.
+- **Not built: wake-up without Google push (UnifiedPush).** A force-stopped app receives nothing until it is opened, whatever
+  the transport, and a wake-up for a killed-but-not-stopped app needs the background unlock above. With that now in place a
+  UnifiedPush path is feasible: the relay would POST an empty message to an endpoint the device registered (needs an HTTP
+  client in the relay, https only, no private addresses, one push per few seconds), and the app would reopen on the broadcast.
+  It needs a distributor app (ntfy, ...) on the phone and a push server, so it cannot be driven here.
