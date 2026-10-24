@@ -22,6 +22,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # RustSec advisories are published without any change to our code, so CI on pushes alone never sees them.
+  # This is the same check CI runs, on a schedule (both lockfiles). A failure here means: read the advisory,
+  # upgrade, or add a dated, reasoned entry to deny.toml.
+  rustsec:
+    name: cargo-deny advisories
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny --manifest-path Cargo.toml check advisories
+      - run: cargo deny --manifest-path desktop/src-tauri/Cargo.toml check advisories
+
   openmls-advisories:
     name: openmls advisories
     runs-on: ubuntu-24.04
