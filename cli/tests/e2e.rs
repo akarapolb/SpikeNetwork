@@ -245,7 +245,7 @@ async fn wrong_key_cannot_authenticate() {
     let ServerMsg::Challenge { nonce } = serde_json::from_str(&t).unwrap() else {
         panic!()
     };
-    let sig = eve.sign_auth(&hex::decode(nonce).unwrap());
+    let sig = eve.sign_auth(&hex::decode(nonce).unwrap(), "irrelevant");
     let auth = ClientMsg::Auth {
         ed25519: hex::encode(bob.ed_public()),
         sig: hex::encode(sig),
@@ -260,6 +260,61 @@ async fn wrong_key_cannot_authenticate() {
         serde_json::from_str::<ServerMsg>(&t).unwrap(),
         ServerMsg::Error { .. }
     ));
+}
+
+/// Sign in by hand, signing for `audience`. Returns the relay's first answer after the signature.
+async fn raw_sign_in(url: &str, who: &Identity, audience: &str) -> ServerMsg {
+    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+    let Message::Text(t) = ws.next().await.unwrap().unwrap() else {
+        panic!()
+    };
+    let ServerMsg::Challenge { nonce } = serde_json::from_str(&t).unwrap() else {
+        panic!()
+    };
+    let auth = ClientMsg::Auth {
+        ed25519: hex::encode(who.ed_public()),
+        sig: hex::encode(who.sign_auth(&hex::decode(nonce).unwrap(), audience)),
+    };
+    ws.send(Message::Text(serde_json::to_string(&auth).unwrap()))
+        .await
+        .unwrap();
+    let Message::Text(t) = ws.next().await.unwrap().unwrap() else {
+        panic!()
+    };
+    serde_json::from_str(&t).unwrap()
+}
+
+#[tokio::test]
+async fn sign_in_answer_is_bound_to_the_relay_it_was_made_for() {
+    // A hostile relay M that relays its own client's connection to this relay B gets B's challenge,
+    // has the client sign it, and forwards the answer. The client signed for M's name, not B's.
+    let url = start_relay(Config::default()).await;
+    let host = url.trim_start_matches("ws://").to_string();
+    let alice = Identity::generate().unwrap();
+
+    let r = raw_sign_in(&url, &alice, "hostile-relay.example").await;
+    assert!(
+        matches!(&r, ServerMsg::Error { code, .. } if code == "auth_failed"),
+        "{r:?}"
+    );
+    // Signed for the name this connection used (the Host header), it works.
+    let r = raw_sign_in(&url, &alice, &host).await;
+    assert!(matches!(r, ServerMsg::Ready { .. }), "{r:?}");
+}
+
+#[tokio::test]
+async fn relay_audience_can_be_set_for_proxies_that_rewrite_host() {
+    let cfg = Config {
+        auth_audience: Some("relay.example.org".into()),
+        ..Config::default()
+    };
+    let url = start_relay(cfg).await;
+    let alice = Identity::generate().unwrap();
+    // Clients sign for the public name even though the connection used a different Host.
+    let r = raw_sign_in(&url, &alice, "Relay.Example.Org:443").await;
+    assert!(matches!(r, ServerMsg::Ready { .. }), "{r:?}");
+    let r = raw_sign_in(&url, &alice, "127.0.0.1").await;
+    assert!(matches!(r, ServerMsg::Error { .. }), "{r:?}");
 }
 
 #[tokio::test]
@@ -868,4 +923,20 @@ fn legacy_contact_upgrades_to_signed_identity_and_must_reverify() {
         "the new identity key has not been compared yet"
     );
     assert!(!c.identity().unwrap().is_legacy());
+}
+
+#[tokio::test]
+async fn too_many_prekeys_in_one_request_are_refused_before_any_signature_is_checked() {
+    let url = start_relay(Config::default()).await;
+    let mut alice = Identity::generate().unwrap();
+    let mut a = Relay::connect(&url, &alice).await.unwrap();
+    // `fresh_prekeys` caps one call, so a hostile client builds an oversized batch from two.
+    let mut many = alice.fresh_prekeys(spike_core::identity::MAX_PREKEYS);
+    many.extend(alice.fresh_prekeys(10));
+    assert!(many.len() > spike_core::identity::MAX_PREKEYS);
+    let e = a.publish_prekeys(&many).await.unwrap_err().to_string();
+    assert!(e.contains("too_large"), "{e}");
+    // A normal batch still works on the same connection.
+    let few = alice.fresh_prekeys(5);
+    a.publish_prekeys(&few).await.unwrap();
 }

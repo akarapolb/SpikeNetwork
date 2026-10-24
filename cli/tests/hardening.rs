@@ -257,3 +257,97 @@ async fn many_busy_connections_do_not_stall_each_other() {
         started.elapsed()
     );
 }
+
+// ---- Audit fixes (docs/review/audit-findings.md) -------------------------------------------------
+
+/// A client that connects and says nothing must be dropped, not held open (slowloris).
+#[tokio::test]
+async fn a_silent_connection_is_dropped_before_the_handshake_finishes() {
+    let url = relay_with(Config {
+        auth_timeout: Duration::from_millis(300),
+        ..Config::default()
+    })
+    .await;
+    let mut s = TcpStream::connect(url.trim_start_matches("ws://"))
+        .await
+        .unwrap();
+    let mut buf = [0u8; 16];
+    let n = tokio::time::timeout(Duration::from_secs(5), s.read(&mut buf))
+        .await
+        .expect("the relay closed the silent connection")
+        .unwrap_or(0);
+    assert_eq!(n, 0, "closed without sending anything");
+}
+
+/// Pings are cheap but metered: a flood runs into the rate limit.
+#[tokio::test]
+async fn a_ping_flood_is_rate_limited() {
+    use futures_util::SinkExt;
+    let url = relay_with(Config {
+        req_rate: 1.0,
+        req_burst: 5.0,
+        ..Config::default()
+    })
+    .await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let Some(Ok(Message::Text(t))) = ws.next().await else {
+        panic!("no challenge")
+    };
+    let spike_core::wire::ServerMsg::Challenge { nonce } = serde_json::from_str(&t).unwrap() else {
+        panic!("not a challenge")
+    };
+    let id = Identity::generate().unwrap();
+    let sig = id.sign_auth(
+        &hex::decode(nonce).unwrap(),
+        url.trim_start_matches("ws://"),
+    );
+    let auth = spike_core::wire::ClientMsg::Auth {
+        ed25519: hex::encode(id.ed_public()),
+        sig: hex::encode(sig),
+    };
+    ws.send(Message::Text(serde_json::to_string(&auth).unwrap()))
+        .await
+        .unwrap();
+    let ping = serde_json::to_string(&spike_core::wire::ClientMsg::Ping).unwrap();
+    for _ in 0..40 {
+        if ws.send(Message::Text(ping.clone())).await.is_err() {
+            break;
+        }
+    }
+    let mut limited = false;
+    let mut seen: Vec<String> = Vec::new();
+    while let Ok(Some(Ok(Message::Text(t)))) =
+        tokio::time::timeout(Duration::from_secs(2), ws.next()).await
+    {
+        seen.push(t.chars().take(60).collect::<String>());
+        if t.contains("rate_limited") {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "a flood of pings gets rate_limited; saw {seen:?}");
+}
+
+/// A contact can put any number in an envelope's clock. With overflow checks on, taking it at face value made
+/// every later send panic.
+#[test]
+fn a_hostile_clock_value_does_not_wedge_sending() {
+    use spike_cli::state::Home;
+    use spike_core::vault::KdfParams;
+    let dir = std::env::temp_dir().join(format!(
+        "spike-test-lamport-{}",
+        hex::encode(&Identity::generate().unwrap().ed_public()[..6])
+    ));
+    let home = Home::create(
+        dir,
+        "a long enough passphrase",
+        KdfParams::insecure_for_tests(),
+        false,
+    )
+    .unwrap();
+    home.observe_lamport(u64::MAX).unwrap();
+    let a = home.next_lamport().unwrap();
+    let b = home.next_lamport().unwrap();
+    assert!(b > a, "the clock still moves forward");
+    assert!(b < u64::MAX / 2, "and stays far from the end of the range");
+}
