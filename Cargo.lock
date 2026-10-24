@@ -2989,6 +2989,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "turn",
+ "webpki-roots 0.26.11",
  "webrtc-util",
 ]
 
