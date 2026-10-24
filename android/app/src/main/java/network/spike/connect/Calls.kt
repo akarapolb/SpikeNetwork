@@ -228,6 +228,7 @@ object CallManager {
                 when (s) {
                     PeerConnection.PeerConnectionState.CONNECTED -> {
                         discJob?.cancel(); giveUpJob?.cancel(); restarted = false
+                        telecom?.setActive()
                         // What was negotiated, without any content: media lines and directions only.
                         for ((n, d) in listOf("local" to pc?.localDescription, "remote" to pc?.remoteDescription)) {
                             val lines = (d?.description ?: "").lines().filter { it.startsWith("m=") || it.startsWith("a=sendrecv") || it.startsWith("a=recvonly") || it.startsWith("a=sendonly") || it.startsWith("a=inactive") }
@@ -332,7 +333,7 @@ object CallManager {
     fun call(name: String, verified: Boolean, video: Boolean = false) {
         if (ui != null) return
         ui = CallUi(name, false, "calling", verified = verified, video = video)
-        appCtx?.let { CallService.start(it, video) }
+        appCtx?.let { CallService.start(it, video); SpikeTelecom.outgoing(it, name) }
         watchNetwork()
         scope.launch {
             try {
@@ -357,6 +358,7 @@ object CallManager {
         stopRing()
         ui = u.copy(status = "connecting")
         appCtx?.let { CallService.start(it, u.video) }
+        telecom?.setActive()
         watchNetwork()
         scope.launch {
             try {
@@ -493,8 +495,13 @@ object CallManager {
                 callId = ev.getString("call"); offerSdp = ev.getString("sdp")
                 ui = CallUi(name, true, "ringing", verified = verified, video = ev.optBoolean("video"))
                 startRing()
-                Notifier.incomingCall(appCtx ?: return, name)
-                Trace.add("incoming call alert posted; channel importance=" + (appCtx!!.getSystemService(android.app.NotificationManager::class.java).getNotificationChannel("calls_v2")?.importance ?: -1) + " (4=high), lock-screen allowed=" + (if (android.os.Build.VERSION.SDK_INT >= 34) appCtx!!.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent().toString() else "n/a") + ", battery-exempt=" + appCtx!!.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(appCtx!!.packageName))
+                alerted = false
+                val c = appCtx ?: return
+                // Let the system know a call is coming in; it asks for our UI (showIncoming). If it will not take the
+                // call, or says nothing, we show the alert ourselves.
+                if (SpikeTelecom.incoming(c, name)) {
+                    scope.launch { delay(1500); if (!alerted && ui?.status == "ringing") showIncoming(name) }
+                } else showIncoming(name)
                 if (ev.optBoolean("glare")) answer()
             }
             "stop_ringing" -> if (ev.getString("call") == callId) stopRing()
@@ -573,12 +580,35 @@ object CallManager {
 
     /** The person pressed Answer on the notification: answer as soon as the call screen is up. */
     @Volatile var pendingAnswer = false
+
+    /** The call as the phone's own call app sees it (Telecom, see Telecom.kt). */
+    @Volatile private var telecom: SpikeConnection? = null
+    @Volatile private var alerted = false
+
+    fun attach(c: SpikeConnection) { telecom = c }
+
+    /** Called when the system asks for the incoming-call UI (or when it refused the call and we show it ourselves). */
+    fun showIncoming(name: String) {
+        val c = appCtx ?: return
+        alerted = true
+        Notifier.incomingCall(c, name)
+        Trace.add("incoming call alert posted; channel importance=" + (c.getSystemService(android.app.NotificationManager::class.java).getNotificationChannel("calls_v2")?.importance ?: -1) + " (4=high), lock-screen allowed=" + (if (android.os.Build.VERSION.SDK_INT >= 34) c.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent().toString() else "n/a") + ", battery-exempt=" + c.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(c.packageName))
+    }
+
+    fun telecomRefused(name: String) { if (!alerted) showIncoming(name) }
+
+    /** Answered from outside the screen (a Bluetooth headset, a car). */
+    fun answerFromSystem() {
+        if (ui?.status == "ringing") { pendingAnswer = false; appCtx?.let { c -> try { c.startActivity(Notifier.callWindow(c).putExtra("answer_call", true)) } catch (_: Exception) { answer() } } ?: answer() }
+    }
     var message by mutableStateOf<String?>(null)
     private fun scopeToast(m: String) { message = m }
 
     private fun endLocal(msg: String?) {
         unwatchNetwork()
         discJob?.cancel(); giveUpJob?.cancel(); restarted = false
+        telecom?.let { try { it.finish(if (msg == null) android.telecom.DisconnectCause.LOCAL else android.telecom.DisconnectCause.REMOTE) } catch (_: Exception) {} }
+        telecom = null
         stopRing()
         stats?.cancel(); stats = null
         iceJob?.cancel()
