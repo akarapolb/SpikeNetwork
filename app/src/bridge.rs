@@ -266,6 +266,8 @@ impl Engine {
                 b(a, "video").unwrap_or(false),
                 &s(a, "sdp")?,
             ))?),
+            "push_register" => val(rt.block_on(x.push_register(&s(a, "url")?))?),
+            "push_unregister" => val(rt.block_on(x.push_unregister())?),
             "call_ice_servers" => val(rt.block_on(x.call_ice_servers())),
             "call_restart" => val(rt.block_on(x.call_restart(&s(a, "sdp")?))?),
             "call_restart_answer" => val(rt.block_on(x.call_restart_answer(&s(a, "sdp")?))?),

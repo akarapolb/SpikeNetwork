@@ -996,6 +996,7 @@ fun SettingsTab(m: AppModel) {
                 Muted("Fingerprint or face unlock needs a fingerprint or face set up in the phone's settings.", 12.5.sp)
             }
             CallSetup()
+            PushSetup { m.notice = it }
             var bg by remember { mutableStateOf(BackgroundUnlock.enabled(ctx)) }
             var askBg by remember { mutableStateOf(false) }
             var bgPass by remember { mutableStateOf("") }

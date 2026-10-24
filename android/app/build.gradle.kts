@@ -90,4 +90,6 @@ dependencies {
     implementation("com.google.zxing:core:3.5.3")
     // Voice calls (ADR 0028): WebRTC for Android, from Maven Central.
     implementation("io.getstream:stream-webrtc-android:1.3.10")
+    // Wake-ups without Google: the open UnifiedPush standard (ADR 0028).
+    implementation("org.unifiedpush.android:connector:3.0.10")
 }

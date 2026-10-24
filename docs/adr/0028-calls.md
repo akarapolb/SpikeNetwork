@@ -116,8 +116,13 @@ One honest design point on candidates: the caller must include its candidates in
   (`android/drive_bg.mjs`: process killed with `kill -9`, the service came back, a call rang with nobody opening the app).
   A boot receiver starts it after a restart, but that path is not driven here (the system refuses a boot broadcast sent
   from `adb`). The trade-off is stated where the switch is: anyone who can unlock the phone and open the app could read messages.
-- **Not built: wake-up without Google push (UnifiedPush).** A force-stopped app receives nothing until it is opened, whatever
-  the transport, and a wake-up for a killed-but-not-stopped app needs the background unlock above. With that now in place a
-  UnifiedPush path is feasible: the relay would POST an empty message to an endpoint the device registered (needs an HTTP
-  client in the relay, https only, no private addresses, one push per few seconds), and the app would reopen on the broadcast.
-  It needs a distributor app (ntfy, ...) on the phone and a push server, so it cannot be driven here.
+- **Wake-up without Google push (UnifiedPush): built.** Relay: `RegisterPush` / `UnregisterPush` (schema v4), and when a
+  message is queued for a device with no live connection the relay sends one empty POST ("spike") to its endpoint
+  (`relay/src/push.rs`): https only, no credentials, a resolved address that must be public (checked before connecting, to that
+  address), no redirects, short timeouts, 16 at a time, one per device per 5 s, a 404/410 forgets the endpoint, `--no-push`
+  to switch off. Android: the connector library (3.0.10, Kotlin-2.0 compatible) with a receiver; Settings has the switch; the
+  app leaves the endpoint with the relay once the engine is open; a wake-up opens the engine (needs "Keep receiving after a
+  restart"), reads, and lets the call ring. Tested: five relay tests against a local endpoint (a push for an offline device,
+  none for an online or unregistered one, coalescing, 410 forgets, private/odd endpoints refused) and
+  `android/drive_push.mjs` (process killed; the relay posts the wake-up; the wake-up delivered by `adb` to the killed app;
+  the phone rings). Not tested: a real push app or server, the push app's own battery rules. `docs/unifiedpush.md`.

@@ -146,6 +146,24 @@ impl Session {
         servers
     }
 
+    /// Leave the relay a push address for this device (UnifiedPush, ADR 0028): while the device is not connected, a
+    /// message queued for it makes the relay send one content-free wake-up there.
+    pub async fn push_register(&self, url: &str) -> Result<()> {
+        let me = self.home.load_identity()?;
+        let target = self.target();
+        let _net = self.net.lock().await;
+        let mut relay = spike_cli::client::Relay::connect(target, &me).await?;
+        relay.register_push(url).await
+    }
+
+    pub async fn push_unregister(&self) -> Result<()> {
+        let me = self.home.load_identity()?;
+        let target = self.target();
+        let _net = self.net.lock().await;
+        let mut relay = spike_cli::client::Relay::connect(target, &me).await?;
+        relay.unregister_push().await
+    }
+
     /// Place a call to a contact. `sdp` is the offer the screen made; returns the call id.
     pub async fn call_start(&self, name: &str, video: bool, sdp: &str) -> Result<String> {
         let contacts = self.home.load_contacts()?;

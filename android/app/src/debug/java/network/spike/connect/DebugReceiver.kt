@@ -27,6 +27,25 @@ class DebugReceiver : BroadcastReceiver() {
             Log.i("SpikeDebug", "$tag#end")
             return
         }
+        if (cmd == "_pushendpoint") {
+            // As if the push app had just given us this address (tests only).
+            PushWake.gotEndpoint(context, args)
+            Log.i("SpikeDebug", "$tag#0 {\"ok\":\"endpoint set\"}")
+            Log.i("SpikeDebug", "$tag#end")
+            return
+        }
+        if (cmd == "_pushwake") {
+            // As if a wake-up had arrived from the push app (tests only). Stays alive until the work is done.
+            val p = goAsync()
+            kotlin.concurrent.thread {
+                try {
+                    val ok = kotlinx.coroutines.runBlocking { PushWake.wake(context.applicationContext) }
+                    Log.i("SpikeDebug", "$tag#0 {\"ok\":$ok}")
+                    Log.i("SpikeDebug", "$tag#end")
+                } finally { p.finish() }
+            }
+            return
+        }
         val pending = goAsync()
         thread {
             try {

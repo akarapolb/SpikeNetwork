@@ -142,7 +142,7 @@ private fun Root() {
         onDispose { Listener.onRead = null; Listener.onDirect = null }
     }
     LaunchedEffect(m.status) {
-        if (m.status == "ready") CallManager.start(ctx) else CallManager.stop()
+        if (m.status == "ready") { CallManager.start(ctx); PushWake.syncRelay(ctx) } else CallManager.stop()
         Listener.ready = m.status == "ready"
         Listener.update(ctx)
         if (m.status == "ready" && Prefs.notifyInBackground(ctx) && Notifier.allowed(ctx)) ListenerService.start(ctx)
