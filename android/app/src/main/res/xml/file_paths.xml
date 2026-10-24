@@ -2,4 +2,6 @@
 <paths>
     <!-- Files received in a chat, saved by the app and opened from here. -->
     <files-path name="received" path="received/" />
+    <!-- A sealed identity backup waiting to be shared (ADR 0029); removed when the screen closes. -->
+    <cache-path name="backup" path="backup/" />
 </paths>

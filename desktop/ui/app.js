@@ -77,6 +77,7 @@ async function gate(mode) {
     create ? [h("div", { class: "field" }, pass2), h("div", { class: "note", id: "passHelp" }, "10 characters or more. It encrypts your keys and history here. If you lose it and have no other device, this identity cannot be recovered.")] : h("div", { id: "passHelp", class: "sr" }, ""),
     err, btn,
     create ? h("label", { class: "toggle" }, h("input", { type: "checkbox", onchange: (e) => { st.linkNew = e.target.checked; } }), h("span", {}, "I already use Spike on another device: link this computer to it after setup")) : null,
+    create ? h("button", { class: "btn", type: "button", onclick: () => restoreGate() }, "Restore from a backup file") : null,
     h("p", { class: "note" }, "Unreviewed prototype software: do not use it for real secrets yet.")));
   pass.focus();
 }
@@ -364,7 +365,7 @@ function devicesMain() {
         h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, d.this ? "This computer" : "Another device"), h("div", { class: "note mono" }, d.id + (d.relay ? " · " + d.relay : "")), d.approver ? h("div", { class: "note" }, "Main device: decides agent requests and links new devices") : null),
         d.this ? h("span", { class: "pill neutral" }, "You are here") : (me.approver ? h("button", { class: "btn danger", type: "button", onclick: () => removeDevice(d) }, "Remove") : null)))),
       h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Your identity"), h("span", { class: "mono", style: "font-size:16px;overflow-wrap:anywhere" }, me.fingerprint), h("span", { class: "note" }, "Contacts compare this when they verify you. It signs your device list; it never signs messages.")),
-      h("div", { class: "status soft" }, h("b", {}, "Encrypted backup is not available yet."), h("span", {}, "Keep at least one other device linked: if you lose every device and the passphrase, the identity is gone.")))) ];
+      h("div", { class: "status soft" }, h("b", {}, "Losing every device."), h("span", {}, "Keep another device linked, or make an encrypted backup file in Settings: with neither, if you lose every device and the passphrase, the identity is gone.")))) ];
 }
 async function removeDevice(d) {
   if (!confirm("Remove this device from your identity?\n\nIt keeps what it already has but will receive nothing new, and your contacts stop sending to it. Link it again later if you change your mind.")) return;
@@ -458,6 +459,7 @@ function directCard() {
       h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
         h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Relay saved."); await refresh(); syncNow(); } catch (e) { toast(String(e)); } } }, "Save relay"),
         h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Connecting…"); toast(await invoke("test_relay")); } catch (e) { toast(String(e)); } } }, "Test connection"))),
+    backupCard(),
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Trust for a relay you run yourself"),
       h("span", {}, st.ov.relay_trust.ca_certs ? `${st.ov.relay_trust.ca_certs} extra certificate${st.ov.relay_trust.ca_certs > 1 ? "s are" : " is"} trusted, as well as the usual public ones.` : "Only the usual public certificate authorities are trusted."),
       h("span", { class: "note" }, "A relay with a self-signed or private certificate needs that certificate trusted here: choose its .crt or .pem file (the certificate, never the private key)."),
@@ -478,6 +480,85 @@ function directCard() {
     updatesCard(),
     h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "calls (designed, not built), an installer with auto-update, and desktop notification banners (the taskbar flashes instead). This is an unreviewed prototype.")),
     h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: lockNow }, icon("lock"), "Lock now")))];
+}
+
+/* ---------- backup and recovery (ADR 0029) ---------- */
+const BACKUP_WARNING = "This file is a copy of your identity. Anyone who has it and knows its passphrase can pretend to be you and will receive your new messages. Keep it somewhere only you can reach, and keep the passphrase separate from the file. There is no copy on any server: if you lose both this file and your devices, your identity cannot be recovered. A restored account starts new conversations with each contact, and messages sent to you while you were locked out of every device may be lost.";
+function backupCard() {
+  const b = st.bk || (st.bk = {});
+  if (!st.bkLoaded) { st.bkLoaded = true; invoke("backup_status").then((s) => { b.status = s; render(); }).catch(() => {}); }
+  const s = b.status;
+  const own = h("input", { id: "bkOwn", type: "password", class: "mono", autocomplete: "new-password", "aria-label": "Your own backup passphrase", placeholder: "or type your own passphrase (14+ characters)", value: b.own || "", oninput: (e) => { b.own = e.target.value; } });
+  const makeKey = async () => { try { b.key = await invoke("backup_new_key"); b.ack = false; b.saved = null; render(); } catch (e) { toast(String(e)); } };
+  const save = async () => {
+    const pass = b.own || b.key;
+    if (!pass) return toast("Make a backup key, or type your own passphrase.");
+    if (!b.own && !b.ack) return toast("Tick the box to say you wrote the key down.");
+    b.busy = true; render();
+    try { b.saved = await invoke("backup_export", { passphrase: pass, history: !!b.history }); b.key = null; b.own = ""; b.ack = false; b.status = await invoke("backup_status"); }
+    catch (e) { toast(String(e)); }
+    b.busy = false; render();
+  };
+  return h("section", { class: "card", id: "backupCard" }, h("h2", { class: "eyebrow" }, "Backup and recovery"),
+    s ? h("div", { class: "status " + (s.stale ? "warn" : "soft"), role: s.stale ? "alert" : "status" }, h("b", {}, s.last_ms ? "Last backup: " + new Date(s.last_ms).toLocaleString() : "No backup yet"), s.stale && s.reason ? h("span", {}, s.reason + " Make a new one and delete the old file.") : null) : null,
+    h("div", { class: "status soft" }, h("span", {}, BACKUP_WARNING)),
+    b.key ? [h("div", { class: "note" }, "Your backup key. It is shown once and is not stored. Write it down and keep it apart from the file:"),
+      h("span", { class: "mono", id: "bkKey", style: "font-size:18px;overflow-wrap:anywhere;user-select:all" }, b.key),
+      h("label", { class: "toggle" }, h("input", { id: "bkAck", type: "checkbox", checked: b.ack || null, onchange: (e) => { b.ack = e.target.checked; } }), h("span", {}, "I wrote the key down"))]
+      : h("button", { class: "btn", id: "bkMake", style: "align-self:flex-start", type: "button", onclick: makeKey }, "Make a backup key (recommended)"),
+    h("div", { class: "field" }, own),
+    h("label", { class: "toggle" }, h("input", { id: "bkHist", type: "checkbox", checked: b.history || null, onchange: (e) => { b.history = e.target.checked; } }), h("span", {}, "Include my message history", h("div", { class: "note" }, "Makes the file larger and more valuable to anyone who gets it. Files are not included."))),
+    b.saved ? h("div", { class: "status soft", id: "bkSaved", role: "status" }, h("b", {}, "Saved."), h("span", {}, b.saved + ". Move it somewhere safe.")) : null,
+    h("button", { class: "btn primary", id: "bkSave", style: "align-self:flex-start", type: "button", disabled: b.busy || null, onclick: save }, b.busy ? "Sealing…" : "Save backup file"));
+}
+function restoreGate() {
+  const r = { step: "open", file: null, summary: null, busy: false, err: "" };
+  const enc = encodeURIComponent;
+  const back = () => { invoke("backup_cancel").catch(() => {}); gate("create"); };
+  const draw = () => {
+    const err = h("div", { class: "err", role: "alert", hidden: r.err ? null : true }, r.err);
+    if (r.step === "open") {
+      const picker = h("input", { id: "rsFile", type: "file", onchange: (e) => { r.file = e.target.files[0] || null; } });
+      const pass = h("input", { id: "rsPass", type: "password", class: "mono", autocomplete: "off", "aria-label": "Backup key or passphrase" });
+      const open = async (e) => {
+        e.preventDefault(); r.err = "";
+        if (!r.file) { r.err = "Choose the backup file."; return draw(); }
+        r.busy = true; draw();
+        try { r.summary = await invoke("backup_open", new Uint8Array(await r.file.arrayBuffer()), { headers: { "x-passphrase": enc(pass.value) } }); r.step = "confirm"; }
+        catch (x) { r.err = String(x); }
+        r.busy = false; draw();
+      };
+      return $("gate").replaceChildren(h("form", { class: "gatebox", onsubmit: open },
+        h("span", { class: "eyebrow" }, "Spike Connect"), h("h1", {}, "Restore from a backup"),
+        h("p", { class: "lead" }, "Choose the backup file you saved and type its key or passphrase."),
+        h("label", { class: "lbl", for: "rsFile", style: "font-weight:600" }, "Backup file"), picker,
+        h("label", { class: "lbl", for: "rsPass", style: "font-weight:600" }, "Backup key or passphrase"), h("div", { class: "field" }, pass),
+        err, h("button", { class: "btn primary big", id: "rsOpen", type: "submit", disabled: r.busy || null }, r.busy ? "Opening…" : "Open backup"),
+        h("button", { class: "btn", type: "button", onclick: back }, "Back")));
+    }
+    const sm = r.summary;
+    const p1 = h("input", { id: "rsDev1", type: "password", autocomplete: "new-password", "aria-label": "New passphrase for this computer" });
+    const p2 = h("input", { id: "rsDev2", type: "password", autocomplete: "new-password", "aria-label": "Repeat the passphrase" });
+    const relay = h("input", { id: "rsRelay", class: "mono", "aria-label": "Relay address", value: sm.relay });
+    const go = async (e) => {
+      e.preventDefault(); r.err = "";
+      if (p1.value !== p2.value) { r.err = "The two passphrases differ."; return draw(); }
+      r.busy = true; draw();
+      try { await invoke("backup_restore", { passphrase: p1.value, relay: relay.value }); await openApp(); return; }
+      catch (x) { r.err = String(x); }
+      r.busy = false; draw();
+    };
+    $("gate").replaceChildren(h("form", { class: "gatebox", onsubmit: go },
+      h("span", { class: "eyebrow" }, "Spike Connect"), h("h1", {}, "Bring your identity back"),
+      h("p", { class: "lead", id: "rsSummary" }, `Backup made ${new Date(sm.created_ms).toLocaleString()}: ${sm.contacts} contact${sm.contacts === 1 ? "" : "s"}, ${sm.groups} group${sm.groups === 1 ? "" : "s"}, ${sm.messages} message${sm.messages === 1 ? "" : "s"}.`),
+      h("div", { class: "status warn" }, h("span", {}, "Restoring signs out every other device that uses this identity, including the one you lost. You can link them again afterwards. This needs the relay to be reachable.")),
+      h("label", { class: "lbl", for: "rsRelay", style: "font-weight:600" }, "Relay"), h("div", { class: "field" }, relay),
+      h("label", { class: "lbl", for: "rsDev1", style: "font-weight:600" }, "Choose a passphrase for this computer"), h("div", { class: "field" }, p1), h("div", { class: "field" }, p2),
+      h("div", { class: "note" }, "10 characters or more. This is a new passphrase for this computer, separate from the backup's."),
+      err, h("button", { class: "btn primary big", id: "rsGo", type: "submit", disabled: r.busy || null }, r.busy ? "Restoring…" : "Restore my identity"),
+      h("button", { class: "btn", type: "button", onclick: back }, "Cancel")));
+  };
+  draw();
 }
 
 /* ---------- updates: only when asked (docs/desktop-release.md) ---------- */

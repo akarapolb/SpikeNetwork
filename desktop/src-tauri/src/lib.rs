@@ -22,6 +22,8 @@ pub struct AppState {
     session: Mutex<Option<Arc<Session>>>,
     /// The task that waits on the relay and wakes a sync. Aborted on lock, so nothing keeps the keys alive.
     listener: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    /// A backup file opened on the create screen, waiting for the person to confirm the restore.
+    backup: Mutex<Option<api::backup::Opened>>,
 }
 
 #[derive(serde::Serialize)]
@@ -726,6 +728,86 @@ async fn save_attachment(
     write_unique(&dir, &name, &bytes).map(|p| p.display().to_string())
 }
 
+// ---- backup and recovery (ADR 0029)
+
+#[tauri::command]
+fn backup_new_key() -> String {
+    api::backup::generate_key()
+}
+
+#[tauri::command]
+fn backup_status(state: State<'_, AppState>) -> Result<api::backup::BackupStatusDto, String> {
+    session(&state)?.backup_status().map_err(err)
+}
+
+/// Seal a backup with its own passphrase and save it to Downloads. Returns the path.
+#[tauri::command]
+async fn backup_export(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    passphrase: String,
+    history: bool,
+) -> Result<String, String> {
+    let s = session(&state)?;
+    // Argon2 at the backup's cost takes a moment: keep it off the UI thread.
+    let bytes = tokio::task::spawn_blocking(move || s.backup_export(&passphrase, history))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err)?;
+    write_unique(&downloads(&app)?, "spike-identity-backup.spikebackup", &bytes)
+        .map(|p| p.display().to_string())
+}
+
+/// The file's bytes are the raw request body; its passphrase is a header.
+#[tauri::command]
+async fn backup_open(
+    state: State<'_, AppState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<api::backup::BackupSummaryDto, String> {
+    if api::exists(&state.dir) {
+        return Err("this device already has an identity".into());
+    }
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the file's bytes".into());
+    };
+    let (bytes, passphrase) = (bytes.clone(), header(&request, "x-passphrase"));
+    let (opened, summary) =
+        tokio::task::spawn_blocking(move || api::backup::backup_open(&bytes, &passphrase))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(err)?;
+    *state.backup.lock().map_err(|_| "internal error".to_string())? = Some(opened);
+    Ok(summary)
+}
+
+#[tauri::command]
+async fn backup_restore(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    passphrase: String,
+    relay: Option<String>,
+) -> Result<(), String> {
+    let opened = state
+        .backup
+        .lock()
+        .map_err(|_| "internal error".to_string())?
+        .take()
+        .ok_or("open the backup file first")?;
+    let s = api::backup::backup_restore(opened, &state.dir, passphrase, KdfParams::default(), relay)
+        .await
+        .map_err(err)?;
+    set(&state, Some(s));
+    start_listener(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn backup_cancel(state: State<'_, AppState>) {
+    if let Ok(mut b) = state.backup.lock() {
+        *b = None;
+    }
+}
+
 #[tauri::command]
 async fn update_check(app: tauri::AppHandle) -> Result<updates::UpdateInfo, String> {
     updates::check(&app).await
@@ -800,12 +882,19 @@ pub fn run() {
                 dir,
                 session: Mutex::new(None),
                 listener: Mutex::new(None),
+                backup: Mutex::new(None),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_status,
             create_identity,
+            backup_new_key,
+            backup_status,
+            backup_export,
+            backup_open,
+            backup_restore,
+            backup_cancel,
             unlock,
             lock,
             overview,

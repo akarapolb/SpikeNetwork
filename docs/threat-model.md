@@ -57,6 +57,7 @@ No anonymity and no metadata protection is claimed.
 | Message lost or duplicated on crash during receive | Mitigated | Stored before ratchet state is saved; idempotent on message id; tested (ADR 0007) |
 | Stolen disk reveals message history | Mitigated | Every history row sealed under the vault key; only keyed tags in clear; tampering and moved rows detected (ADR 0007). Message count and sizes still visible |
 | Metadata inference | **Open** | Needs padding/batching research; documented, not solved |
+| Losing the only device | Mitigated, optional | An encrypted backup file (separate passphrase, Argon2id 256 MiB) restores the owner key, contacts and groups as a new device; ratchets and device keys are never restored. The file is a bearer copy of the identity: whoever has it and its passphrase can take the identity over. Nothing on any server (ADR 0029) |
 | Abusive agents | **Open** | Agent permissions and approval flow are Phase 2 |
 
 ## Powerful adversaries and compelled access

@@ -305,6 +305,23 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Write an encrypted backup of this identity to a file (ADR 0029). The file is a copy of who you are.
+    Backup {
+        /// Where to write it.
+        out: PathBuf,
+        /// Include message history (off by default: it makes the file more valuable to a thief).
+        #[arg(long)]
+        history: bool,
+        /// Make a random backup key, print it once, and use it instead of asking for a passphrase.
+        #[arg(long)]
+        generate_key: bool,
+    },
+    /// On a NEW install: bring your identity back from a backup file as a new device. Signs out your other devices.
+    Restore {
+        file: PathBuf,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
     /// Delete stored messages older than this many days, in all conversations.
     Prune {
         #[arg(long)]
@@ -661,6 +678,47 @@ async fn run() -> Result<()> {
         }
     };
 
+    // `restore` builds the vault from a backup file; the device passphrase is a new one.
+    if let Cmd::Restore { file, relay } = &cli.cmd {
+        let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+        let backup_pass = match std::env::var("SPIKE_BACKUP_PASSPHRASE") {
+            Ok(v) => Zeroizing::new(v),
+            Err(_) => Zeroizing::new(
+                rpassword::prompt_password("Backup passphrase or key: ")
+                    .context("cannot prompt here; set SPIKE_BACKUP_PASSPHRASE")?,
+            ),
+        };
+        let opened = spike_cli::backup::Opened::open(&bytes, &backup_pass)?;
+        println!(
+            "backup: {} contacts, {} groups, {} messages",
+            opened.contacts(),
+            opened.groups(),
+            opened.messages()
+        );
+        println!(
+            "Restoring signs out every other device of this identity, including the lost one."
+        );
+        let new_pass = passphrase(&cli.passphrase_file, true)?;
+        if new_pass.chars().count() < MIN_PASSPHRASE_CHARS {
+            bail!("passphrase must be at least {MIN_PASSPHRASE_CHARS} characters");
+        }
+        let t = Target {
+            url: relay.clone(),
+            opts: TransportOpts {
+                ca_file: cli.relay_ca.clone(),
+                allow_insecure: cli.allow_insecure_transport,
+            },
+        };
+        let r = opened
+            .restore(&dir, &new_pass, KdfParams::default(), move |_, _| Ok(t))
+            .await?;
+        println!(
+            "restored as a new device: device list v{}, {} contacts, {} messages",
+            r.version, r.contacts, r.messages
+        );
+        return Ok(());
+    }
+
     // `init` creates the vault; every other command unlocks it.
     let home = if let Cmd::Init { force } = &cli.cmd {
         let p = passphrase(&cli.passphrase_file, true)?;
@@ -692,7 +750,7 @@ async fn run() -> Result<()> {
     };
 
     match cli.cmd {
-        Cmd::Init { .. } | Cmd::VerifyReceipt { .. } | Cmd::AgentTypes => {
+        Cmd::Init { .. } | Cmd::Restore { .. } | Cmd::VerifyReceipt { .. } | Cmd::AgentTypes => {
             unreachable!("handled above")
         }
         Cmd::Card => {
@@ -1587,6 +1645,37 @@ async fn run() -> Result<()> {
                 "linked: published device list v{}; sent {} contacts, {} messages and {} recent files, encrypted to the new device",
                 r.version, r.contacts, r.messages, r.files
             );
+        }
+        Cmd::Backup {
+            out,
+            history,
+            generate_key,
+        } => {
+            let pass = if generate_key {
+                let k = spike_cli::backup::generate_key();
+                println!("Backup key (shown once, write it down; it is not stored): {k}");
+                Zeroizing::new(k)
+            } else {
+                match std::env::var("SPIKE_BACKUP_PASSPHRASE") {
+                    Ok(v) => Zeroizing::new(v),
+                    Err(_) => Zeroizing::new(
+                        rpassword::prompt_password(
+                            "Backup passphrase (not your device passphrase): ",
+                        )
+                        .context("cannot prompt here; set SPIKE_BACKUP_PASSPHRASE")?,
+                    ),
+                }
+            };
+            let file = spike_cli::backup::export(
+                &home,
+                &pass,
+                spike_cli::backup::backup_kdf(),
+                history,
+                Default::default(),
+            )?;
+            std::fs::write(&out, file).with_context(|| format!("writing {}", out.display()))?;
+            println!("wrote {}", out.display());
+            println!("This file is a copy of your identity: anyone with it and its passphrase can pretend to be you.");
         }
         Cmd::Recv {
             relay,

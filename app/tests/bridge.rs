@@ -343,3 +343,89 @@ fn two_phones_chat_directly_with_no_relay_and_the_screen_hears_about_it() {
     // Turning it off stops listening.
     assert_eq!(bob.ok("direct_disable", json!({}))["listening"], false);
 }
+
+#[test]
+fn an_identity_comes_back_from_a_backup_after_the_phone_is_lost() {
+    let url = relay();
+    let (alice, bob) = (Phone::new("alice-b", &url), Phone::new("bob-b", &url));
+    alice.ok("sync", json!({}));
+    bob.ok("sync", json!({}));
+    alice.ok("add_contact", json!({ "name": "Bob", "card": bob.card() }));
+    bob.ok(
+        "add_contact",
+        json!({ "name": "Alice", "card": alice.card() }),
+    );
+    alice.ok("send", json!({ "name": "Bob", "text": "before the loss" }));
+    bob.ok("sync", json!({}));
+    let fingerprint = alice.ok("overview", json!({}))["me"]["fingerprint"].clone();
+
+    // Never backed up: Settings says so. After a backup it is current.
+    assert_eq!(alice.ok("backup_status", json!({}))["stale"], true);
+    let file = alice.dir.join("exports").join("spike.spikebackup");
+    let key = alice
+        .ok("backup_new_key", json!({}))
+        .as_str()
+        .unwrap()
+        .to_string();
+    alice.ok(
+        "backup_export",
+        json!({ "path": file.display().to_string(), "passphrase": key, "history": true }),
+    );
+    assert_eq!(alice.ok("backup_status", json!({}))["stale"], false);
+    // A short backup passphrase is refused.
+    assert!(alice.call(
+        "backup_export",
+        json!({ "path": file.display().to_string(), "passphrase": "short", "history": false })
+    )["err"]
+        .is_string());
+    let kept = std::env::temp_dir().join(format!("spike-bridge-kept-{}.spikebackup", rand_id()));
+    std::fs::copy(&file, &kept).unwrap();
+
+    // Total loss: a new install elsewhere, which can only restore.
+    let dir = std::env::temp_dir().join(format!("spike-bridge-reborn-{}", rand_id()));
+    let e = Engine::with_kdf(&dir, KdfParams::insecure_for_tests()).unwrap();
+    let reborn = Phone { e, dir };
+    let bad = reborn.call(
+        "backup_open",
+        json!({ "path": kept.display().to_string(), "passphrase": "wrong wrong wrong wrong" }),
+    );
+    assert!(
+        bad["err"]
+            .as_str()
+            .unwrap()
+            .contains("wrong backup passphrase"),
+        "{bad}"
+    );
+    assert!(reborn.call(
+        "backup_restore",
+        json!({ "passphrase": "new device passphrase" })
+    )["err"]
+        .is_string());
+    let summary = reborn.ok(
+        "backup_open",
+        json!({ "path": kept.display().to_string(), "passphrase": key.to_lowercase().replace('-', " ") }),
+    );
+    assert_eq!(
+        (summary["contacts"].as_u64(), summary["messages"].as_u64()),
+        (Some(1), Some(1))
+    );
+    assert_eq!(summary["relay"], json!(url));
+    reborn.ok(
+        "backup_restore",
+        json!({ "passphrase": "new device passphrase" }),
+    );
+    std::fs::remove_file(&kept).ok();
+
+    // Same person, same contact, history back, and the contact can talk to the new device.
+    let o = reborn.ok("overview", json!({}));
+    assert_eq!(o["me"]["fingerprint"], fingerprint);
+    assert_eq!(o["contacts"][0]["name"], "Bob");
+    bob.ok("send", json!({ "name": "Alice", "text": "welcome back" }));
+    assert_eq!(reborn.ok("sync", json!({}))["received"], 1);
+    reborn.ok("send", json!({ "name": "Bob", "text": "I am back" }));
+    assert_eq!(bob.ok("sync", json!({}))["received"], 1);
+    // And a second restore on a device that has an identity is refused.
+    assert!(
+        reborn.call("backup_open", json!({ "path": "x", "passphrase": "y" }))["err"].is_string()
+    );
+}

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod backup;
 pub mod client;
 pub mod direct;
 pub mod groups;

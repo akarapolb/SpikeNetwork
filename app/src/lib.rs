@@ -7,6 +7,7 @@
 //! because `send` and `recv` each load and save the ratchet state and would
 //! corrupt it if they overlapped.
 
+pub mod backup;
 pub mod bridge;
 mod direct;
 

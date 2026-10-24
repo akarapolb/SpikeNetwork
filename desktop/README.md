@@ -54,3 +54,5 @@ Calls, search, Windows Hello, a tray icon and desktop notification banners (the 
 - The passphrase crosses the bridge once as a JavaScript string, which cannot be zeroized (ADR 0019).
 - Only Windows has been run. Linux needs WebKitGTK; macOS needs signing and notarisation.
 - To bundle an installer you need `tauri-cli` (`cargo install tauri-cli --version "^2"`) and `"bundle": {"active": true}`; not set up.
+
+**Backup and recovery** (ADR 0029): Settings makes an encrypted backup file in Downloads (a generated key or your own passphrase; history optional), and the create screen has "Restore from a backup file", which brings the identity back as a new device and signs out the others. `node desktop/drive_backup.mjs` drives two real windows through losing the only computer and restoring.

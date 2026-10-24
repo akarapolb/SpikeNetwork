@@ -30,6 +30,7 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [adr/0013-own-device-sync.md](adr/0013-own-device-sync.md) | Own-device sync channel: read state, catch-up, file re-supply (multi-device M5, completed) |
 | [adr/0014-agent-requests.md](adr/0014-agent-requests.md) | Agent requests with human approval: signed requests, grants, receipts, hash-chained audit log (Phase 2, first slice) |
 | [adr/0027-direct-connections.md](adr/0027-direct-connections.md) | Direct device-to-device messages on the local network without a relay: discovery, handshake, fallback, threat model |
+| [adr/0029-backup-and-recovery.md](adr/0029-backup-and-recovery.md) | Backup file, recovery phrase, recovery contacts and doing nothing compared; what a backup holds and what it must not; how a restored identity rejoins; threat model |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [multi-device-design.html](multi-device-design.html) | **Proposed** design: message history across multiple devices, fan-out, device linking, and which servers are still needed |
 | [multi-device-demo.html](multi-device-demo.html) | **Interactive simulation** of that design (no real crypto): fan-out, offline catch-up, device linking, edits, relay outage, attacks. Open in a browser |

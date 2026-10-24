@@ -123,6 +123,7 @@ private fun Scrolling(modifier: Modifier = Modifier, gap: Int = 14, content: @Co
 fun GateScreen(m: AppModel) {
     var pass by remember { mutableStateOf("") }
     var again by remember { mutableStateOf("") }
+    var restoring by remember { mutableStateOf(false) }
     val creating = m.status == "new"
     val act = LocalContext.current as androidx.fragment.app.FragmentActivity
     val bioReady = remember { BioLock.available(act) }
@@ -152,6 +153,10 @@ fun GateScreen(m: AppModel) {
         }
     }
 
+    if (restoring) {
+        RestoreScreen(m) { restoring = false }
+        return
+    }
     Page {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().navigationBarsPadding()
@@ -210,6 +215,7 @@ fun GateScreen(m: AppModel) {
                         if (pass.isEmpty()) m.notice = "Choose a passphrase for this phone first; then it shows a code to link it."
                         else create(true)
                     }
+                    OutlineButton("Restore from a backup file", Modifier.fillMaxWidth()) { restoring = true }
                 }
                 Muted("Unreviewed prototype software: do not use it for real secrets yet.", 12.5.sp)
             }
@@ -924,6 +930,7 @@ fun SettingsTab(m: AppModel) {
                 }
             }
         }
+        BackupCard(m)
         Text("What any relay can see", fontWeight = FontWeight.SemiBold)
         CardBox {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {

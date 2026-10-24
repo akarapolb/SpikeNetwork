@@ -8,6 +8,7 @@
 pub mod action;
 pub mod agent;
 pub mod attachment;
+pub mod backup;
 pub mod direct;
 pub mod envelope;
 pub mod group;
@@ -47,6 +48,8 @@ pub enum Error {
     WrongPassphrase,
     #[error("stored data is corrupted or was tampered with")]
     Corrupted,
+    #[error("backup: {0}")]
+    Backup(&'static str),
     #[error("session error: {0}")]
     Session(String),
     #[error("invalid hex: {0}")]

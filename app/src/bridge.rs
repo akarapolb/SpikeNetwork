@@ -20,6 +20,8 @@ pub struct Engine {
     dir: PathBuf,
     kdf: KdfParams,
     session: Mutex<Option<Arc<Session>>>,
+    /// A backup file the person opened on the create screen and has not yet restored (ADR 0029).
+    backup: Mutex<Option<crate::backup::Opened>>,
     rt: tokio::runtime::Runtime,
 }
 
@@ -64,6 +66,7 @@ impl Engine {
             dir: dir.into(),
             kdf,
             session: Mutex::new(None),
+            backup: Mutex::new(None),
             rt: tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
@@ -136,6 +139,40 @@ impl Engine {
                 self.set(None);
                 return Ok(Value::Null);
             }
+            // Recovery (ADR 0029): a fresh install opens a backup file, sees what is in it, then
+            // restores it as a new device.
+            "backup_new_key" => return val(crate::backup::generate_key()),
+            "backup_open" => {
+                if exists(&self.dir) {
+                    bail!("this device already has an identity");
+                }
+                let bytes = read_file(&s(a, "path")?)?;
+                let (opened, summary) = crate::backup::backup_open(&bytes, &s(a, "passphrase")?)?;
+                *self.backup.lock().map_err(|_| anyhow!("internal error"))? = Some(opened);
+                return val(summary);
+            }
+            "backup_restore" => {
+                let opened = self
+                    .backup
+                    .lock()
+                    .map_err(|_| anyhow!("internal error"))?
+                    .take()
+                    .ok_or_else(|| anyhow!("open the backup file first"))?;
+                let relay = a.get("relay").and_then(Value::as_str).map(str::to_string);
+                let session = self.rt.block_on(crate::backup::backup_restore(
+                    opened,
+                    &self.dir,
+                    s(a, "passphrase")?,
+                    self.kdf,
+                    relay,
+                ))?;
+                self.set(Some(session));
+                return Ok(Value::Null);
+            }
+            "backup_cancel" => {
+                *self.backup.lock().map_err(|_| anyhow!("internal error"))? = None;
+                return Ok(Value::Null);
+            }
             _ => {}
         }
         let x = self.session()?;
@@ -204,6 +241,18 @@ impl Engine {
                     })
                     .collect();
                 Ok(json!({ "size": size, "rows": rows }))
+            }
+            "backup_status" => val(x.backup_status()?),
+            // Writes the sealed backup to `path`; the app then hands that file to the person.
+            "backup_export" => {
+                let bytes =
+                    x.backup_export(&s(a, "passphrase")?, b(a, "history").unwrap_or(false))?;
+                let path = PathBuf::from(s(a, "path")?);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&path, bytes).context("saving the backup")?;
+                val(path.display().to_string())
             }
             "agents" => val(x.agents()?),
             "decide" => val(rt.block_on(x.decide(&s(a, "id")?, b(a, "approve")?))?),
