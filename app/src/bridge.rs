@@ -260,6 +260,22 @@ impl Engine {
                     .min(120_000);
                 val(rt.block_on(x.direct_wait(ms)))
             }
+            // Calls (ADR 0028). The screen makes the WebRTC offer/answer and hands the text up.
+            "call_start" => val(rt.block_on(x.call_start(
+                &s(a, "name")?,
+                b(a, "video").unwrap_or(false),
+                &s(a, "sdp")?,
+            ))?),
+            "call_accept" => val(rt.block_on(x.call_accept(&s(a, "sdp")?))?),
+            "call_decline" => val(rt.block_on(x.call_decline(b(a, "all").unwrap_or(false)))?),
+            "call_hangup" => val(rt.block_on(x.call_hangup())?),
+            "call_fail" => val(rt.block_on(x.call_fail())?),
+            "call_ice" => val(rt.block_on(x.call_local_ice(list(a, "candidates")?))?),
+            // Wait up to `ms` for something to act on: ring, connect, remote candidates, end.
+            "call_wait" => {
+                let ms = a.get("ms").and_then(Value::as_u64).unwrap_or(20_000).min(120_000);
+                val(rt.block_on(x.call_wait(ms)))
+            }
             "backup_status" => val(x.backup_status()?),
             // Writes the sealed backup to `path`; the app then hands that file to the person.
             "backup_export" => {

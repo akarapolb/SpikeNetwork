@@ -107,7 +107,9 @@ impl Session {
             return Ok(());
         }
         let inbox = self.direct.inbox.clone();
+        let calls = self.calls.clone();
         let sink: cli::Sink = Arc::new(move |o: Outcome| {
+            calls.on_outcome(&o);
             let mut pending = inbox.pending.lock().expect("inbox lock");
             let out = pending.get_or_insert_with(|| SyncDto {
                 received: 0,

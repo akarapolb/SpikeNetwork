@@ -45,6 +45,8 @@ pub enum Kind {
     /// Inside a large group's own messages only: signed device lists the group should know (body:
     /// `{"lists": [...]}`). The group's idea of who owns which devices is built from these, in order.
     LargeLists,
+    /// Call setup (ADR 0028): the body is a `call::Signal` as JSON. Never stored as a message.
+    Call,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -121,6 +123,13 @@ impl Envelope {
         let mut e = Self::text(body)?;
         e.kind = Kind::Edit;
         e.target = Some(target.to_string());
+        Ok(e)
+    }
+
+    /// A call signal (ADR 0028), addressed like a message.
+    pub fn call(signal: &crate::call::Signal) -> Result<Self> {
+        let mut e = Self::text(&signal.to_json())?;
+        e.kind = Kind::Call;
         Ok(e)
     }
 
@@ -222,6 +231,7 @@ impl Envelope {
                 | Kind::GroupHistoryRequest
                 | Kind::GroupHistory => e.group.is_some(),
                 Kind::Sync
+                | Kind::Call
                 | Kind::AgentRequest
                 | Kind::AgentReceipt
                 | Kind::LargeWelcome
@@ -233,6 +243,7 @@ impl Envelope {
         let target_ok = match e.kind {
             Kind::Text
             | Kind::Sync
+            | Kind::Call
             | Kind::AgentRequest
             | Kind::AgentReceipt
             | Kind::GroupState
@@ -254,6 +265,7 @@ impl Envelope {
             Kind::Edit => e.attachment.is_none(),
             Kind::Delete => e.attachment.is_none() && e.body.is_empty(),
             Kind::Sync
+            | Kind::Call
             | Kind::AgentRequest
             | Kind::AgentReceipt
             | Kind::GroupState

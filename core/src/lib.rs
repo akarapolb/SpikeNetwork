@@ -9,6 +9,7 @@ pub mod action;
 pub mod agent;
 pub mod attachment;
 pub mod backup;
+pub mod call;
 pub mod direct;
 pub mod envelope;
 pub mod group;

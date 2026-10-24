@@ -62,6 +62,7 @@ pub fn decide(
         Kind::Edit => Action::ApplyEdit,
         Kind::Text
         | Kind::Sync
+        | Kind::Call
         | Kind::AgentRequest
         | Kind::AgentReceipt
         | Kind::GroupState

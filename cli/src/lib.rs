@@ -36,6 +36,15 @@ pub enum Outcome {
     },
     /// Decrypted fine, but this message id is already stored (e.g. redelivered after a crash).
     Duplicate,
+    /// A call signal (ADR 0028) from a contact's device (`peer` is the contact's conversation key
+    /// and `name` their name) or from one of our own (both `None`). Never stored as a message.
+    Call {
+        name: Option<String>,
+        peer: Option<String>,
+        device: String,
+        signal: spike_core::call::Signal,
+        ts: u64,
+    },
     /// A copy of a message we sent from another of our own devices.
     SentCopy {
         /// Contact name if known, else the recipient's owner key.
@@ -328,6 +337,19 @@ pub fn process(
                 }
                 // From one of our own other devices.
                 From::Own => {
+                    if env.kind == Kind::Call {
+                        persist(sessions, me)?;
+                        return Ok(match spike_core::call::Signal::parse(&env.body) {
+                            Ok(signal) => Outcome::Call {
+                                name: None,
+                                peer: None,
+                                device: sender_device,
+                                signal,
+                                ts: env.ts,
+                            },
+                            Err(_) => Outcome::Invalid,
+                        });
+                    }
                     if env.kind == Kind::Sync {
                         let outcome = match sync::SyncMsg::from_envelope(&env) {
                             Ok(msg) => {
@@ -396,6 +418,19 @@ pub fn process(
                 // From a contact.
                 From::Contact(contact) => {
                     let peer = contacts[contact].conversation_key()?;
+                    if env.kind == Kind::Call {
+                        persist(sessions, me)?;
+                        return Ok(match spike_core::call::Signal::parse(&env.body) {
+                            Ok(signal) => Outcome::Call {
+                                name: Some(contacts[contact].name.clone()),
+                                peer: Some(peer),
+                                device: sender_device,
+                                signal,
+                                ts: env.ts,
+                            },
+                            Err(_) => Outcome::Invalid,
+                        });
+                    }
                     if env.kind == Kind::Sync {
                         // Sync messages are for a person's own devices only. A contact has no business sending one.
                         persist(sessions, me)?;

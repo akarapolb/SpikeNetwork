@@ -404,18 +404,46 @@ async fn housekeeping(
     Ok(notes)
 }
 
-async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Result<SendReport> {
+/// Send one call signal (ADR 0028) to some of the devices of a call: all of a contact's, one of
+/// them, or our own others. Calls skip the relay housekeeping (a ringing phone cannot wait for it)
+/// and never fail just because our own other devices could not be reached.
+pub async fn send_call(
+    home: &Home,
+    relay: impl Into<Target>,
+    name: &str,
+    signal: &spike_core::call::Signal,
+    to: &spike_core::call::Target,
+) -> Result<SendReport> {
+    deliver_to(home, relay.into(), name, Envelope::call(signal)?, Some(to)).await
+}
+
+async fn deliver(home: &Home, base: Target, name: &str, env: Envelope) -> Result<SendReport> {
+    deliver_to(home, base, name, env, None).await
+}
+
+async fn deliver_to(
+    home: &Home,
+    base: Target,
+    name: &str,
+    mut env: Envelope,
+    only: Option<&spike_core::call::Target>,
+) -> Result<SendReport> {
+    use spike_core::call::Target as CallTarget;
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
 
     // Our home relay: keep prekeys topped up and both device lists current. With direct
     // connections on this is best effort: two devices whose relay is out of reach can still talk.
-    let notes = match housekeeping(home, &base, &mut me, name).await {
-        Ok(n) => n,
-        Err(e) if crate::direct::enabled(home) => {
-            vec![format!("the relay could not be reached ({e:#})")]
+    let notes = if only.is_some() {
+        vec![]
+    } else {
+        match housekeeping(home, &base, &mut me, name).await {
+            Ok(n) => n,
+            Err(e) if crate::direct::enabled(home) => {
+                vec![format!("the relay could not be reached ({e:#})")]
+            }
+            Err(e) => return Err(e),
         }
-        Err(e) => return Err(e),
     };
     if !home.this_device_is_listed()? {
         bail!("this device has been removed from your identity and can no longer send");
@@ -443,6 +471,13 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
             .filter(|(d, _)| d.device_id() != my_id)
             .map(|(d, r)| (d, r, true)),
     );
+    if let Some(only) = only {
+        targets.retain(|(d, _, own)| match only {
+            CallTarget::PeerAll => !*own,
+            CallTarget::PeerDevice(id) => !*own && &d.device_id() == id,
+            CallTarget::OwnOthers => *own,
+        });
+    }
 
     // Starting a session with someone who may not know us: say who we are (ADR 0021). A contact
     // who already has a session with us ignores it; a stranger needs it to treat this as a request.
@@ -471,7 +506,8 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
             error: r.err().map(|e| format!("{e:#}")),
         });
     }
-    if !devices.iter().any(|d| !d.own && d.error.is_none()) {
+    let own_only = matches!(only, Some(CallTarget::OwnOthers));
+    if !own_only && !devices.iter().any(|d| !d.own && d.error.is_none()) {
         let why: Vec<String> = devices
             .iter()
             .filter(|d| !d.own)
@@ -506,6 +542,7 @@ async fn deliver(home: &Home, base: Target, name: &str, mut env: Envelope) -> Re
         }
         // Sync messages change nothing in the sender's own history; group control goes through `groups`.
         Kind::Sync
+        | Kind::Call
         | Kind::AgentRequest
         | Kind::AgentReceipt
         | Kind::GroupState

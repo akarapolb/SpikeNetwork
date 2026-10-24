@@ -9,7 +9,9 @@
 
 pub mod backup;
 pub mod bridge;
+mod calls;
 mod direct;
+pub use calls::CallEventDto;
 pub use direct::DirectDto;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -66,6 +68,8 @@ pub struct Session {
     net: Arc<tokio::sync::Mutex<()>>,
     /// Direct connections on the local network (ADR 0027).
     direct: direct::State,
+    /// Calls in progress (ADR 0028).
+    calls: Arc<calls::Hub>,
     /// Set while this device waits to be linked: nothing else may read the relay mailbox.
     paused: AtomicBool,
     /// This (new) device is waiting to be linked: its code and, once the
@@ -426,6 +430,7 @@ impl Session {
             relay: Arc::new(Mutex::new(settings)),
             net: Arc::new(tokio::sync::Mutex::new(())),
             direct: direct::State::default(),
+            calls: Arc::default(),
             paused: AtomicBool::new(false),
             link_new: Mutex::new(None),
             link_old: Mutex::new(None),
@@ -785,6 +790,7 @@ impl Session {
             notes: vec![],
         };
         ops::recv(&self.home, self.target(), Some(idle), |o| {
+            self.calls.on_outcome(&o);
             if tally(&mut out, &o) {
                 progress(&out, self.attention().unwrap_or(0));
             }

@@ -1,13 +1,13 @@
 # ADR 0028: Voice and video calls
 
-Status: **decided, not built**, 2026-10-24. Turns the draft ADR 0018 into decisions and a build order. Phase 1 (the one-to-one voice slice on the same Wi-Fi) is next; nothing here is reviewed.
+Status: **decided; the Rust signalling side is built (2026-10-24); no screen or media yet**. Turns the draft ADR 0018 into decisions and a build order. Phase 1 (the one-to-one voice slice on the same Wi-Fi) is next; nothing here is reviewed.
 
 ## Decision
 
 **Spike carries the call setup; WebRTC carries the media.** Each device keeps its own WebRTC stack. The Rust engine never touches audio or video: it only sends, receives and validates *signalling*, as end-to-end messages, and keeps the call log.
 
 1. **Media is WebRTC** (DTLS-SRTP, Opus, VP8/H.264). Android uses the native WebRTC library (`org.webrtc`, a prebuilt AAR from a maintained distribution; pinned and checksum-verified like other dependencies). The desktop uses the webview's own `RTCPeerConnection` (WebView2 on Windows, WKWebView on macOS); Linux WebKitGTK is not a target for calls until it proves adequate.
-2. **Signalling is ordinary Spike envelopes.** Four new envelope kinds, sealed by the per-device session like any message, so the relay sees opaque blobs and never learns that a call exists: `call_invite` (call id, media kinds, SDP offer), `call_answer` (call id, SDP answer), `call_ice` (call id, one or more candidates), `call_end` (call id, reason: `hangup`, `declined`, `busy`, `timeout`, `answered_elsewhere`, `failed`). They travel through `send_to_device`, so when ADR 0027's direct connections are on and the peer is reachable, the call setup does not touch the relay either; otherwise it goes through the relay queue (slower, but it works). Trickle ICE is used, with candidates batched for about 50 ms.
+2. **Signalling is ordinary Spike envelopes.** One new envelope kind, `call`, whose body is one of four signals (as built; the first draft said four kinds). Sealed by the per-device session like any message, so the relay sees opaque blobs and never learns that a call exists: `call_invite` (call id, media kinds, SDP offer), `call_answer` (call id, SDP answer), `call_ice` (call id, one or more candidates), `call_end` (call id, reason: `hangup`, `declined`, `busy`, `timeout`, `answered_elsewhere`, `failed`). They travel through `send_to_device`, so when ADR 0027's direct connections are on and the peer is reachable, the call setup does not touch the relay either; otherwise it goes through the relay queue (slower, but it works). Trickle ICE is used, with candidates batched for about 50 ms.
 3. **Calls are not chat messages.** Signalling envelopes are never stored as conversation messages and never ack'd as unread. The engine writes one *call log* entry per call (who, when, direction, duration, outcome: answered / missed / declined) which the screens show as a system line in the conversation.
 
 ### Authenticating the peer
@@ -81,3 +81,10 @@ One honest design point on candidates: the caller must include its candidates in
 - Unit: the call state machine (every transition above, plus invalid events), envelope validation (caps, bad reasons, stale timestamp, duplicate call id), call code derivation (same on both sides, differs if a fingerprint differs).
 - Integration (Rust, real relay and direct transport, no media): a caller and two callee devices; first answer wins; decline; busy; glare; timeout; signalling with the relay dead (needs 0027).
 - End to end per phase: a driver that places a call between the emulator and the desktop and proves ICE reached `connected` and audio packets flowed in both directions (WebRTC stats `packetsReceived > 0` and `audioLevel` above zero against the emulator's virtual microphone), as `android/drive_direct.mjs` does for messages.
+
+## Built so far (slice 1: signalling in Rust)
+
+- `core/src/call.rs`: the signals, their validation and the sans-I/O call state machine; 16 unit tests (ringing across devices, first answer wins, decline, busy, glare, timeout, stale/duplicate/replayed invites, per-contact rate limit, signals from the wrong device or contact ignored).
+- `Kind::Call` envelope; `cli`: `ops::send_call` (to all of a contact's devices, one, or our own others; no relay housekeeping) and `Outcome::Call` (contacts and our own devices only).
+- `app`: `calls.rs` (`call_start/accept/decline/hangup/fail/ice/wait`), the bridge commands, and `app/tests/calls.rs` (two phones through a real relay: ring, answer, candidates held until answered, hang up, decline, caller gives up, glare, media failure).
+- **Not built:** the call log entry in the conversation, any screen, WebRTC on either platform, the Android alert/foreground service, the emulator-to-desktop audio driver, a test with two devices on the callee side (the state machine covers it; the end-to-end test does not).
