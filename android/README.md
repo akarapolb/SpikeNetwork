@@ -35,13 +35,13 @@ Deliberately different, because the feature does not exist yet and a control tha
 - The chat list searches names, not message history.
 - A one-to-one chat shows no per-device delivery line (the engine does not record it).
 
+## Backup and recovery (ADR 0029)
+
+Settings has **Backup and recovery**: the engine seals the identity into a `.spikebackup` file with a generated key (or your own passphrase) and the app hands it to the system: **Save to…** (the system file picker) or **Share…**. The sealed copy in the app's cache is deleted when the screen closes. The create screen has **Restore from a backup file** (file picker, passphrase, a summary of what is inside, a new passphrase for this phone). Restoring makes this phone a new device of the same identity and signs the others out. Code: `Backup.kt`; driver: `drive_backup.mjs`.
+
 ## Direct connections (ADR 0027)
 
 Settings has **Direct connections** (off by default): with it on, the phone listens on a port and hands messages straight to a contact's device on the same Wi-Fi without the relay; the relay stays the fallback (and is still needed for the very first message to a contact, which starts the session). It shows the address to give the other device, an address field per contact, and counters. The other device's address is typed once; the reverse is learned. Driver: `node android/drive_direct.mjs` (uses its own relay port, 8797, kills only that relay, and needs `SPIKE_DESKTOP_EXE=<path>` if the usual desktop build is locked by a running app). The emulator needs `svc power stayon true` or the app gets locked when the screen goes off; the driver sets it.
-
-## Backup and recovery (ADR 0029)
-
-Settings has **Backup and recovery**: the engine seals the identity into a `.spikebackup` file with a generated key (or your own passphrase) and the app hands it to the system: **Save to…** (the system file picker) or **Share…**. The sealed copy in the app's cache is deleted when the screen closes. The create screen has **Restore from a backup file** (file picker, passphrase, a summary of what is inside, a new passphrase for this phone). Restoring makes this phone a new device of the same identity and signs the others out. Code: `Backup.kt`; driver: `drive_backup.mjs` (its end-to-end run on the emulator has not passed yet, see ADR 0029).
 
 ## Build
 

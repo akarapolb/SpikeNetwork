@@ -83,9 +83,6 @@ impl Engine {
             .ok_or_else(|| anyhow!("locked"))
     }
 
-    fn set(&self, session: Option<Session>) {
-        *self.session.lock().expect("session lock") = session.map(Arc::new);
-    }
     /// Start listening for direct connections if the person turned them on. A failure (the port is
     /// taken) is not fatal: the relay carries everything, and the Settings screen shows the state.
     fn resume_direct(&self) {
@@ -94,6 +91,10 @@ impl Engine {
                 eprintln!("direct connections could not start: {e:#}");
             }
         }
+    }
+
+    fn set(&self, session: Option<Session>) {
+        *self.session.lock().expect("session lock") = session.map(Arc::new);
     }
 
     /// Run one command. Blocking: call it from a background thread.
@@ -132,10 +133,10 @@ impl Engine {
             "unlock" => {
                 let session = Session::unlock(&self.dir, s(a, "passphrase")?)?;
                 self.set(Some(session));
+                self.resume_direct();
                 return Ok(Value::Null);
             }
             "lock" => {
-                self.resume_direct();
                 self.set(None);
                 return Ok(Value::Null);
             }
@@ -167,6 +168,7 @@ impl Engine {
                     relay,
                 ))?;
                 self.set(Some(session));
+                self.resume_direct();
                 return Ok(Value::Null);
             }
             "backup_cancel" => {
@@ -242,6 +244,22 @@ impl Engine {
                     .collect();
                 Ok(json!({ "size": size, "rows": rows }))
             }
+            // Direct connections on the local network (ADR 0027).
+            "direct_status" => val(x.direct_status()?),
+            "direct_enable" => val(rt.block_on(x.direct_enable())?),
+            "direct_disable" => val(x.direct_disable()?),
+            "direct_set_address" => {
+                val(x.direct_set_address(&s(a, "name")?, &s(a, "address").unwrap_or_default())?)
+            }
+            // Wait up to `ms` for a message that arrived directly; the sync totals, or null.
+            "direct_wait" => {
+                let ms = a
+                    .get("ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(20_000)
+                    .min(120_000);
+                val(rt.block_on(x.direct_wait(ms)))
+            }
             "backup_status" => val(x.backup_status()?),
             // Writes the sealed backup to `path`; the app then hands that file to the person.
             "backup_export" => {
@@ -291,22 +309,6 @@ impl Engine {
                     &bytes,
                     cap,
                 ))?)
-            }
-            // Direct connections on the local network (ADR 0027).
-            "direct_status" => val(x.direct_status()?),
-            "direct_enable" => val(rt.block_on(x.direct_enable())?),
-            "direct_disable" => val(x.direct_disable()?),
-            "direct_set_address" => {
-                val(x.direct_set_address(&s(a, "name")?, &s(a, "address").unwrap_or_default())?)
-            }
-            // Wait up to `ms` for a message that arrived directly; the sync totals, or null.
-            "direct_wait" => {
-                let ms = a
-                    .get("ms")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(20_000)
-                    .min(120_000);
-                val(rt.block_on(x.direct_wait(ms)))
             }
             "save_attachment" => {
                 let (name, bytes) = rt.block_on(x.attachment(&s(a, "id")?))?;

@@ -13,6 +13,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
@@ -116,7 +118,12 @@ fun QrScanner(modifier: Modifier = Modifier, onResult: (String) -> Unit) {
             future.addListener({
                 val provider = future.get()
                 val preview = Preview.Builder().build().also { it.setSurfaceProvider(view.surfaceProvider) }
+                // The default analysis size (640x480) is too coarse for a dense card code seen on a screen.
+                val hd = ResolutionSelector.Builder()
+                    .setResolutionStrategy(ResolutionStrategy(android.util.Size(1920, 1080), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))
+                    .build()
                 val analysis = ImageAnalysis.Builder()
+                    .setResolutionSelector(hd)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                 analysis.setAnalyzer(executor) { image ->

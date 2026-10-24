@@ -8,8 +8,8 @@ pub mod api;
 pub mod updates;
 
 use api::{
-    ActionTypeDto, AgentsDto, BlockedDto, DirectDto, GrantRequest, GroupDetailDto, GroupSendDto, InstalledDto,
-    LinkedDto, MessageDto, MessageRequestDto, Overview, Session, SyncDto,
+    ActionTypeDto, AgentsDto, BlockedDto, DirectDto, GrantRequest, GroupDetailDto, GroupSendDto,
+    InstalledDto, LinkedDto, MessageDto, MessageRequestDto, Overview, Session, SyncDto,
 };
 use spike_core::vault::KdfParams;
 use std::path::PathBuf;
@@ -147,8 +147,6 @@ macro_rules! dbg_log {
     ($($t:tt)*) => { #[cfg(debug_assertions)] eprintln!("[listener] {}", format!($($t)*)); };
 }
 
-async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
-    use serde_json::json;
 /// Direct connections (ADR 0027): start listening if the person turned them on, and tell the
 /// screen when something arrived that way. Holds no strong reference while it waits.
 async fn watch_direct(app: tauri::AppHandle, weak: Weak<Session>) {
@@ -173,6 +171,8 @@ async fn watch_direct(app: tauri::AppHandle, weak: Weak<Session>) {
     }
 }
 
+async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
+    use serde_json::json;
     dbg_log!("started");
     let mut retry = Duration::from_millis(200);
     let mut online = None;
@@ -294,8 +294,6 @@ async fn watch_direct(app: tauri::AppHandle, weak: Weak<Session>) {
 }
 
 #[tauri::command]
-fn overview(state: State<'_, AppState>) -> Result<Overview, String> {
-#[tauri::command]
 fn direct_status(state: State<'_, AppState>) -> Result<DirectDto, String> {
     session(&state)?.direct_status().map_err(err)
 }
@@ -321,6 +319,8 @@ fn direct_set_address(
         .map_err(err)
 }
 
+#[tauri::command]
+fn overview(state: State<'_, AppState>) -> Result<Overview, String> {
     session(&state)?.overview().map_err(err)
 }
 
@@ -754,8 +754,12 @@ async fn backup_export(
         .await
         .map_err(|e| e.to_string())?
         .map_err(err)?;
-    write_unique(&downloads(&app)?, "spike-identity-backup.spikebackup", &bytes)
-        .map(|p| p.display().to_string())
+    write_unique(
+        &downloads(&app)?,
+        "spike-identity-backup.spikebackup",
+        &bytes,
+    )
+    .map(|p| p.display().to_string())
 }
 
 /// The file's bytes are the raw request body; its passphrase is a header.
@@ -776,7 +780,10 @@ async fn backup_open(
             .await
             .map_err(|e| e.to_string())?
             .map_err(err)?;
-    *state.backup.lock().map_err(|_| "internal error".to_string())? = Some(opened);
+    *state
+        .backup
+        .lock()
+        .map_err(|_| "internal error".to_string())? = Some(opened);
     Ok(summary)
 }
 
@@ -793,9 +800,10 @@ async fn backup_restore(
         .map_err(|_| "internal error".to_string())?
         .take()
         .ok_or("open the backup file first")?;
-    let s = api::backup::backup_restore(opened, &state.dir, passphrase, KdfParams::default(), relay)
-        .await
-        .map_err(err)?;
+    let s =
+        api::backup::backup_restore(opened, &state.dir, passphrase, KdfParams::default(), relay)
+            .await
+            .map_err(err)?;
     set(&state, Some(s));
     start_listener(&app, &state);
     Ok(())
@@ -888,6 +896,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_status,
+            direct_status,
+            direct_enable,
+            direct_disable,
+            direct_set_address,
             create_identity,
             backup_new_key,
             backup_status,
@@ -977,10 +989,6 @@ mod tests {
     }
 
     #[test]
-            direct_status,
-            direct_enable,
-            direct_disable,
-            direct_set_address,
     fn saved_files_never_overwrite_each_other() {
         let dir = std::env::temp_dir().join(format!("spike-desktop-dl-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();

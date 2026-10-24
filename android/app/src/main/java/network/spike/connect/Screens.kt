@@ -931,13 +931,13 @@ fun SettingsTab(m: AppModel) {
             }
         }
         BackupCard(m)
+        DirectCard(m)
         Text("What any relay can see", fontWeight = FontWeight.SemiBold)
         CardBox {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Can see", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = C.AmberText)
                     for (t in listOf("Device IDs", "Message sizes", "When devices connect")) Text(t, fontSize = 14.sp)
-        DirectCard(m)
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Never sees", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = C.Green)

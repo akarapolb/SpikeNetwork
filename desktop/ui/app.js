@@ -275,6 +275,12 @@ function verifyScreen() {
       h("button", { class: "btn big", type: "button", onclick: () => { st.verifyDone = "nomatch"; render(); } }, "They don't match"),
       h("button", { class: "btn primary big", type: "button", onclick: async () => { try { await invoke("mark_verified", { name: c.name, fingerprint: c.fingerprint }); st.verifyDone = "match"; await refresh(); } catch (e) { toast(String(e)); } } }, "They match")) : null))];
 }
+/** A QR code of this person's identity card, for a phone to scan (Add a contact, Scan). */
+function cardQr(card) {
+  const img = h("img", { class: "qrimg", alt: "QR code of your identity card", width: 240, height: 240 });
+  invoke("qr_svg", { text: card }).then((svg) => { img.src = "data:image/svg+xml;utf8," + encodeURIComponent(svg); }).catch(() => { img.remove(); });
+  return img;
+}
 function addScreen() {
   const name = h("input", { "aria-label": "Name", placeholder: "Name, e.g. Bob Chen" }), card = h("textarea", { class: "cardbox", "aria-label": "Identity card", placeholder: "Paste their identity card (starts with spike2:)" });
   return [header("Add a contact", () => { st.screen = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
@@ -282,7 +288,8 @@ function addScreen() {
     h("label", { style: "font-weight:600" }, "Name"), h("div", { class: "field" }, name),
     h("label", { style: "font-weight:600" }, "Their identity card"), card,
     h("button", { class: "btn primary big", type: "button", onclick: async () => { try { st.addMsg = await invoke("add_contact", { name: name.value, card: card.value }); const n = name.value.trim(); await refresh(); st.screen = null; st.section = "chats"; await openChat(n); toast(st.addMsg); } catch (e) { toast(String(e)); } } }, "Add contact"),
-    h("p", { class: "note" }, "They arrive as not verified until you compare safety numbers. Your own card is in Settings.")))];
+    h("p", { class: "note" }, "They arrive as not verified until you compare safety numbers. Your own card is in Settings."),
+    h("h2", { class: "eyebrow", style: "margin-top:12px" }, "Your code, for a phone to scan"), cardQr(st.ov.me.card)))];
 }
 
 /* ---------- agents ---------- */
@@ -424,14 +431,6 @@ function linkOldScreen() {
 
 /* ---------- settings ---------- */
 async function refreshBlocked() { try { st.blocked = await invoke("blocked"); } catch (_) { st.blocked = []; } render(); }
-function settingsMain() {
-  if (!st.blockedLoaded) { st.blockedLoaded = true; refreshBlocked(); }
-  const me = st.ov.me, relay = h("input", { "aria-label": "Relay address", value: st.ov.relay, class: "mono" });
-  const caPicker = h("input", { type: "file", accept: ".crt,.pem,.cer", hidden: true, onchange: async (e) => {
-    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
-    if (f.size > 65536) return toast("That file is too large to be a certificate.");
-    try { const n = await invoke("set_relay_ca", { pem: await f.text() }); toast(`Trusting ${n} certificate${n > 1 ? "s" : ""} from ${f.name}.`); await refresh(); syncNow(); } catch (x) { toast(String(x)); } } });
-  return [h("div", { class: "head" }, h("h1", {}, "Settings")), h("div", { class: "scroll" }, h("div", { class: "page" },
 async function refreshDirect() { try { st.direct = await invoke("direct_status"); } catch (_) { st.direct = null; } render(); }
 /** Direct connections (ADR 0027): messages between two devices on the same network without the relay. */
 function directCard() {
@@ -449,10 +448,19 @@ function directCard() {
         h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("direct_set_address", { name: c.name, address: inp.value }); toast(inp.value.trim() ? "Address saved." : "Address cleared."); await refreshDirect(); } catch (e) { toast(String(e)); } } }, "Save"),
         c.learned.length ? h("div", { class: "note", style: "flex-basis:100%" }, "Last seen at " + c.learned.join(", ")) : null); }) : null);
 }
+function settingsMain() {
+  if (!st.blockedLoaded) { st.blockedLoaded = true; refreshBlocked(); }
+  if (!st.directLoaded) { st.directLoaded = true; refreshDirect(); }
+  const me = st.ov.me, relay = h("input", { "aria-label": "Relay address", value: st.ov.relay, class: "mono" });
+  const caPicker = h("input", { type: "file", accept: ".crt,.pem,.cer", hidden: true, onchange: async (e) => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    if (f.size > 65536) return toast("That file is too large to be a certificate.");
+    try { const n = await invoke("set_relay_ca", { pem: await f.text() }); toast(`Trusting ${n} certificate${n > 1 ? "s" : ""} from ${f.name}.`); await refresh(); syncNow(); } catch (x) { toast(String(x)); } } });
+  return [h("div", { class: "head" }, h("h1", {}, "Settings")), h("div", { class: "scroll" }, h("div", { class: "page" },
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Your identity"), h("span", { class: "mono", style: "font-size:16px;overflow-wrap:anywhere" }, me.fingerprint),
       h("span", { class: "note" }, `${me.devices} device${me.devices > 1 ? "s" : ""}${me.approver ? " · this device approves agent requests" : ""}. Contacts compare this when they verify you.`),
-  if (!st.directLoaded) { st.directLoaded = true; refreshDirect(); }
       h("h2", { class: "eyebrow", style: "margin-top:8px" }, "Your identity card"), h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Your identity card", onfocus: (e) => e.target.select() }, me.card),
+      cardQr(me.card),
       h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(me.card); toast("Card copied. Send it to your contact."); } catch (_) { toast("Select the text above and copy it."); } } }, "Copy card")),
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Home relay"), h("div", { class: "field" }, relay),
       h("span", { class: "note" }, "Use wss:// for a relay on another computer. Plain ws:// is only accepted for this computer unless you allow it below. A relay sees which devices connect and message sizes, never text or files."),
@@ -460,6 +468,7 @@ function directCard() {
         h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Relay saved."); await refresh(); syncNow(); } catch (e) { toast(String(e)); } } }, "Save relay"),
         h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Connecting…"); toast(await invoke("test_relay")); } catch (e) { toast(String(e)); } } }, "Test connection"))),
     backupCard(),
+    directCard(),
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Trust for a relay you run yourself"),
       h("span", {}, st.ov.relay_trust.ca_certs ? `${st.ov.relay_trust.ca_certs} extra certificate${st.ov.relay_trust.ca_certs > 1 ? "s are" : " is"} trusted, as well as the usual public ones.` : "Only the usual public certificate authorities are trusted."),
       h("span", { class: "note" }, "A relay with a self-signed or private certificate needs that certificate trusted here: choose its .crt or .pem file (the certificate, never the private key)."),
@@ -469,7 +478,6 @@ function directCard() {
         h("span", {}, h("b", { style: "font-weight:600" }, "Allow plain ws:// on a network I trust"), h("div", { class: "note" }, "Messages stay end-to-end encrypted, but anyone on the network can see which devices talk, when, and how much. Use it only on a private network you control; never over the internet."))),
       st.ov.relay_trust.allow_insecure ? h("div", { class: "status warn", role: "alert" }, h("b", {}, "Plain connections are allowed."), h("span", {}, "Turn this off unless you are on a network you control.")) : null),
     st.blocked.length ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Blocked people"),
-    directCard(),
       h("span", { class: "note" }, "Their messages are dropped when they arrive. (The relay still carries them until then: it cannot tell who sent a message.)"),
       st.blocked.map((b) => h("div", { class: "devrow" }, h("span", { style: "flex:1;min-width:0" }, h("span", { class: "mono", style: "overflow-wrap:anywhere" }, b.fingerprint), h("div", { class: "note" }, "blocked " + new Date(b.at).toLocaleDateString())),
         h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("unblock", { owner: b.owner }); toast("Unblocked. Only a new conversation from them will be seen."); await refreshBlocked(); } catch (e) { toast(String(e)); } } }, "Unblock")))) : null,

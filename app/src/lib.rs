@@ -10,6 +10,7 @@
 pub mod backup;
 pub mod bridge;
 mod direct;
+pub use direct::DirectDto;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -36,8 +37,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use zeroize::Zeroizing;
-
-pub use direct::DirectDto;
 
 pub const MIN_PASSPHRASE_CHARS: usize = 10;
 pub const DEFAULT_RELAY: &str = "ws://127.0.0.1:8787";
@@ -81,7 +80,6 @@ pub struct Session {
     subs: std::sync::Arc<tokio::sync::Notify>,
 }
 
-// ------------------------------------------------------------------ DTOs
 fn target_for(rs: &RelaySettings, home: &Home) -> Target {
     Target {
         url: rs.url.clone(),
@@ -121,6 +119,8 @@ pub(crate) fn tally(out: &mut SyncDto, o: &Outcome) -> bool {
     }
     true
 }
+
+// ------------------------------------------------------------------ DTOs
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct DeviceDto {
