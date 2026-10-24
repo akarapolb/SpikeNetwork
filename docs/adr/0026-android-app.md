@@ -1,6 +1,6 @@
 # ADR 0026: The Android app
 
-Status: built as a first slice, 2026-10-24. Debug builds on the emulator only. Not reviewed.
+Status: built, 2026-10-24, in two slices (the app; then camera scanning, linking, alerts, fingerprint unlock and files). Debug builds on the emulator only. Not reviewed.
 
 ## Decision
 
@@ -53,11 +53,49 @@ desktop screens use.
   longer than the screen pushing the Add button off it; the second is fixed in the app (the field now stops
   growing), the first is a test-harness matter.
 
+## Second slice: scanning, linking, alerts, fingerprint, files
+
+- **Camera scanning** (Add a contact, Scan; and Link a new device). CameraX plus ZXing's plain Java decoder, so no
+  Google services and nothing leaves the phone. Only `spike2:` cards are accepted as contacts.
+- **Linking a phone to an existing identity**, both ways, with the same engine calls the desktop uses
+  (`link_offer`, `link_wait`, `link_receive`, `link_begin`, `link_finish`, `link_cancel`, now bridge commands):
+  "I already use Spike on another device" on the create screen (the phone shows a code and QR, compares the safety
+  code, receives identity, contacts and history), and Devices, Link a new device (enter or scan the code, compare,
+  choose how much history). Only the main device may link, as on the desktop.
+- **Alerts while the app is closed**: a foreground service (type `remoteMessaging`, which unlike `dataSync` has no
+  time limit on Android 15) keeps the process and one shared listener alive. The notification says that something
+  arrived, never what, and is private on the lock screen. It works while the process lives and the app is
+  unlocked: after a reboot or a kill the passphrase is needed again, so nothing is read until the person opens the
+  app. That is a consequence of the keys being sealed, not a missing feature.
+- **Fingerprint or face unlock**: the passphrase is sealed under an Android Keystore AES key that needs a strong
+  biometric for every use and is dropped if the enrolled fingerprints change. The passphrase still works. Trade-off,
+  stated plainly: anyone who can make the owner touch the sensor can unlock; that is the usual meaning of biometric
+  unlock, and it is a switch the person turns on.
+- **Files** one-to-one and in small groups: picked through the system picker, copied to the app's cache, sent by
+  path through the bridge (`send_file`, `group_send_file`), received files are fetched and checked by the engine
+  (`save_attachment`) and opened through a FileProvider. Large groups refuse files (the engine says so), so the
+  button is hidden there.
+
+Found on the way: Compose permission requests crashed inside `FragmentActivity` because the biometric library
+brings an old Fragment (an explicit `fragment-ktx` fixes it); and the system Back key left the app instead of
+closing the keyboard on some keyboards (now handled in the app).
+
+### Tested
+
+`app/tests/bridge.rs` (6 tests: files by path and saving, linking a second phone through the bridge);
+`android/drive_mobile.mjs` (one-to-one, large group, files both ways, the phone linking a second device, the
+alerts service and a real notification arriving with the app closed, fingerprint unlock with the emulator's
+fingerprint sensor including an unknown finger being refused); `android/drive_link_new.mjs` (the phone as the new
+device: same safety code, same identity afterwards, history received); `android/drive_camera.mjs` with
+`make_camera_poster.mjs` (the emulator's virtual camera looks at a QR code of a contact card; the app reads it and
+adds the contact with the right fingerprint). The camera test needs the emulator started with
+`hw.camera.back = virtualscene`; the poster script replaces the emulator's sample poster (the original is kept as
+`poster.png.orig`).
+
 ## Not done
 
-- No foreground service or push notifications: the app listens only while on screen.
-- Only the emulator has run it; the arm64 build has not run on a phone, and nothing has been measured on one.
-- No camera scanning, no linking a phone to an existing identity (or a phone linking another device), no
-  biometric unlock, no files, voice or assistant.
+- Voice, the on-device assistant, editing and deleting messages, files in large groups.
+- Only the emulator has run it; the arm64 build has not run on a phone, and no real camera, fingerprint sensor or
+  battery behaviour has been seen. Notifications with the process killed are not possible without the passphrase.
 - Debug builds only. No signing or store packaging.
 - No independent review (ADR 0025 already makes review a gate before real use; this adds a second front end).

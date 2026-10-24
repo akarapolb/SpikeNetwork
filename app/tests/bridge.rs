@@ -195,3 +195,89 @@ fn the_phone_screens_get_what_they_draw_from_the_bridge() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn a_file_goes_by_path_and_is_saved_into_a_folder() {
+    let url = relay();
+    let alice = Phone::new("file-a", &url);
+    let bob = Phone::new("file-b", &url);
+    alice.ok("add_contact", json!({ "name": "Bob", "card": bob.card() }));
+    bob.ok(
+        "add_contact",
+        json!({ "name": "Alice", "card": alice.card() }),
+    );
+    bob.ok("sync", json!({})); // publishes Bob's prekeys
+
+    let src = alice.dir.join("hello.txt");
+    std::fs::create_dir_all(&alice.dir).unwrap();
+    std::fs::write(&src, b"a file over the bridge").unwrap();
+    alice.ok(
+        "send_file",
+        json!({ "name": "Bob", "file_name": "hello.txt", "path": src.display().to_string(), "caption": "here" }),
+    );
+    bob.ok("sync", json!({}));
+    let thread = bob.ok("conversation", json!({ "name": "Alice" }));
+    assert_eq!(thread[0]["file"]["name"], "hello.txt");
+    let id = thread[0]["id"].as_str().unwrap();
+    let out = bob.dir.join("saved");
+    let path = bob.ok(
+        "save_attachment",
+        json!({ "id": id, "dir": out.display().to_string() }),
+    );
+    assert_eq!(
+        std::fs::read(path.as_str().unwrap()).unwrap(),
+        b"a file over the bridge"
+    );
+    // A second save never overwrites the first.
+    let again = bob.ok(
+        "save_attachment",
+        json!({ "id": id, "dir": out.display().to_string() }),
+    );
+    assert_ne!(again, path);
+    // A path that is not there is an error, not a crash.
+    assert!(alice.call(
+        "send_file",
+        json!({ "name": "Bob", "file_name": "x", "path": "/no/such/file" })
+    )["err"]
+        .is_string());
+}
+
+#[test]
+fn a_second_phone_is_linked_through_the_bridge() {
+    let url = relay();
+    let old = Arc::new(Phone::new("link-old", &url));
+    let new = Arc::new(Phone::new("link-new", &url));
+    let friend = Phone::new("link-friend", &url);
+    old.ok(
+        "add_contact",
+        json!({ "name": "Friend", "card": friend.card() }),
+    );
+
+    let code = new.ok("link_offer", json!({}));
+    let waiter = {
+        let n = new.clone();
+        std::thread::spawn(move || n.ok("link_wait", json!({})))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let seen_old = old.ok("link_begin", json!({ "code": code }));
+    let seen_new = waiter.join().unwrap();
+    assert_eq!(seen_old, seen_new, "both screens show the same safety code");
+
+    let receiver = {
+        let n = new.clone();
+        std::thread::spawn(move || n.ok("link_receive", json!({})))
+    };
+    let linked = old.ok("link_finish", json!({ "history": "all" }));
+    assert_eq!(linked["contacts"], 1);
+    receiver.join().unwrap();
+
+    let devices = new.ok("overview", json!({}))["me"]["device_list"].clone();
+    assert_eq!(devices.as_array().unwrap().len(), 2);
+    assert!(new.ok("overview", json!({}))["contacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["name"] == "Friend"));
+    // Giving up with nothing started is harmless.
+    old.ok("link_cancel", json!({}));
+}

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Files received in a chat, saved by the app and opened from here. -->
+    <files-path name="received" path="received/" />
+</paths>

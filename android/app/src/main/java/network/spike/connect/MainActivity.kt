@@ -1,9 +1,9 @@
 package network.spike.connect
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -30,11 +30,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Draw edge to edge with dark status and navigation icons: the screens are light.
@@ -52,6 +55,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun Root() {
     val scope = rememberCoroutineScope()
@@ -59,19 +63,39 @@ private fun Root() {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
 
     LaunchedEffect(Unit) { m.run { m.loadStatus() } }
-    // Listen to the relay only while the app is on screen.
-    LaunchedEffect(m.status) {
-        if (m.status == "ready") {
-            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { m.listen() }
+    // Listen to the relay while the app is on screen (and, with alerts on, while the service runs).
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    DisposableEffect(lifecycle) {
+        val obs = LifecycleEventObserver { _, e ->
+            if (e == Lifecycle.Event.ON_START) { Listener.visible = true; Notifier.clearNews(ctx) }
+            if (e == Lifecycle.Event.ON_STOP) Listener.visible = false
+            Listener.update(ctx)
         }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs) }
+    }
+    DisposableEffect(Unit) {
+        Listener.onRead = { ok, news -> m.listened(ok, news) }
+        onDispose { Listener.onRead = null }
+    }
+    LaunchedEffect(m.status) {
+        Listener.ready = m.status == "ready"
+        Listener.update(ctx)
+        if (m.status == "ready" && Prefs.notifyInBackground(ctx) && Notifier.allowed(ctx)) ListenerService.start(ctx)
     }
     BackHandler(enabled = m.status == "ready" && m.screen != null) {
         when (val s = m.screen) {
             is Screen.Members -> m.open(Screen.GroupChat(s.id))
             is Screen.Verify -> m.open(Screen.Chat(s.name))
+            Screen.LinkNew, Screen.LinkOld -> m.run { try { Bridge.call("link_cancel") } catch (_: Exception) {}; m.open(null) }
             else -> m.open(null)
         }
     }
+
+    // Back closes the keyboard first (some keyboards leave that to the app).
+    val imeVisible = androidx.compose.foundation.layout.WindowInsets.Companion.isImeVisible
+    val focus = androidx.compose.ui.platform.LocalFocusManager.current
+    BackHandler(enabled = imeVisible) { focus.clearFocus() }
 
     Box(Modifier.fillMaxSize()) {
         when (m.status) {
@@ -118,6 +142,7 @@ private fun Ready(m: AppModel) {
                 if (n == 1) "Encrypted for ${s.name}'s device and your own other devices" else "Encrypted separately for each of ${s.name}'s $n devices and your own other devices",
                 { t -> Bridge.call("send", args("name" to s.name, "text" to t)) },
                 { m.open(Screen.Verify(s.name)) },
+                { fileName, f -> Bridge.call("send_file", args("name" to s.name, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
             )
         }
         is Screen.GroupChat -> {
@@ -130,6 +155,8 @@ private fun Ready(m: AppModel) {
                 if (g?.large == true) "One encrypted copy for everyone in the group" else "Encrypted separately for every device of every member",
                 { t -> Bridge.call("group_send", args("id" to s.id, "text" to t)) },
                 { m.open(Screen.Members(s.id)) },
+                // Files in large groups are not built yet (the engine refuses them).
+                if (g?.large == true) null else { fileName, f -> Bridge.call("group_send_file", args("id" to s.id, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
             )
         }
         is Screen.Members -> MembersScreen(m, s.id)
@@ -138,5 +165,7 @@ private fun Ready(m: AppModel) {
         Screen.NewGroup -> NewGroupScreen(m)
         Screen.AddContact -> AddContactScreen(m)
         Screen.Requests -> RequestsScreen(m)
+        Screen.LinkNew -> LinkNewScreen(m)
+        Screen.LinkOld -> LinkOldScreen(m)
     }
 }

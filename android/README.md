@@ -28,10 +28,11 @@ style (not in the prototype).
 
 Deliberately different, because the feature does not exist yet and a control that does nothing would mislead:
 - "Your name" and "unlock with fingerprint or face" on the create screen are left out.
-- Add a contact has **My code** (a real QR of your card), **Paste a card** and **Share**; **scanning with the
-  camera** is not built.
-- 6 Link a new device and the "contact added a device" notice are not built; the button says so.
-- The chat list searches names, not message history. Files, voice and the on-device assistant are not built.
+- Add a contact has **My code** (a real QR of your card), **Scan** (camera), **Paste a card** and **Share**.
+- 6 Link a new device is built (code or scan, safety code, history choice) and so is the new-phone side ("I
+  already use Spike on another device"); the "contact added a device" notice is not.
+- Files work one-to-one and in small groups (not large groups). Voice and the on-device assistant are not built.
+- The chat list searches names, not message history.
 - A one-to-one chat shows no per-device delivery line (the engine does not record it).
 
 ## Build
@@ -60,11 +61,16 @@ node android/drive_mobile.mjs [screenshot-dir]
 the DevTools protocol) against that relay: create the identity on the phone, add each other, a one-to-one chat
 both ways, a large group both ways, with nobody syncing by hand. Debug builds also have a `DebugReceiver` that
 runs a bridge command from `adb shell am broadcast` and logs the answer under the tag `SpikeDebug`; it is not in
-release builds.
+release builds. More drivers: `drive_link_new.mjs` (the phone as the new device), `drive_camera.mjs` (scanning a
+QR code with the emulator's virtual camera; first `node android/make_camera_poster.mjs` and start the emulator
+with `hw.camera.back = virtualscene`). The fingerprint steps of `drive_mobile.mjs` run when a fingerprint is
+enrolled in the emulator (set a PIN, enrol with `adb emu finger touch 1`); `NO_BIOMETRIC=1` skips them.
 
 ## Known limits
 
-- The app listens to the relay only while it is on screen (no foreground service, no push notifications).
+- The app listens to the relay while it is on screen, and with "Alerts while the app is closed" on, through a
+  foreground service. After a reboot or if the system kills the app, the passphrase (or fingerprint) is needed
+  again before anything is read.
 - Only the emulator (x86_64) has been run. The arm64 library builds but has not been run on a phone.
 - Debug builds only; no signing, no Play Store packaging.
-- The listener's passphrase screen has no biometric unlock. Nothing here has been independently reviewed.
+- Nothing here has been independently reviewed.

@@ -90,6 +90,8 @@ data class Message(
     val deleted: Boolean,
     val from: String?,
     val fromVerified: Boolean,
+    val fileName: String? = null,
+    val fileSize: Long = 0,
 )
 
 fun parseMessages(a: JSONArray): List<Message> = a.mapObjects {
@@ -97,6 +99,8 @@ fun parseMessages(a: JSONArray): List<Message> = a.mapObjects {
         it.getString("id"), it.getBoolean("out"), it.getLong("ts"), it.getString("body"),
         it.getBoolean("edited"), it.getBoolean("deleted"), it.str("from"),
         it.getBoolean("from_verified"),
+        if (it.isNull("file")) null else it.getJSONObject("file").getString("name"),
+        if (it.isNull("file")) 0 else it.getJSONObject("file").getLong("size"),
     )
 }
 

@@ -4,10 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.coroutines.coroutineContext
 
 enum class Tab { Chats, Agents, Devices, Settings }
 
@@ -21,6 +18,12 @@ sealed interface Screen {
     data object NewGroup : Screen
     data object AddContact : Screen
     data object Requests : Screen
+
+    /** This phone is the NEW device: show a code for the existing device to enter. */
+    data object LinkNew : Screen
+
+    /** This phone is the EXISTING device: enter the new device's code. */
+    data object LinkOld : Screen
 }
 
 /** What the screens show, and what they ask for. One per app process. */
@@ -111,22 +114,12 @@ class AppModel(private val scope: CoroutineScope) {
         run { refresh() }
     }
 
-    /**
-     * Keep up with the relay while the app is on screen: wait for the relay to say something is
-     * waiting (a message, an entry in a large group), then read it. Also reads every so often in case
-     * a push was missed.
-     */
-    suspend fun listen() {
-        while (coroutineContext.isActive && status == "ready") {
-            try {
-                Bridge.call("wait_for_push", args("ms" to 20000))
-                Bridge.call("sync")
-                relayOk = true
-                refresh()
-            } catch (e: Exception) {
-                // No relay, or locked: say nothing loudly; try again shortly.
-                relayOk = false
-                delay(4000)
+    /** The listener read the relay: say whether it answered, and show what came. */
+    fun listened(ok: Boolean, news: Int) {
+        scope.launch {
+            relayOk = ok
+            if (ok && news >= 0) {
+                try { refresh() } catch (_: Exception) {}
             }
         }
     }

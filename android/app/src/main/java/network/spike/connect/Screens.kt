@@ -4,6 +4,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -60,6 +62,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Calendar
 import java.util.Date
@@ -101,7 +105,7 @@ private fun copy(ctx: Context, text: String) {
 }
 
 @Composable
-private fun Page(bg: Color = C.Bg, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+internal fun Page(bg: Color = C.Bg, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
     Column(Modifier.fillMaxSize().background(bg).imePadding()) { content() }
 }
 
@@ -120,6 +124,34 @@ fun GateScreen(m: AppModel) {
     var pass by remember { mutableStateOf("") }
     var again by remember { mutableStateOf("") }
     val creating = m.status == "new"
+    val act = LocalContext.current as androidx.fragment.app.FragmentActivity
+    val bioReady = remember { BioLock.available(act) }
+    var useBio by remember { mutableStateOf(bioReady) }
+    val bioUnlock = !creating && BioLock.enabled(act)
+
+    fun unlockWithFinger() {
+        BioLock.unlock(act) { p, err ->
+            if (p != null) m.run { Bridge.call("unlock", args("passphrase" to p)); m.loadStatus() }
+            else if (err != null && !err.contains("passphrase", true) && !err.contains("cancel", true)) m.notice = err
+        }
+    }
+    // Offer the fingerprint straight away when it is set up.
+    LaunchedEffect(bioUnlock) { if (bioUnlock) unlockWithFinger() }
+
+    /** Create the identity; then, when asked, turn on fingerprint unlock and/or start linking. */
+    fun create(thenLink: Boolean) {
+        if (pass != again) {
+            m.notice = "The two passphrases differ."
+            return
+        }
+        m.run {
+            Bridge.call("create_identity", args("passphrase" to pass))
+            m.loadStatus()
+            if (useBio && bioReady) BioLock.enable(act, pass) { err -> if (err != null) m.notice = "Fingerprint unlock was not turned on: $err" }
+            if (thenLink) m.open(Screen.LinkNew)
+        }
+    }
+
     Page {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().navigationBarsPadding()
@@ -153,22 +185,30 @@ fun GateScreen(m: AppModel) {
                     helper = if (creating) "10 characters or more. It encrypts your keys and history here. If you lose it and have no other device, this identity cannot be recovered." else null,
                 )
                 if (creating) Field("Passphrase again", again, { again = it }, password = true)
+                if (creating && bioReady) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Unlock with fingerprint or face", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                            Muted("The passphrase still works. This only saves typing it.", 12.5.sp)
+                        }
+                        Switch(useBio, { useBio = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+                    }
+                }
             }
             Spacer(Modifier.weight(1f, fill = false).height(8.dp))
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 PrimaryButton(if (creating) "Create my identity" else "Unlock", enabled = !m.busy && pass.isNotEmpty()) {
-                    if (creating && pass != again) {
-                        m.notice = "The two passphrases differ."
-                    } else {
-                        m.run {
-                            Bridge.call(if (creating) "create_identity" else "unlock", args("passphrase" to pass))
-                            m.loadStatus()
-                        }
+                    if (creating) create(false)
+                    else m.run {
+                        Bridge.call("unlock", args("passphrase" to pass))
+                        m.loadStatus()
                     }
                 }
+                if (bioUnlock) OutlineButton("Unlock with fingerprint or face", Modifier.fillMaxWidth()) { unlockWithFinger() }
                 if (creating) {
                     OutlineButton("I already use Spike on another device", Modifier.fillMaxWidth()) {
-                        m.notice = "Linking a phone to an existing identity is not built into this app yet. Create a new identity for now."
+                        if (pass.isEmpty()) m.notice = "Choose a passphrase for this phone first; then it shows a code to link it."
+                        else create(true)
                     }
                 }
                 Muted("Unreviewed prototype software: do not use it for real secrets yet.", 12.5.sp)
@@ -369,8 +409,23 @@ private fun ChatRow(
 fun ConversationScreen(
     m: AppModel, title: String, sub: String, verified: Boolean, square: Boolean, caption: String,
     onSend: suspend (String) -> Unit, onInfo: () -> Unit,
+    attach: (suspend (String, java.io.File) -> Unit)? = null,
 ) {
     var text by remember { mutableStateOf("") }
+    val ctx = LocalContext.current
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null && attach != null) {
+            m.run {
+                val picked = withContext(Dispatchers.IO) { copyPicked(ctx, uri) } ?: throw BridgeError("could not read that file")
+                try {
+                    attach(picked.first, picked.second)
+                } finally {
+                    picked.second.delete()
+                }
+                m.refresh()
+            }
+        }
+    }
     val listState = rememberLazyListState()
     LaunchedEffect(m.messages.size) {
         if (m.messages.isNotEmpty()) listState.scrollToItem(m.messages.size)
@@ -408,7 +463,7 @@ fun ConversationScreen(
                         }
                     }
                 }
-                item(key = msg.id) { Bubble(msg) }
+                item(key = msg.id) { Bubble(msg) { m.run { saveAndOpen(ctx, msg.id) } } }
             }
             item { Spacer(Modifier.height(2.dp)) }
         }
@@ -418,6 +473,12 @@ fun ConversationScreen(
         ) {
             Box(Modifier.fillMaxWidth().height(0.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (attach != null) {
+                    Box(
+                        Modifier.size(44.dp).clip(CircleShape).clickable { pick.launch("*/*") }.semantics { contentDescription = "Attach a file" },
+                        contentAlignment = Alignment.Center,
+                    ) { Ico(Ic.Clip, C.Muted) }
+                }
                 Box(
                     Modifier.weight(1f).heightIn(min = 44.dp).clip(RoundedCornerShape(22.dp)).background(C.Bg)
                         .border(1.dp, C.BorderStrong, RoundedCornerShape(22.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
@@ -449,7 +510,7 @@ fun ConversationScreen(
 }
 
 @Composable
-private fun Bubble(msg: Message) {
+private fun Bubble(msg: Message, onFile: () -> Unit) {
     Column(
         Modifier.fillMaxWidth(), horizontalAlignment = if (msg.out) Alignment.End else Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -464,11 +525,27 @@ private fun Bubble(msg: Message) {
                 .then(if (msg.out) Modifier else Modifier.border(1.dp, C.Border, shape))
                 .padding(horizontal = 13.dp, vertical = 9.dp),
         ) {
-            Text(
-                if (msg.deleted) "Message deleted" else msg.body, fontSize = 15.sp,
-                color = if (msg.out) Color.White else C.Text,
-                fontStyle = if (msg.deleted) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (msg.fileName != null && !msg.deleted) {
+                    Row(
+                        Modifier.clickable(onClick = onFile).semantics { contentDescription = "File ${msg.fileName}" },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Ico(Ic.File, if (msg.out) Color.White else C.AvatarText, 26.dp)
+                        Column {
+                            Text(msg.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (msg.out) Color.White else C.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(sizeText(msg.fileSize) + " · tap to open", fontSize = 12.sp, color = if (msg.out) Color.White.copy(alpha = 0.8f) else C.Muted)
+                        }
+                    }
+                }
+                if (msg.deleted || msg.body.isNotEmpty() || msg.fileName == null) {
+                    Text(
+                        if (msg.deleted) "Message deleted" else msg.body, fontSize = 15.sp,
+                        color = if (msg.out) Color.White else C.Text,
+                        fontStyle = if (msg.deleted) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
+                    )
+                }
+            }
         }
         Muted(clock(msg.ts) + if (msg.edited) " · edited" else "", 11.5.sp)
     }
@@ -515,7 +592,7 @@ fun VerifyScreen(m: AppModel, name: String) {
 // ---- 10 · add a contact -------------------------------------------------------------------------------
 
 @Composable
-private fun QrCode(matrix: List<String>, modifier: Modifier = Modifier) {
+internal fun QrCode(matrix: List<String>, modifier: Modifier = Modifier) {
     val n = matrix.size
     Canvas(modifier.background(Color.White)) {
         val quiet = 2
@@ -536,6 +613,7 @@ fun AddContactScreen(m: AppModel) {
     var name by remember { mutableStateOf("") }
     var card by remember { mutableStateOf("") }
     var qr by remember { mutableStateOf<List<String>?>(null) }
+    var scanned by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(o.me.card) {
         try {
             val r = Bridge.obj("qr_matrix", args("text" to o.me.card))
@@ -550,7 +628,7 @@ fun AddContactScreen(m: AppModel) {
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.AvatarBg).padding(3.dp),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                for ((i, label) in listOf("My code", "Paste a card", "Share").withIndex()) {
+                for ((i, label) in listOf("My code", "Scan", "Paste a card", "Share").withIndex()) {
                     Box(
                         Modifier.weight(1f).heightIn(min = 40.dp).clip(RoundedCornerShape(10.dp))
                             .background(if (tab == i) C.Surface else Color.Transparent).clickable { tab = i },
@@ -568,9 +646,36 @@ fun AddContactScreen(m: AppModel) {
                         Text("Your identity", fontWeight = FontWeight.SemiBold)
                         Text(o.me.fingerprint.replace("-", " "), fontFamily = Mono, fontSize = 15.sp)
                     }
-                    Muted("This code holds your public card. Scanning with the camera is not built into this app yet: your friend can paste your card instead (the Share tab).", 13.sp)
+                    Muted("This code holds your public card. Your friend scans it with Add a contact, Scan. Or they can paste your card (the Share tab).", 13.sp)
                 }
                 1 -> {
+                    Muted("Point the camera at your contact's code (their Add a contact, My code). Then compare fingerprints with them once.", 14.sp)
+                    if (scanned == null) {
+                        QrScanner(Modifier.fillMaxWidth().height(300.dp)) { text ->
+                            if (text.trim().startsWith("spike2:")) scanned = text.trim()
+                            else m.notice = "That code is not a Spike card."
+                        }
+                    } else {
+                        CardBox {
+                            Text("Got a card", fontWeight = FontWeight.SemiBold)
+                            Text(scanned!!.take(48) + "…", fontFamily = Mono, fontSize = 12.sp)
+                        }
+                        Field("Name", name, { name = it }, helper = "Only you see this name.")
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OutlineButton("Scan again") { scanned = null }
+                            Box(Modifier.weight(1f)) {
+                                PrimaryButton("Add contact", enabled = name.isNotBlank() && !m.busy) {
+                                    val c = scanned!!
+                                    m.run {
+                                        Bridge.call("add_contact", args("name" to name.trim(), "card" to c))
+                                        m.open(null)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                2 -> {
                     Muted("Paste the card your contact shared (it starts with spike2:). Then compare fingerprints with them once.", 14.sp)
                     Field("Name", name, { name = it }, helper = "Only you see this name.")
                     Field("Card", card, { card = it }, singleLine = false, minHeight = 96.dp, maxLines = 4)
@@ -680,8 +785,10 @@ fun DevicesTab(m: AppModel) {
                 }
             }
         }
-        PrimaryButton("Link a new device", icon = Ic.Plus) {
-            m.notice = "Linking another device from the phone is not built yet. Link a computer to this phone from the computer's app for now."
+        if (o.me.approver) {
+            PrimaryButton("Link a new device", icon = Ic.Plus) { m.open(Screen.LinkOld) }
+        } else {
+            Muted("New devices are linked from your main device (the first one you set up).", 13.sp)
         }
         CardBox {
             Text("Your identity key", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
@@ -756,6 +863,16 @@ fun SettingsTab(m: AppModel) {
     var relay by remember(o.relay) { mutableStateOf(o.relay) }
     var insecure by remember { mutableStateOf(o.relay.startsWith("ws://")) }
     var editing by remember { mutableStateOf(false) }
+    val act = ctx as androidx.fragment.app.FragmentActivity
+    val bioAvailable = remember { BioLock.available(act) }
+    var bio by remember { mutableStateOf(BioLock.enabled(act)) }
+    var askPass by remember { mutableStateOf(false) }
+    var passTyped by remember { mutableStateOf("") }
+    var alerts by remember { mutableStateOf(Prefs.notifyInBackground(ctx)) }
+    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) { Prefs.setNotifyInBackground(ctx, true); ListenerService.start(ctx); alerts = true }
+        else m.notice = "Allow notifications for Spike Connect in the phone's settings to get alerts."
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         H1("Network and privacy", 28.sp)
         Text("Home relay", fontWeight = FontWeight.SemiBold)
@@ -828,7 +945,48 @@ fun SettingsTab(m: AppModel) {
                 OutlineButton("Copy my card", small = true) { copy(ctx, o.me.card); m.notice = "Card copied." }
                 OutlineButton("Lock now", small = true) { m.run { Bridge.call("lock"); m.loadStatus() } }
             }
-            Muted("The passphrase is asked again after the app restarts. Unlocking with fingerprint or face is not built yet.", 12.5.sp)
+            Muted("The passphrase is asked again after the app restarts.", 12.5.sp)
+        }
+        Text("Unlocking and alerts", fontWeight = FontWeight.SemiBold)
+        CardBox {
+            if (bioAvailable) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Unlock with fingerprint or face", fontWeight = FontWeight.Medium)
+                        Muted("Saves typing the passphrase. It is kept sealed by this phone's hardware and dropped if the enrolled fingerprints change.", 12.5.sp)
+                    }
+                    Switch(bio, { want ->
+                        if (!want) { BioLock.disable(act); bio = false }
+                        else askPass = true
+                    }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+                }
+                if (askPass) {
+                    Field("Passphrase", passTyped, { passTyped = it }, password = true, helper = "Type it once so it can be sealed. You then confirm with your fingerprint or face.")
+                    PrimaryButton("Turn on", enabled = passTyped.isNotEmpty()) {
+                        BioLock.enable(act, passTyped) { err ->
+                            if (err == null) { bio = true; m.notice = "Fingerprint unlock is on." } else m.notice = "Not turned on: $err"
+                            askPass = false; passTyped = ""
+                        }
+                    }
+                }
+            } else {
+                Muted("Fingerprint or face unlock needs a fingerprint or face set up in the phone's settings.", 12.5.sp)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Alerts while the app is closed", fontWeight = FontWeight.Medium)
+                    Muted("Keeps a small notification showing and listens for messages. Alerts say that something arrived, never what. Needs the app unlocked since the phone last started.", 12.5.sp)
+                }
+                Switch(alerts, { want ->
+                    if (!want) {
+                        Prefs.setNotifyInBackground(ctx, false); ListenerService.stop(ctx); alerts = false
+                    } else if (!Notifier.allowed(ctx)) {
+                        askNotify.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        Prefs.setNotifyInBackground(ctx, true); ListenerService.start(ctx); alerts = true
+                    }
+                }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+            }
         }
     }
 }

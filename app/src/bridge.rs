@@ -216,7 +216,72 @@ impl Engine {
                     }
                 })?)
             }
+            // Files travel by path: the app copies what the person picked into its own cache, the
+            // engine reads it (and `save_attachment` writes into a folder the app names).
+            "send_file" => {
+                let bytes = read_file(&s(a, "path")?)?;
+                let cap = a.get("caption").and_then(Value::as_str).unwrap_or("");
+                val(rt.block_on(x.send_file(&s(a, "name")?, &s(a, "file_name")?, &bytes, cap))?)
+            }
+            "group_send_file" => {
+                let bytes = read_file(&s(a, "path")?)?;
+                let cap = a.get("caption").and_then(Value::as_str).unwrap_or("");
+                val(rt.block_on(x.group_send_file(
+                    &s(a, "id")?,
+                    &s(a, "file_name")?,
+                    &bytes,
+                    cap,
+                ))?)
+            }
+            "save_attachment" => {
+                let (name, bytes) = rt.block_on(x.attachment(&s(a, "id")?))?;
+                let dir = PathBuf::from(s(a, "dir")?);
+                std::fs::create_dir_all(&dir)?;
+                let path = unique_path(&dir, &name)?;
+                std::fs::write(&path, bytes).context("saving the file")?;
+                val(path.display().to_string())
+            }
+            // Linking a phone: the new device offers a code, the existing one enters it; both then
+            // show the same safety code.
+            "link_offer" => val(x.link_offer()?),
+            "link_wait" => val(rt.block_on(x.link_wait(Duration::from_secs(90)))?),
+            "link_receive" => val(rt.block_on(x.link_receive(Duration::from_secs(120)))?),
+            "link_cancel" => {
+                x.link_cancel();
+                Ok(Value::Null)
+            }
+            "link_begin" => val(rt.block_on(x.link_begin(&s(a, "code")?))?),
+            "link_finish" => {
+                let days = a.get("days").and_then(Value::as_u64).unwrap_or(30);
+                val(rt.block_on(x.link_finish(&s(a, "history")?, days))?)
+            }
             other => bail!("unknown command '{other}'"),
         }
     }
+}
+
+fn read_file(path: &str) -> Result<Vec<u8>> {
+    std::fs::read(path).with_context(|| "reading the chosen file")
+}
+
+/// `dir/name`, or `dir/name (2)`, ... so a saved file never overwrites another.
+fn unique_path(dir: &std::path::Path, name: &str) -> Result<PathBuf> {
+    let first = dir.join(name);
+    if !first.exists() {
+        return Ok(first);
+    }
+    let p = std::path::Path::new(name);
+    let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("file");
+    let ext = p.extension().and_then(|x| x.to_str());
+    for n in 2..1000 {
+        let f = match ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        };
+        let c = dir.join(f);
+        if !c.exists() {
+            return Ok(c);
+        }
+    }
+    bail!("too many files with that name in the folder")
 }

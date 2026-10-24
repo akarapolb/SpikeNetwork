@@ -6,14 +6,11 @@
 //   cargo build -p spike-relay && (cd desktop/src-tauri && cargo build)
 //   node android/drive_mobile.mjs [screenshot-dir]
 import { execFileSync, spawn } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createDrive, sleep } from "../desktop/drive_lib.mjs";
 
-const SDK = process.env.ANDROID_HOME || "D:/Android/sdk";
-const ADB = `${SDK}/platform-tools/adb.exe`;
-const APK = "android/app/build/outputs/apk/debug/app-debug.apk";
-const PKG = "network.spike.connect";
+import { createPhone, ADB, APK, PKG } from "./phone_lib.mjs";
 const PHONE_PASS = "phone test passphrase";
 const RELAY = "ws://127.0.0.1:8787";
 
@@ -21,92 +18,7 @@ const D = createDrive({ relayUrl: RELAY, shotsDir: process.argv[2] });
 const { check } = D;
 mkdirSync(D.shots, { recursive: true });
 
-const adb = (...a) => execFileSync(ADB, a, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-const sh = (cmd) => adb("shell", cmd);
-
-// ---- the phone's screen, read through uiautomator ---------------------------------------------------
-
-function nodes() {
-  let xml = "";
-  for (let i = 0; i < 5 && !xml.includes("<node "); i++) {
-    // uiautomator now and then answers "null root node" while a screen is changing: ask again.
-    try { sh("uiautomator dump /sdcard/ui.xml"); xml = adb("exec-out", "cat", "/sdcard/ui.xml"); } catch (_) {}
-    if (!xml.includes("<node ")) execFileSync("node", ["-e", "setTimeout(()=>{},600)"]);
-  }
-  const out = [];
-  for (const m of xml.matchAll(/<node [^>]*>/g)) {
-    const a = Object.fromEntries([...m[0].matchAll(/([\w-]+)="([^"]*)"/g)].map((x) => [x[1], x[2]]));
-    const b = (a.bounds || "").match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
-    if (!b) continue;
-    const [x1, y1, x2, y2] = b.slice(1).map(Number);
-    out.push({
-      text: (a.text || "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#10;/g, "\n"),
-      desc: a["content-desc"] || "", cls: a.class || "", cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, y1,
-    });
-  }
-  return out;
-}
-const screenText = () => nodes().map((n) => n.text || n.desc).filter(Boolean).join(" | ");
-
-async function waitText(sub, ms = 20000) {
-  const end = Date.now() + ms;
-  let last = "";
-  while (Date.now() < end) {
-    last = screenText();
-    if (last.includes(sub)) return true;
-    await sleep(500);
-  }
-  console.log(`   (waited for "${sub}"; the phone shows: ${last.slice(0, 300)})`);
-  return false;
-}
-
-function tap(x, y) { sh(`input tap ${Math.round(x)} ${Math.round(y)}`); }
-async function tapText(sub, exact = false) {
-  const n = nodes().find((x) => (exact ? x.text === sub || x.desc === sub : (x.text || x.desc).includes(sub)));
-  if (!n) throw new Error(`phone: nothing says "${sub}"`);
-  tap(n.cx, n.cy);
-  await sleep(500);
-}
-async function tapField(index) {
-  const f = nodes().filter((n) => n.cls.endsWith("EditText")).sort((a, b) => a.y1 - b.y1)[index];
-  if (!f) throw new Error(`phone: no text field #${index}`);
-  tap(f.cx, f.cy);
-  await sleep(400);
-}
-function typeText(text) {
-  // `input text` takes %s for a space and trips over shell characters; ours are letters, digits and punctuation.
-  for (let i = 0; i < text.length; i += 40) {
-    sh(`input text '${text.slice(i, i + 40).replace(/ /g, "%s")}'`);
-  }
-}
-function shot(label) {
-  writeFileSync(join(D.shots, `phone-${label}.png`), execFileSync(ADB, ["exec-out", "screencap", "-p"], { maxBuffer: 64 * 1024 * 1024 }));
-}
-function back() { sh("input keyevent KEYCODE_BACK"); }
-/** Close the soft keyboard if it is showing (Back would otherwise leave the screen). The emulator must
- *  not be in hardware-keyboard mode (hw.keyboard=no in its config), or Gboard shows a toolbar over the app. */
-function hideKeyboard() {
-  if (sh("dumpsys input_method").includes("mInputShown=true")) sh("input keyevent KEYCODE_BACK");
-}
-
-/** Run a bridge command inside the app (debug builds) and return its JSON answer. */
-function debug(cmd, args = {}) {
-  const tag = `t${Math.random().toString(36).slice(2, 8)}`;
-  adb("logcat", "-c");
-  const raw = typeof args === "string" ? args : JSON.stringify(args);
-  sh(`am broadcast -n ${PKG}/.DebugReceiver --es cmd '${cmd}' --es args '${raw.replace(/'/g, "")}' --es tag ${tag}`);
-  for (let i = 0; i < 60; i++) {
-    const log = adb("logcat", "-d", "-s", "SpikeDebug:I");
-    if (log.includes(`${tag}#end`)) {
-      const parts = [...log.matchAll(new RegExp(`${tag}#(\\d+) (.*)`, "g"))].sort((a, b) => a[1] - b[1]).map((m) => m[2].replace(/\r$/, ""));
-      const answer = JSON.parse(parts.join(""));
-      if (answer.err) throw new Error(`phone ${cmd}: ${answer.err}`);
-      return answer.ok;
-    }
-    execFileSync("node", ["-e", "setTimeout(()=>{},250)"]);
-  }
-  throw new Error(`phone ${cmd}: no answer`);
-}
+const { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, shot, back, hideKeyboard, touch, debug } = createPhone(D);
 
 // ---- the run ---------------------------------------------------------------------------------------------
 
@@ -124,11 +36,22 @@ try {
   console.log("-- 1 · create identity (the phone's own screens)");
   check(await waitText("Your identity lives on this phone"), "the phone shows the create-identity screen");
   shot("1-onboarding");
-  await tapField(0); typeText(PHONE_PASS);
-  hideKeyboard();
-  await tapField(1); typeText(PHONE_PASS);
-  hideKeyboard();
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await tapField(0); typeText(PHONE_PASS);
+    hideKeyboard();
+    await tapField(1); typeText(PHONE_PASS);
+    hideKeyboard();
+    // Back can leave the app when the keyboard was already going away: the fields are then empty; redo.
+    const filled = nodes().filter((n) => n.cls.endsWith("EditText") && (n.text || "").length > 0).length;
+    if (filled === 2) break;
+    console.log("   (the gate fields were lost; typing them again)");
+    sh(`am start -n ${PKG}/.MainActivity`);
+    await sleep(1500);
+  }
   await tapText("Create my identity");
+  // With a fingerprint enrolled the create screen offers fingerprint unlock (on by default): confirm it.
+  const offered = await waitText("Turn on fingerprint unlock", 6000);
+  if (offered) { shot("1b-bio-at-create"); touch(); }
   check(await waitText("Chats", 30000), "the phone creates its identity and shows Chats");
   await sleep(1500);
   shot("2-chats-empty");
@@ -211,6 +134,35 @@ try {
   shot("12-members");
   back(); await sleep(500); back(); await sleep(500);
 
+  console.log("-- files, both ways (one-to-one)");
+  await tapText("Alice", true);
+  await waitText("Message Alice");
+  // phone to desktop: a file inside the app's cache, sent by path (what the attach button does after copying the pick)
+  sh(`run-as ${PKG} sh -c 'echo phone file contents > cache/phone-note.txt'`);
+  debug("send_file", { name: "Alice", file_name: "phone-note.txt", path: `/data/data/${PKG}/cache/phone-note.txt` });
+  let got = null;
+  for (let i = 0; i < 40 && !got; i++) {
+    const c = await desk.invoke("conversation", { name: "Phone" });
+    got = c.find((m) => m.file && m.file.name === "phone-note.txt");
+    if (!got) await sleep(500);
+  }
+  check(!!got, "the desktop received the phone's file");
+  if (got) {
+    const saved = await desk.invoke("save_attachment", { id: got.id });
+    check(readFileSync(saved, "utf8").trim() === "phone file contents", "the desktop saved the phone's file intact");
+  }
+  // desktop to phone
+  await desk.eval(`const b=new TextEncoder().encode("hello from the desktop file"); const e=encodeURIComponent; return await window.__TAURI__.core.invoke("send_file", b, {headers:{"x-contact":e("Phone"),"x-filename":e("desk-note.txt"),"x-caption":e("a file for you")}});`);
+  check(await waitText("desk-note.txt", 25000), "the phone shows the desktop's file in the conversation");
+  shot("14-file");
+  await tapText("desk-note.txt");
+  await sleep(2500);
+  const kept = sh(`run-as ${PKG} sh -c 'cat files/received/desk-note.txt'`).trim();
+  check(kept === "hello from the desktop file", "tapping the file saves it intact in the app's folder");
+  back(); await sleep(800); // the "open with" chooser
+  if (!screenText().includes("Message Alice")) { back(); await sleep(800); }
+  back(); await sleep(800);
+
   console.log("-- the other tabs");
   for (const t of ["Agents", "Devices", "Settings"]) {
     await tapText(t, true);
@@ -218,6 +170,104 @@ try {
     shot(`13-${t.toLowerCase()}`);
   }
   check(screenText().includes("Network and privacy"), "the Settings tab is the network and privacy screen");
+
+  console.log("-- link a second device FROM the phone (the phone is the existing device)");
+  const desk2 = await D.launch("desktop2", 9342);
+  const code = await desk2.invoke("link_offer");
+  await tapText("Devices", true);
+  await sleep(600);
+  await tapText("Link a new device");
+  check(await waitText("Scan the code"), "the phone's link screen asks for the new device's code");
+  shot("15-link-step1");
+  // type the code in chunks (it is long); the field accepts any text
+  await tapField(0);
+  typeText(code);
+  hideKeyboard();
+  const waiting = desk2.invoke("link_wait");
+  await sleep(300);
+  await tapText("Continue", true);
+  const safetyDesk = await waiting;
+  check(await waitText("Same code on both screens"), "the phone shows a safety code to compare");
+  check(screenText().replace(/\s/g, "").includes(safetyDesk.replace(/\s/g, "")), "the phone and the new device show the same safety code");
+  shot("16-link-compare");
+  await tapText("Same code", true);
+  check(await waitText("What should the new device bring"), "the phone offers what history to bring");
+  shot("17-link-history");
+  const received = desk2.invoke("link_receive");
+  await tapText("Link device", true);
+  const installed = await received;
+  check(installed.contacts >= 1, "the new device received the identity and contacts");
+  await sleep(1500);
+  await tapText("Devices", true);
+  await sleep(800);
+  check((debug("overview").me.device_list || []).length === 2, "the phone's device list now has two devices");
+  shot("18-devices-two");
+
+  console.log("-- alerts while the app is closed (foreground service)");
+  await tapText("Settings", true);
+  await sleep(600);
+  sh("input swipe 540 1800 540 600 300");
+  await sleep(500);
+  const row = nodes().find((n) => (n.text || "").includes("Alerts while the app is closed"));
+  check(!!row, "the settings screen has the alerts switch");
+  tap(920, row.cy + 100);
+  await sleep(1500);
+  if ((await waitText("Allow", 4000)) && !screenText().includes("Alerts while")) { shot("19a-permission"); await tapText("Allow", true); await sleep(1500); }
+  shot("19-alerts-on");
+  check(sh(`dumpsys activity services ${PKG}`).includes("ListenerService"), "the foreground service is running");
+  sh("input keyevent KEYCODE_HOME");
+  await sleep(1500);
+  await desk.invoke("send", { name: "Phone", text: "are you there?" });
+  let notified = false;
+  for (let i = 0; i < 40 && !notified; i++) {
+    notified = /New message/.test(sh("dumpsys notification --noredact")) && sh("dumpsys notification --noredact").includes(`pkg=${PKG}`);
+    if (!notified) await sleep(500);
+  }
+  check(notified, "a notification says a message arrived while the app was closed");
+  const dump = sh("dumpsys notification --noredact");
+  check(!dump.includes("are you there?"), "the notification does not carry the message text");
+
+  if (/"count":[1-9]/.test(sh("dumpsys fingerprint")) && !process.env.NO_BIOMETRIC) {
+    console.log("-- unlock with fingerprint");
+    sh(`am start -n ${PKG}/.MainActivity`);
+    await sleep(1500);
+    await tapText("Settings", true);
+    await sleep(600);
+    sh("input swipe 540 1800 540 600 300");
+    await sleep(500);
+    const brow = nodes().find((n) => (n.text || "").includes("Unlock with fingerprint or face"));
+    check(!!brow, "Settings offers fingerprint unlock (a fingerprint is enrolled)");
+    tap(920, brow.cy + 40); // it was turned on at creation: turn it off ...
+    await sleep(800);
+    check(!screenText().includes("Type it once"), "the switch turns fingerprint unlock off");
+    tap(920, brow.cy + 40); // ... and on again
+    await sleep(800);
+    await tapField(0); typeText(PHONE_PASS); hideKeyboard();
+    if (screenText().includes(" | OK")) await tapText("OK", true);
+    sh("input swipe 540 1800 540 900 300");
+    await sleep(500);
+    await tapText("Turn on", true);
+    check(await waitText("Turn on fingerprint unlock", 5000), "the system fingerprint prompt appears");
+    shot("20-bio-prompt");
+    touch();
+    check(await waitText("Fingerprint unlock is on", 8000), "touching the sensor turns fingerprint unlock on");
+    await tapText("Lock now");
+    check(await waitText("Unlock Spike Connect", 5000), "locking brings the unlock screen, and the fingerprint prompt comes up by itself");
+    shot("21-bio-unlock");
+    touch();
+    check(await waitText("Chats", 15000), "touching the sensor unlocks the app without typing the passphrase");
+    // a wrong finger must not unlock
+    await tapText("Settings", true);
+    await sleep(500);
+    await tapText("Lock now");
+    await waitText("Unlock Spike Connect", 5000);
+    execFileSync(ADB, ["emu", "finger", "touch", "2"]);
+    await sleep(2500);
+    check(!screenText().includes("Chats |") && !screenText().includes("Message requests"), "an unknown finger does not unlock");
+    shot("22-bio-wrong-finger");
+    touch(); // the right one, to leave the app unlocked
+    await waitText("Chats", 15000);
+  }
 } catch (e) {
   console.log("ERROR", e.message);
   try { shot("error"); } catch (_) {}
