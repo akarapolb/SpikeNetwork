@@ -199,6 +199,9 @@ enum State {
 pub struct Machine {
     state: State,
     seen: VecDeque<String>,
+    /// Calls a contact has already ended (hung up, or gave up ringing) that we have not rung for: if the invite arrives
+    /// after its own end (the relay and the network do not promise order), it must not ring a call nobody is making.
+    cancelled: VecDeque<(String, String)>,
     /// (contact, time) of invites that rang and were not answered.
     unanswered: Vec<(String, u64)>,
     now: u64,
@@ -212,7 +215,7 @@ impl Default for Machine {
 
 impl Machine {
     pub fn new() -> Self {
-        Self { state: State::Idle, seen: VecDeque::new(), unanswered: Vec::new(), now: 0 }
+        Self { state: State::Idle, seen: VecDeque::new(), cancelled: VecDeque::new(), unanswered: Vec::new(), now: 0 }
     }
 
     pub fn is_idle(&self) -> bool {
@@ -446,6 +449,17 @@ impl Machine {
                         answered_at: None,
                     }];
                 }
+                if self.cancelled.iter().any(|(c, p)| *c == call && *p == peer) {
+                    // Its end came first: the caller already gave up. A missed call, not a ring.
+                    self.miss(&peer);
+                    return vec![Action::Ended {
+                        call,
+                        peer: Some(peer),
+                        incoming: true,
+                        result: CallResult::Missed,
+                        answered_at: None,
+                    }];
+                }
                 if self.unanswered.iter().filter(|(p, _)| *p == peer).count() >= MAX_UNANSWERED_PER_HOUR {
                     return vec![];
                 }
@@ -491,9 +505,10 @@ impl Machine {
             }
             Signal::Answer { call, sdp } => {
                 let State::Outgoing { call: mine, peer, pending_ice, .. } = &mut self.state else {
-                    // A second device answering a call that is already active: tell it.
-                    if let State::Active { call: mine, .. } = &self.state {
-                        if *mine == call && from.peer.is_some() {
+                    // A second device answering a call that is already active: tell it. The same device's answer again
+                    // (the network delivered it twice) is not a second device and must not be told the call is over.
+                    if let State::Active { call: mine, device, .. } = &self.state {
+                        if *mine == call && from.peer.is_some() && from.device != *device {
                             return vec![Self::send(
                                 Target::PeerDevice(from.device),
                                 Self::end(&call, Reason::AnsweredElsewhere),
@@ -607,6 +622,15 @@ impl Machine {
             }
             other => {
                 self.state = other;
+                // A caller's end for a call we know nothing about (yet): remember it for when the invite turns up.
+                if let Some(peer) = from.peer {
+                    if !self.cancelled.iter().any(|(c, p)| *c == call && *p == peer) {
+                        self.cancelled.push_back((call, peer));
+                        while self.cancelled.len() > SEEN_KEEP {
+                            self.cancelled.pop_front();
+                        }
+                    }
+                }
                 vec![]
             }
         }
@@ -638,6 +662,31 @@ mod tests {
     }
     fn ended(a: &[Action]) -> Option<CallResult> {
         a.iter().find_map(|x| if let Action::Ended { result, .. } = x { Some(*result) } else { None })
+    }
+
+    #[test]
+    fn an_invite_that_arrives_after_its_own_hangup_does_not_ring() {
+        let mut m = Machine::new();
+        // the caller's hang-up overtakes the invite
+        assert!(recv(&mut m, NOW, contact("d1"), Signal::End { call: id(1), reason: Reason::Hangup }).is_empty());
+        let a = recv(&mut m, NOW + 500, contact("d1"), invite(&id(1)));
+        assert!(!a.iter().any(|x| matches!(x, Action::Ring { .. })), "{a:?}");
+        assert_eq!(ended(&a), Some(CallResult::Missed));
+        assert!(m.is_idle());
+        // another call is unaffected
+        let a = recv(&mut m, NOW + 600, contact("d1"), invite(&id(2)));
+        assert!(a.iter().any(|x| matches!(x, Action::Ring { .. })));
+    }
+
+    #[test]
+    fn the_same_answer_twice_does_not_end_the_call() {
+        let mut m = Machine::new();
+        dial(&mut m, &id(1), 1);
+        let ans = Signal::Answer { call: id(1), sdp: "ans".into() };
+        assert!(matches!(&recv(&mut m, NOW + 100, contact("d1"), ans.clone())[0], Action::Connect { .. }));
+        // delivered again: ignored, the call carries on
+        assert!(recv(&mut m, NOW + 150, contact("d1"), ans).is_empty());
+        assert_eq!(m.current(), Some(id(1).as_str()));
     }
 
     #[test]

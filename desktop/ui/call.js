@@ -8,6 +8,7 @@
 PATHS.phone = '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"/>';
 PATHS.video = '<rect x="2" y="6" width="14" height="12" rx="2"/><path d="M16 10l6-3v10l-6-3z"/>';
 PATHS.mic = '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>';
+PATHS.screen = '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>';
 PATHS.micoff = '<path d="M4 4l16 16"/><path d="M9 9v2a3 3 0 0 0 5 2M15 10V6a3 3 0 0 0-5.5-1.7M5 11a7 7 0 0 0 11 5.7M19 11a7 7 0 0 1-.6 2.8M12 18v3"/>';
 
 let cs = null; // the call on this screen, if any
@@ -123,10 +124,43 @@ async function restartIce() {
 window.addEventListener("online", () => { if (cs && cs.connectedAt) restartIce(); });
 if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener("change", () => { if (cs && cs.connectedAt) restartIce(); });
 
+/* Sharing the screen in a video call (ADR 0028): the picture of the screen takes the place of the camera's on the same
+   connection, so nothing has to be negotiated again. Stopping (here, or with the browser's own "stop sharing" bar)
+   puts the camera back. Voice calls have no picture to swap: start a video call to share. */
+const videoSender = () => cs && cs.pc && cs.pc.getSenders().find((s) => s.track && s.track.kind === "video");
+async function toggleShare() {
+  if (!cs || !cs.pc || !cs.video || !cs.connectedAt) return;
+  if (cs.sharing) { await stopShare(); return; }
+  const me = cs, sender = videoSender();
+  if (!sender) return;
+  let display;
+  try { display = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: false }); }
+  catch (_) { toast("Screen sharing was not allowed."); return; }
+  if (cs !== me) { display.getTracks().forEach((t) => t.stop()); return; }
+  const track = display.getVideoTracks()[0];
+  try { track.contentHint = "detail"; } catch (_) {}
+  me.camTrack = sender.track;
+  try { await sender.replaceTrack(track); } catch (e) { track.stop(); toast("Could not share the screen."); return; }
+  me.shareStream = display; me.sharing = true;
+  track.addEventListener("ended", () => { if (cs === me) stopShare(); });
+  drawCall();
+}
+async function stopShare() {
+  const me = cs;
+  if (!me || !me.sharing) return;
+  me.sharing = false;
+  const sender = videoSender();
+  if (sender && me.camTrack && me.camTrack.readyState === "live") { try { await sender.replaceTrack(me.camTrack); } catch (_) {} }
+  if (me.shareStream) me.shareStream.getTracks().forEach((t) => t.stop());
+  me.shareStream = null;
+  if (cs === me) drawCall();
+}
+
 function stopMedia() {
   if (!cs) return;
   clearTimeout(cs.iceTimer); clearTimeout(cs.discTimer); clearTimeout(cs.giveUp);
   if (cs.local) cs.local.getTracks().forEach((t) => t.stop());
+  if (cs.shareStream) cs.shareStream.getTracks().forEach((t) => t.stop());
   if (cs.pc) { cs.pc.onconnectionstatechange = null; cs.pc.close(); }
   stopRing();
 }
@@ -255,7 +289,8 @@ function drawCall() {
   self.muted = true;
   callEls.remote = remote; callEls.self = self;
   if (c.remote) remote.srcObject = c.remote;
-  if (c.local && c.video) self.srcObject = c.local;
+  if (c.local && c.video) self.srcObject = c.sharing && c.shareStream ? c.shareStream : c.local;
+  if (c.sharing) self.classList.add("sharing");
   const hasVideo = c.video && c.remote && c.remote.getVideoTracks().length;
   const title = c.status === "ringing" ? `${c.name} is calling` : c.status === "calling" ? `Calling ${c.name}` : c.name;
   const sub = c.status === "ringing" ? (c.video ? "Incoming video call" : "Incoming voice call")
@@ -265,6 +300,7 @@ function drawCall() {
     h("span", { class: "ok" }, icon("shield"), c.verified ? `${c.name} is a verified contact` : `${c.name} is not verified yet`),
     c.code ? h("span", { class: c.verified ? "" : "warn" }, `Call code ${c.code}${c.verified ? "" : ": read it to each other; it must match"}`) : null,
     c.path ? h("span", {}, c.path) : null,
+    c.sharing ? h("span", { class: "warn" }, "You are sharing your screen") : null,
     h("span", {}, "Encrypted between your devices; the keys are checked against the identity you verified"),
   ];
   const ctl = c.status === "ringing"
@@ -272,6 +308,7 @@ function drawCall() {
     : [
       h("button", { type: "button", "aria-label": "Mute microphone", "aria-pressed": String(!!c.muted), onclick: () => { c.muted = !c.muted; if (c.local) c.local.getAudioTracks().forEach((t) => (t.enabled = !c.muted)); drawCall(); } }, icon(c.muted ? "micoff" : "mic")),
       c.video ? h("button", { type: "button", "aria-label": "Turn camera off", "aria-pressed": String(!!c.camOff), onclick: () => { c.camOff = !c.camOff; if (c.local) c.local.getVideoTracks().forEach((t) => (t.enabled = !c.camOff)); drawCall(); } }, icon("video")) : null,
+      c.video && c.connectedAt ? h("button", { type: "button", "aria-label": c.sharing ? "Stop sharing screen" : "Share screen", "aria-pressed": String(!!c.sharing), onclick: toggleShare }, icon("screen")) : null,
       h("button", { class: "end", type: "button", "aria-label": "Hang up", onclick: hangUp }, icon("phone")),
     ];
   r.replaceChildren(h("div", { class: "callbox", role: "dialog", "aria-label": "Call with " + c.name },
