@@ -31,6 +31,7 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [adr/0014-agent-requests.md](adr/0014-agent-requests.md) | Agent requests with human approval: signed requests, grants, receipts, hash-chained audit log (Phase 2, first slice) |
 | [adr/0027-direct-connections.md](adr/0027-direct-connections.md) | Direct device-to-device messages on the local network without a relay: discovery, handshake, fallback, threat model |
 | [adr/0029-backup-and-recovery.md](adr/0029-backup-and-recovery.md) | Backup file, recovery phrase, recovery contacts and doing nothing compared; what a backup holds and what it must not; how a restored identity rejoins; threat model |
+| [adr/0030-app-channels.md](adr/0030-app-channels.md) | **Proposed:** app channels, so other applications (first Center Work, for editing files together) can send their own data over Spike: stored and live modes, a fast path on the live connection, full state for late joiners |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [multi-device-design.html](multi-device-design.html) | **Proposed** design: message history across multiple devices, fan-out, device linking, and which servers are still needed |
 | [multi-device-demo.html](multi-device-demo.html) | **Interactive simulation** of that design (no real crypto): fan-out, offline catch-up, device linking, edits, relay outage, attacks. Open in a browser |
