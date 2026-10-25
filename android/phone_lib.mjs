@@ -58,7 +58,12 @@ export function createPhone(D) {
     await sleep(500);
   }
   async function tapField(index) {
-    const f = nodes().filter((n) => n.cls.endsWith("EditText")).sort((a, b) => a.y1 - b.y1)[index];
+    // A slow emulator can still be bringing the screen back (after Back closed the keyboard): wait a little.
+    let f;
+    for (let i = 0; i < 20 && !f; i++) {
+      f = nodes().filter((n) => n.cls.endsWith("EditText")).sort((a, b) => a.y1 - b.y1)[index];
+      if (!f) await sleep(500);
+    }
     if (!f) throw new Error(`phone: no text field #${index}`);
     tap(f.cx, f.cy);
     await sleep(400);

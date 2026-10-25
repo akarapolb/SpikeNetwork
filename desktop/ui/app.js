@@ -135,7 +135,7 @@ function renderRail() {
   const item = (k, label, n, warn) => h("button", { type: "button", "aria-current": st.section === k ? "page" : null, "aria-label": n ? `${label}, ${n} ${warn ? "waiting" : "unread"}` : label, onclick: () => go(k) },
     icon(k), h("span", { class: "tip", "aria-hidden": "true" }, `${label}  ${MOD}${keys[k]}`), n ? h("span", { class: "badge" + (warn ? " warn" : ""), "aria-hidden": "true" }, n) : null);
   $("rail").replaceChildren(
-    h("span", { class: "tile sm c-neutral me", title: "This device", "aria-hidden": "true" }, icon("shield")),
+    h("span", { class: "tile sm me", title: "This device", "aria-hidden": "true" }, icon("shield")),
     item("chats", "Chats", unread), item("agents", "Agents", w, true), item("devices", "Devices"), item("settings", "Settings"),
     h("span", { class: "spacer" }),
     h("button", { type: "button", "aria-label": "Switch light or dark", onclick: () => { const r = document.documentElement; const dark = matchMedia("(prefers-color-scheme: dark)").matches; r.dataset.theme = (r.dataset.theme || (dark ? "dark" : "light")) === "dark" ? "light" : "dark"; } }, icon("moon"), h("span", { class: "tip", "aria-hidden": "true" }, "Light or dark")),
@@ -156,7 +156,11 @@ function render() {
   $("main").replaceChildren(...banners, ...main);
 }
 function header(title, back) { return h("div", { class: "head" }, back ? h("button", { class: "iconbtn", type: "button", "aria-label": "Back", onclick: back }, icon("back")) : null, h("h1", {}, title)); }
-function tile(c, sm) { return h("span", { class: `tile${sm ? " sm" : ""}${c.agent ? " sq" : ""} c-neutral`, "aria-hidden": "true" }, ini(c.name)); }
+function tile(c, sm) { return h("span", { class: `tile${sm ? " sm" : ""}${c.agent ? " sq" : ""} ${tint(c.name)}`, "aria-hidden": "true" }, ini(c.name)); }
+// A soft tint picked from the name, so people are easier to tell apart. Status colours stay red, amber and green.
+function tint(name) { let n = 0; for (const ch of name || "") n = (n * 31 + ch.codePointAt(0)) >>> 0; return `c-t${n % 6}`; }
+// An empty state: a quiet icon above the same sentence as before.
+function emptyState(text, ic = "chats") { return h("div", { class: "empty" }, h("span", { class: "emptyic", "aria-hidden": "true" }, icon(ic)), h("p", {}, text)); }
 
 /* ---------- chats ---------- */
 function chatsList() {
@@ -171,7 +175,7 @@ function chatsList() {
       st.ov.requests ? h("button", { class: "reqrow", type: "button", onclick: () => { st.screen = "requests"; st.naming = null; render(); } }, icon("addperson"),
         h("span", { style: "flex:1;font-size:14px;text-align:left" }, h("b", { style: "font-weight:600" }, `${st.ov.requests} message request${st.ov.requests > 1 ? "s" : ""}`), " ", h("span", { class: "muted" }, "from people not in your contacts")), icon("chev")) : null,
       entries.length ? entries.map((e) => e.row)
-        : h("p", { class: "empty" }, "No contacts yet. Add one with the button above: paste their identity card.")),
+        : emptyState("No contacts yet. Add one with the button above: paste their identity card.", "addperson")),
   ];
 }
 function contactRow(c) {
@@ -236,11 +240,13 @@ function callBack(video) {
   if (st.chat) startCall(st.chat, video);
 }
 function threadItems(inGroup) {
-  const items = []; let day = "";
+  const items = []; let day = "", prev = null;
   for (const m of st.msgs) {
-    const d = dayOf(m.ts); if (d !== day) { day = d; items.push(h("div", { class: "day" }, d)); }
-    items.push(h("div", { class: "msg" + (m.out ? " out" : "") },
-      inGroup && !m.out && m.from ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag bad", style: "margin-left:6px" }, "Not verified")) : null,
+    const d = dayOf(m.ts); if (d !== day) { day = d; prev = null; items.push(h("div", { class: "day" }, d)); }
+    // A message right after one from the same sender sits closer to it.
+    const cont = prev && prev.out === m.out && prev.from === m.from && m.ts - prev.ts < 300000; prev = m;
+    items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") },
+      inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag bad", style: "margin-left:6px" }, "Not verified")) : null,
       m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, m.body) : null),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
@@ -250,7 +256,7 @@ function threadItems(inGroup) {
 function chatMain() {
   if (st.group) return groupMain();
   const c = st.ov.contacts.find((x) => x.name === st.chat);
-  if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), h("p", { class: "empty" }, st.ov.contacts.length ? "Choose a conversation." : "Add a contact to start.")];
+  if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), emptyState(st.ov.contacts.length ? "Choose a conversation." : "Add a contact to start.")];
   const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name), h("span", { class: c.agent ? "verified" : null }, c.agent ? [icon("shield"), "Agent"] : `End-to-end encrypted · ${c.devices} device${c.devices > 1 ? "s" : ""}`)),
     callButtons(c), h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
   const items = threadItems(false);
@@ -262,7 +268,7 @@ function chatMain() {
     catch (e) { toast(String(e)); }
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
-  return [head, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : h("p", { class: "empty" }, c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
+  return [head, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
     h("div", { class: "composer" }, h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
 }
 
@@ -660,7 +666,7 @@ function groupRow(g) {
 }
 function groupMain() {
   const g = st.ov.groups.find((x) => x.id === st.group), d = st.gdetail;
-  if (!g || !d) return [h("div", { class: "head" }, h("h1", {}, "Chats")), h("p", { class: "empty" }, "Choose a conversation.")];
+  if (!g || !d) return [h("div", { class: "head" }, h("h1", {}, "Chats")), emptyState("Choose a conversation.")];
   if (d.status === "invited") return inviteScreen();
   const left = d.status !== "joined";
   const head = h("div", { class: "head" }, groupTile(true), h("span", { class: "who" }, h("b", {}, d.name), h("span", {}, left ? "You are not in this group" : `${plural(d.members.length, "person", "people")} · end-to-end encrypted${d.large ? " · large group" : ""}`)),
@@ -685,7 +691,7 @@ function groupMain() {
   const composer = left ? h("div", { class: "composer" }, h("span", { class: "note" }, d.large ? "You are not in this group. Your history stays on this computer; an admin can invite you again." : "You are not in this group. Your history stays on this computer; nobody can add you back without your OK."))
     : h("div", { class: "composer" }, h("div", { class: "bar" }, d.large ? null : h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), d.large ? null : picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
       h("span", { class: "note" }, d.large ? `One encrypted copy for all ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}. Files are not available in large groups yet.` : `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
-  return [head, warn, refusedNote, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : h("p", { class: "empty" }, "No messages yet.")), composer].filter(Boolean);
+  return [head, warn, refusedNote, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState("No messages yet.")), composer].filter(Boolean);
 }
 const HISTORY_CHOICES = [["join", "Messages from when they join"], ["week", "The last 7 days"]];
 const historyNote = (v) => v === "week"
@@ -714,7 +720,7 @@ This declines the invite, and anything they send you from now on is dropped, on 
   return [header("Group invite", back), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
     h("p", { class: "lead" }, `${stranger ? "Someone who is not in your contacts" : d.invited_by} ${d.large ? "invited you to" : "added you to"} “${d.name}”. Nothing from the group is shown until you accept.`),
     d.large ? h("div", { class: "status soft" }, h("span", {}, h("b", {}, "A large group. "), "You will see who is in it once you join. Large groups are experimental and have not been independently reviewed yet.")) : h("section", { class: "card" }, h("h2", { class: "eyebrow" }, `${plural(d.members.length, "person", "people")} in it`),
-      d.members.map((m) => h("div", { class: "member" }, h("span", { class: "tile sm c-neutral", "aria-hidden": "true" }, memLetter(m)),
+      d.members.map((m) => h("div", { class: "member" }, h("span", { class: `tile sm ${m.you ? "c-neutral" : tint(m.name)}`, "aria-hidden": "true" }, memLetter(m)),
         h("span", { class: "body" }, h("b", { style: "font-weight:600" }, m.you ? "You" : m.name, m.name === d.invited_by ? h("span", { class: "tag plain", style: "margin-left:8px" }, "added you") : null), h("span", { class: "note" }, m.you ? "" : m.contact ? (m.verified ? "In your contacts · verified" : "In your contacts · not verified") : "Not in your contacts"))))),
     stranger ? h("div", { class: "status warn" }, h("b", {}, "You do not know who added you."), h("span", {}, "Join only if you expect this. Members you do not know are shown as not verified.")) : null,
     h("div", { style: `display:grid;grid-template-columns:${d.can_block ? "1fr 1fr 1fr" : "1fr 1fr"};gap:10px` },
@@ -743,7 +749,7 @@ function groupScreen() {
       h("button", { class: "btn primary", type: "button", onclick: async () => { try { toast(await invoke("add_member_as_contact", { owner: m.owner, name: inp.value })); st.nameMember = null; await refresh(); } catch (e) { toast(String(e)); } } }, "Add"),
       h("button", { class: "btn", type: "button", onclick: () => { st.nameMember = null; render(); } }, "Cancel"));
   };
-  const memberRow = (m) => h("div", { class: "member" }, h("span", { class: "tile sm c-neutral", "aria-hidden": "true" }, memLetter(m)),
+  const memberRow = (m) => h("div", { class: "member" }, h("span", { class: `tile sm ${m.you ? "c-neutral" : tint(m.name)}`, "aria-hidden": "true" }, memLetter(m)),
     h("span", { class: "body" }, h("span", { style: "display:flex;gap:8px;align-items:center" }, h("b", { style: "font-weight:600" }, m.you ? "You" : m.name), m.admin ? h("span", { class: "tag plain" }, "admin") : null),
       h("span", { class: "note" }, m.you ? "Your devices" : m.verified ? "Verified" : m.contact ? "Not verified" : "Not in your contacts · not verified"),
       !m.you && m.fingerprint ? h("span", { class: "note mono" }, m.fingerprint) : null,

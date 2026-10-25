@@ -46,11 +46,11 @@ const val AUTO_LOCK_MINUTES = 2
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Draw edge to edge with dark status and navigation icons: the screens are light.
+        // Draw edge to edge; the status and navigation icons follow the phone's light or dark setting, as the screens do.
         val clear = android.graphics.Color.TRANSPARENT
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(clear, clear),
-            navigationBarStyle = SystemBarStyle.light(clear, clear),
+            statusBarStyle = SystemBarStyle.auto(clear, clear),
+            navigationBarStyle = SystemBarStyle.auto(clear, clear),
         )
         applyScreenPrivacy()
         showOverLockIfCall(intent)
@@ -177,9 +177,9 @@ private fun Root() {
                     .background(C.Text).padding(start = 16.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(text, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f, fill = false).padding(vertical = 12.dp))
+                Text(text, color = C.Bg, fontSize = 14.sp, modifier = Modifier.weight(1f, fill = false).padding(vertical = 12.dp))
                 Box(Modifier.clickable { m.notice = null }.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                    Text("OK", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("OK", color = C.Bg, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                 }
             }
         }

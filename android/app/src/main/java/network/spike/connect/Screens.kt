@@ -164,8 +164,8 @@ fun GateScreen(m: AppModel) {
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(C.AvatarBg), contentAlignment = Alignment.Center) {
-                    Ico(Ic.Share, C.AvatarText, 20.dp)
+                Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(C.Accent), contentAlignment = Alignment.Center) {
+                    Ico(Ic.ShieldCheck, C.OnAccent, 20.dp)
                 }
                 Text("Spike Connect", fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             }
@@ -240,12 +240,16 @@ fun TabBar(m: AppModel) {
         for ((tab, p) in tabs) {
             val on = m.tab == tab && m.screen == null
             Column(
-                Modifier.weight(1f).heightIn(min = 52.dp).clickable { m.select(tab) },
+                Modifier.weight(1f).heightIn(min = 56.dp).clip(RoundedCornerShape(16.dp)).clickable { m.select(tab) },
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
             ) {
-                Ico(p.second, if (on) C.Accent else C.Muted)
-                Spacer(Modifier.height(3.dp))
-                Text(p.first, fontSize = 11.5.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) C.Accent else C.Muted)
+                // The selected tab's icon sits in a soft accent pill.
+                Box(
+                    Modifier.size(width = 56.dp, height = 30.dp).clip(RoundedCornerShape(15.dp)).background(if (on) C.AccentSoft else Color.Transparent),
+                    contentAlignment = Alignment.Center,
+                ) { Ico(p.second, if (on) C.AccentSoftText else C.Muted) }
+                Spacer(Modifier.height(4.dp))
+                Text(p.first, fontSize = 12.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) C.Text else C.Muted)
             }
         }
     }
@@ -271,10 +275,10 @@ fun ChatsTab(m: AppModel) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.weight(1f)) { H1("Chats") }
                 Box(
-                    Modifier.size(44.dp).clip(CircleShape).background(C.Surface).border(1.dp, C.Border, CircleShape)
+                    Modifier.size(44.dp).clip(CircleShape).background(C.AccentSoft)
                         .clickable { m.open(Screen.AddContact) }.semantics { contentDescription = "Add a contact" },
                     contentAlignment = Alignment.Center,
-                ) { Ico(Ic.AddPerson) }
+                ) { Ico(Ic.AddPerson, C.AccentSoftText) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip(
@@ -287,8 +291,7 @@ fun ChatsTab(m: AppModel) {
                 ) { m.select(Tab.Settings) }
             }
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(12.dp)).background(C.Surface)
-                    .border(1.dp, C.Border, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp),
+                Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(22.dp)).background(C.Subtle).padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Ico(Ic.Search, C.Muted, 18.dp)
@@ -308,31 +311,30 @@ fun ChatsTab(m: AppModel) {
                 item {
                     Row(
                         Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 4.dp).heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(12.dp)).background(C.Surface)
-                            .dashedBorder().clickable { m.open(Screen.Requests) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                            .clip(RoundedCornerShape(14.dp)).background(C.AmberBg)
+                            .clickable { m.open(Screen.Requests) }.padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Ico(Ic.Request, C.AvatarText)
+                        Ico(Ic.Request, C.AmberText)
                         Text(
                             androidx.compose.ui.text.buildAnnotatedString {
                                 pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold))
                                 append("${o.requests} message ${if (o.requests == 1) "request" else "requests"}")
                                 pop()
-                                pushStyle(androidx.compose.ui.text.SpanStyle(color = C.Muted))
                                 append(" from people not in your contacts")
                             },
-                            fontSize = 14.sp, modifier = Modifier.weight(1f),
+                            fontSize = 14.sp, color = C.AmberText, modifier = Modifier.weight(1f),
                         )
-                        Ico(Ic.Chevron, C.AvatarText, 18.dp)
+                        Ico(Ic.Chevron, C.AmberText, 18.dp)
                     }
                 }
             }
             if (items.isEmpty()) {
                 item {
-                    Muted(
+                    EmptyState(
+                        if (query.isBlank()) Ic.Chat else Ic.Search,
                         if (query.isBlank()) "No conversations yet. Add a contact with the button at the top, then say hello."
                         else "Nothing matches “$query”.",
-                        14.sp, Modifier.padding(24.dp),
                     )
                 }
             }
@@ -362,22 +364,13 @@ fun ChatsTab(m: AppModel) {
     }
 }
 
-private fun Modifier.dashedBorder(): Modifier = this.drawWithContent {
-    drawContent()
-    val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
-        width = 1.dp.toPx(),
-        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx())),
-    )
-    drawRoundRect(C.BorderStrong, cornerRadius = androidx.compose.ui.geometry.CornerRadius(12.dp.toPx()), style = stroke)
-}
-
 @Composable
 private fun ChatRow(
     title: String, square: Boolean, tag: String?, tagKind: TagKind, verified: Boolean, preview: String,
     time: String, unread: Int, plainTag: Boolean = false, previewAmber: Boolean = false, onClick: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).clip(RoundedCornerShape(14.dp))
+        Modifier.fillMaxWidth().heightIn(min = 68.dp).clip(RoundedCornerShape(16.dp))
             .background(if (unread > 0) C.Surface else Color.Transparent).clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -398,12 +391,12 @@ private fun ChatRow(
             )
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
-            Text(time, fontSize = 12.sp, color = if (unread > 0) C.Text else C.Muted, fontWeight = if (unread > 0) FontWeight.SemiBold else FontWeight.Normal)
+            Text(time, fontSize = 12.sp, color = if (unread > 0) C.Accent else C.Muted, fontWeight = if (unread > 0) FontWeight.SemiBold else FontWeight.Normal)
             if (unread > 0) {
                 Box(
-                    Modifier.heightIn(min = 20.dp).widthIn(min = 20.dp).clip(RoundedCornerShape(10.dp)).background(C.AvatarText).padding(horizontal = 6.dp),
+                    Modifier.heightIn(min = 20.dp).widthIn(min = 20.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent).padding(horizontal = 6.dp),
                     contentAlignment = Alignment.Center,
-                ) { Text("$unread", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                ) { Text("$unread", color = C.OnAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
             }
         }
     }
@@ -466,13 +459,13 @@ fun ConversationScreen(
         ) {
             item { Spacer(Modifier.height(2.dp)) }
             if (m.messages.isEmpty()) {
-                item { Muted("No messages yet. Say hello.", 14.sp, Modifier.padding(vertical = 24.dp).fillMaxWidth()) }
+                item { EmptyState(Ic.Chat, "No messages yet. Say hello.") }
             }
             m.messages.forEachIndexed { i, msg ->
                 if (i == 0 || !sameDay(m.messages[i - 1].ts, msg.ts)) {
                     item(key = "day-${msg.id}") {
                         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            Text(dayLabel(msg.ts), fontSize = 12.sp, color = C.Muted, modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(C.Surface).padding(horizontal = 10.dp, vertical = 3.dp))
+                            Text(dayLabel(msg.ts), fontSize = 12.sp, fontWeight = FontWeight.Medium, color = C.Muted, modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(C.Surface).padding(horizontal = 10.dp, vertical = 3.dp))
                         }
                     }
                 }
@@ -485,7 +478,11 @@ fun ConversationScreen(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Box(Modifier.fillMaxWidth().height(0.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // One pill holds the attach button, the text and the send button, as on the desktop.
+            Row(
+                Modifier.clip(RoundedCornerShape(26.dp)).background(C.Subtle).padding(4.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 if (attach != null) {
                     Box(
                         Modifier.size(44.dp).clip(CircleShape).clickable { pick.launch("*/*") }.semantics { contentDescription = "Attach a file" },
@@ -493,8 +490,7 @@ fun ConversationScreen(
                     ) { Ico(Ic.Clip, C.Muted) }
                 }
                 Box(
-                    Modifier.weight(1f).heightIn(min = 44.dp).clip(RoundedCornerShape(22.dp)).background(C.Bg)
-                        .border(1.dp, C.BorderStrong, RoundedCornerShape(22.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
+                    Modifier.weight(1f).heightIn(min = 44.dp).padding(start = if (attach != null) 0.dp else 12.dp, top = 10.dp, bottom = 10.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     BasicTextField(
@@ -515,9 +511,9 @@ fun ConversationScreen(
                             m.run { onSend(t); m.refresh() }
                         }.semantics { contentDescription = "Send" },
                     contentAlignment = Alignment.Center,
-                ) { Ico(Ic.Send, Color.White) }
+                ) { Ico(Ic.Send, C.OnAccent, 20.dp) }
             }
-            Muted(caption, 11.5.sp, Modifier.padding(start = 52.dp))
+            Muted(caption, 11.5.sp, Modifier.fillMaxWidth().padding(horizontal = 12.dp))
         }
     }
 }
@@ -537,9 +533,8 @@ private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Uni
         val shape = if (msg.out) RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp) else RoundedCornerShape(18.dp, 18.dp, 18.dp, 6.dp)
         Box(
             Modifier.widthIn(max = 300.dp).clip(shape)
-                .background(if (msg.out) C.Accent else C.Surface)
-                .then(if (msg.out) Modifier else Modifier.border(1.dp, C.Border, shape))
-                .padding(horizontal = 13.dp, vertical = 9.dp),
+                .background(if (msg.out) C.BubbleOut else C.Surface)
+                .padding(horizontal = 14.dp, vertical = 9.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (msg.fileName != null && !msg.deleted) {
@@ -547,23 +542,23 @@ private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Uni
                         Modifier.clickable(onClick = onFile).semantics { contentDescription = "File ${msg.fileName}" },
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Ico(Ic.File, if (msg.out) Color.White else C.AvatarText, 26.dp)
+                        Ico(Ic.File, if (msg.out) C.OnBubbleOut else C.AvatarText, 26.dp)
                         Column {
-                            Text(msg.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (msg.out) Color.White else C.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(sizeText(msg.fileSize) + " · tap to open", fontSize = 12.sp, color = if (msg.out) Color.White.copy(alpha = 0.8f) else C.Muted)
+                            Text(msg.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (msg.out) C.OnBubbleOut else C.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(sizeText(msg.fileSize) + " · tap to open", fontSize = 12.sp, color = if (msg.out) C.OnBubbleOut.copy(alpha = 0.8f) else C.Muted)
                         }
                     }
                 }
                 if (msg.deleted || msg.body.isNotEmpty() || msg.fileName == null) {
                     Text(
                         if (msg.deleted) "Message deleted" else msg.body, fontSize = 15.sp,
-                        color = if (msg.out) Color.White else C.Text,
+                        color = if (msg.out) C.OnBubbleOut else C.Text,
                         fontStyle = if (msg.deleted) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
                     )
                 }
                 if (callBack != null) {
                     Text(
-                        "Call back", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (msg.out) Color.White else C.Accent,
+                        "Call back", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (msg.out) C.OnBubbleOut else C.Accent,
                         modifier = Modifier.clickable { callBack() }.padding(vertical = 2.dp).semantics { contentDescription = "Call back" },
                     )
                 }
@@ -770,7 +765,7 @@ fun RequestsScreen(m: AppModel) {
                             Box(
                                 Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent).clickable { naming = true }.padding(horizontal = 16.dp),
                                 contentAlignment = Alignment.Center,
-                            ) { Text("Accept", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+                            ) { Text("Accept", color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
                         }
                     }
                 }
@@ -858,7 +853,7 @@ fun AgentsTab(m: AppModel) {
                                 Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent)
                                     .clickable { m.run { Bridge.call("decide", args("id" to r.id, "approve" to true)); m.refresh() } }.padding(horizontal = 16.dp),
                                 contentAlignment = Alignment.Center,
-                            ) { Text("Approve", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+                            ) { Text("Approve", color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
                         }
                     }
                 }
@@ -942,7 +937,7 @@ fun SettingsTab(m: AppModel) {
                             }
                         }.padding(horizontal = 16.dp),
                         contentAlignment = Alignment.Center,
-                    ) { Text("Save", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+                    ) { Text("Save", color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
                 }
             }
         }

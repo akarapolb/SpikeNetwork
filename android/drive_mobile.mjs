@@ -34,21 +34,28 @@ try {
   sh(`am start -n ${PKG}/.MainActivity`);
 
   console.log("-- 1 · create identity (the phone's own screens)");
-  check(await waitText("Your identity lives on this phone"), "the phone shows the create-identity screen");
+  check(await waitText("Your identity lives on this phone", 60000), "the phone shows the create-identity screen");
   shot("1-onboarding");
+  // The emulator's keyboard now and then drops or corrects a keystroke, and Back can leave the app when the keyboard
+  // was already going away. Each try clears both fields, types them, checks both hold the whole passphrase (as dots),
+  // and presses Create; when the app answers "The two passphrases differ", it tries again.
   for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) {
+      sh(`am start -n ${PKG}/.MainActivity`);
+      await waitText("Passphrase for this phone");
+      for (const i of [0, 1]) { await tapField(i); sh("input keyevent KEYCODE_MOVE_END " + "67 ".repeat(40)); hideKeyboard(); }
+    }
     await tapField(0); typeText(PHONE_PASS);
     hideKeyboard();
     await tapField(1); typeText(PHONE_PASS);
     hideKeyboard();
-    // Back can leave the app when the keyboard was already going away: the fields are then empty; redo.
-    const filled = nodes().filter((n) => n.cls.endsWith("EditText") && (n.text || "").length > 0).length;
-    if (filled === 2) break;
-    console.log("   (the gate fields were lost; typing them again)");
-    sh(`am start -n ${PKG}/.MainActivity`);
-    await sleep(1500);
+    const lens = nodes().filter((n) => n.cls.endsWith("EditText")).map((n) => (n.text || "").length);
+    if (lens.length !== 2 || lens.some((l) => l !== PHONE_PASS.length)) { console.log(`   (the gate fields hold ${lens.join(", ")} characters; typing them again)`); continue; }
+    await tapText("Create my identity");
+    if (!(await waitText("The two passphrases differ", 3000))) break;
+    console.log("   (the keyboard changed a character; typing them again)");
+    await tapText("OK", true);
   }
-  await tapText("Create my identity");
   // With a fingerprint enrolled the create screen offers fingerprint unlock (on by default): confirm it.
   const offered = await waitText("Turn on fingerprint unlock", 6000);
   if (offered) { shot("1b-bio-at-create"); touch(); }
@@ -206,9 +213,13 @@ try {
   console.log("-- alerts while the app is closed (foreground service)");
   await tapText("Settings", true);
   await sleep(600);
-  sh("input swipe 540 1800 540 600 300");
-  await sleep(500);
-  const row = nodes().find((n) => (n.text || "").includes("Alerts while the app is closed"));
+  // Settings is longer than one screen: scroll until the row shows.
+  let row;
+  for (let i = 0; i < 6 && !row; i++) {
+    sh("input swipe 540 1800 540 600 300");
+    await sleep(500);
+    row = nodes().find((n) => (n.text || "").includes("Alerts while the app is closed"));
+  }
   check(!!row, "the settings screen has the alerts switch");
   tap(920, row.cy + 100);
   await sleep(1500);

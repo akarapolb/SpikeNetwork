@@ -353,7 +353,7 @@ function drawCall() {
     ];
   r.replaceChildren(h("div", { class: "callbox", role: "dialog", "aria-label": "Call with " + c.name },
     h("div", { class: "stage" },
-      hasVideo ? remote : [h("span", { class: "big", "aria-hidden": "true" }, ini(c.name)), remote],
+      hasVideo ? remote : [h("span", { class: `big ${tint(c.name)}`, "aria-hidden": "true" }, ini(c.name)), remote],
       h("h2", {}, title), h("p", { class: "sub", role: "status" }, sub),
       c.video && c.local ? self : null,
       h("div", { class: "facts" }, ...facts)),
