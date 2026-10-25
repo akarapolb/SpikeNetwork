@@ -115,6 +115,14 @@ fn set_attention(app: tauri::AppHandle, count: usize) {
     set_title(&app, count);
 }
 
+/// A desktop notification banner. The window decides when (not focused, something new) and what it says:
+/// at most who a message is from, never its text.
+#[tauri::command]
+fn notify_banner(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification().builder().title(title).body(body).show().map_err(|e| e.to_string())
+}
+
 fn stop_listener(state: &State<'_, AppState>) {
     if let Some(h) = state.listener.lock().expect("listener lock").take() {
         h.abort();
@@ -938,7 +946,7 @@ async fn link_finish(
 }
 
 pub fn run() {
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     #[cfg(feature = "updater")]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
@@ -958,6 +966,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_status,
+            notify_banner,
             call_start,
             call_ice_servers,
             call_restart,

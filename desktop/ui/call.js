@@ -259,6 +259,8 @@ async function onCallEvent(ev) {
     const c = st.ov && st.ov.contacts.find((x) => x.name === ev.name);
     cs = { id: ev.call, name: ev.name, video: ev.video, incoming: true, status: "ringing", offer: ev.sdp, verified: !!(c && c.verified) };
     startRing(); drawCall();
+    if (!document.hasFocus() && bannerMode() !== "off")
+      showBanner(bannerMode() === "who" ? `${ev.name} is calling.` : `Incoming ${ev.video ? "video" : "voice"} call.`);
     if (ev.glare) answerCall();
     return;
   }

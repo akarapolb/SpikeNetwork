@@ -92,7 +92,7 @@ async function gate(mode) {
   pass.focus();
 }
 async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.group = null; st.screen = null; await refresh(); if (st.linkNew) { st.linkNew = false; st.section = "devices"; st.screen = "linknew"; render(); startLinkNew(); } else syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 60000); armAutoLock(); }
-function stop() { clearInterval(st.polling); st.polling = null; clearTimeout(st.idleTimer); st.ov = st.agents = st.gdetail = null; st.msgs = []; st.editing = st.confirmDelete = null; }
+function stop() { st.seen = null; clearInterval(st.polling); st.polling = null; clearTimeout(st.idleTimer); st.ov = st.agents = st.gdetail = null; st.msgs = []; st.editing = st.confirmDelete = null; }
 
 /* The backend holds one connection to the relay and tells us the moment something arrives; the slow poll above is only a safety net. */
 function listenToBackend() {
@@ -113,6 +113,28 @@ function armAutoLock() {
 }
 ["pointerdown", "keydown", "wheel", "touchstart"].forEach((t) => document.addEventListener(t, () => { if (!$("app").hidden) armAutoLock(); }, { passive: true }));
 
+/* ---------- notification banners ---------- */
+const BANNER_CHOICES = [["some", "Say that something arrived"], ["who", "Say who it is from"], ["off", "Off"]];
+function bannerMode() { try { return localStorage.getItem("banners") || "some"; } catch (_) { return "some"; } }
+/* After each refresh: what is new since the last one. The first refresh after unlocking only takes note. */
+function banners() {
+  if (!st.ov) return;
+  const now = { chats: new Map([...st.ov.contacts.map((c) => [c.name, c.unread]), ...st.ov.groups.map((g) => ["#" + g.name, g.unread])]),
+    requests: st.ov.requests, invites: invitesCount(), waiting: st.ov.waiting };
+  const was = st.seen; st.seen = now;
+  if (!was || document.hasFocus() || bannerMode() === "off") return;
+  let count = 0; const from = [];
+  for (const [k, n] of now.chats) { const d = n - (was.chats.get(k) || 0); if (d > 0) { count += d; from.push(k.startsWith("#") ? k.slice(1) : k); } }
+  const who = bannerMode() === "who", list = (a) => (a.length > 2 ? `${a.slice(0, 2).join(", ")} and ${a.length - 2} more` : a.join(" and "));
+  const notes = [];
+  if (count) notes.push(who ? `${count === 1 ? "New message" : `${count} new messages`} from ${list(from)}` : count === 1 ? "New message" : `${count} new messages`);
+  if (now.requests > was.requests) notes.push("Someone new wants to message you");
+  if (now.invites > was.invites) notes.push("You were invited to a group");
+  if (now.waiting > was.waiting) notes.push("An agent is waiting for your approval");
+  if (notes.length) showBanner(notes.join(". ") + ".");
+}
+function showBanner(body) { invoke("notify_banner", { title: "Spike Connect", body }).catch(() => {}); }
+
 /* ---------- data ---------- */
 async function refresh() {
   try {
@@ -123,6 +145,7 @@ async function refresh() {
     if (st.group) await loadGroup();
   } catch (e) { if (e === "locked") return gate("unlock"); toast(String(e)); }
   render();
+  banners();
   if (st.ov) invoke("set_attention", { count: unreadTotal() + invitesCount() + st.ov.waiting + st.ov.requests }).catch(() => {});
 }
 async function syncNow() {
@@ -209,7 +232,7 @@ function chatsList() {
 }
 function contactRow(c) {
   return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.chat === c.name), onclick: () => openChat(c.name) }, tile(c),
-    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.agent ? h("span", { class: "tag plain" }, "agent") : null, c.verified ? null : h("span", { class: "tag bad" }, "Not verified")), h("span", { class: "preview" }, c.last || "No messages yet")),
+    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.agent ? h("span", { class: "tag plain" }, "agent") : null, c.verified ? null : h("span", { class: "tag waiting" }, "Not verified")), h("span", { class: "preview" }, c.last || "No messages yet")),
     h("span", { class: "meta" }, c.last_ts ? when(c.last_ts) : "", c.unread ? h("span", { class: "count" }, c.unread) : null));
 }
 function ownActions(m) {
@@ -277,7 +300,7 @@ function threadItems(inGroup) {
     // A message right after one from the same sender sits closer to it.
     const cont = prev && prev.out === m.out && prev.from === m.from && m.ts - prev.ts < 300000; prev = m;
     items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") },
-      inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag bad", style: "margin-left:6px" }, "Not verified")) : null,
+      inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag waiting", style: "margin-left:6px" }, "Not verified")) : null,
       m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, m.body) : null),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
@@ -540,9 +563,11 @@ function settingsMain() {
     h("section", { class: "card", id: "set-privacy" }, h("h2", { class: "eyebrow" }, "Privacy and security"),
       h("label", { style: "display:flex;flex-direction:column;gap:4px" }, h("b", { style: "font-weight:600" }, "Lock after no use for"), h("div", { class: "field" }, h("select", { "aria-label": "Auto-lock", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { try { localStorage.setItem("autolock", e.target.value); } catch (_) {} armAutoLock(); toast(Number(e.target.value) ? `Locks after ${e.target.selectedOptions[0].text} without use.` : "Auto-lock is off."); } }, AUTOLOCK_CHOICES.map(([v, l]) => h("option", { value: String(v), selected: v === autoLockMinutes() || null }, l)))),
         h("span", { class: "note" }, "Locking wipes your keys from memory. While locked, this computer does not receive messages.")),
+      h("label", { style: "display:flex;flex-direction:column;gap:4px;margin-top:6px" }, h("b", { style: "font-weight:600" }, "Notification banners"), h("div", { class: "field" }, h("select", { "aria-label": "Notification banners", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { try { localStorage.setItem("banners", e.target.value); } catch (_) {} toast(e.target.value === "off" ? "No banners. The taskbar still flashes." : "Banners on, while Spike Connect is not the window you are using."); } }, BANNER_CHOICES.map(([v, l]) => h("option", { value: v, selected: v === bannerMode() || null }, l)))),
+        h("span", { class: "note" }, "Shown while Spike Connect is not the window you are using. A banner never shows what a message says.")),
       h("span", { class: "note" }, "The window title, and the taskbar or dock, show how many messages and requests are waiting.")),
     updatesCard(),
-    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "an installer with auto-update, and desktop notification banners (the taskbar flashes instead). This is an unreviewed prototype.")),
+    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "an installer with auto-update. This is an unreviewed prototype.")),
     h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: lockNow }, icon("lock"), "Lock now")))];
 }
 
@@ -704,7 +729,7 @@ function openMembers() { st.screen = "group"; st.picked = []; st.picking = false
 function groupRow(g) {
   const invited = g.status === "invited", left = g.status === "left";
   return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.group === g.id), onclick: () => openGroup(g.id) }, groupTile(false),
-    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, g.name), invited ? h("span", { class: "tag waiting" }, "Invite") : left ? h("span", { class: "tag plain" }, "left") : g.unverified ? h("span", { class: "tag bad" }, `${g.unverified} not verified`) : null, g.large ? h("span", { class: "tag plain" }, "Large") : null),
+    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, g.name), invited ? h("span", { class: "tag waiting" }, "Invite") : left ? h("span", { class: "tag plain" }, "left") : g.unverified ? h("span", { class: "tag waiting" }, `${g.unverified} not verified`) : null, g.large ? h("span", { class: "tag plain" }, "Large") : null),
       h("span", { class: "preview" }, invited ? `Invite from ${g.invited_by || "someone"}` : g.last || `${plural(g.members, "person", "people")} · no messages yet`)),
     h("span", { class: "meta" }, g.last_ts ? when(g.last_ts) : "", g.unread ? h("span", { class: "count" }, g.unread) : null));
 }
@@ -780,7 +805,7 @@ function segChoice(label, value, opts, onpick, disabled) {
 function pickRow(c, checked, onchange) {
   return h("label", { class: "pick" }, h("input", { type: "checkbox", checked: checked || null, onchange }), tile(c, true),
     h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, c.name), h("div", { class: "note" }, c.agent ? "Agent: can post; its approvals stay private to you" : c.verified ? "Verified" : "Not verified: you can add them, and the group will show it")),
-    c.verified ? null : h("span", { class: "tag bad" }, "Not verified"));
+    c.verified ? null : h("span", { class: "tag waiting" }, "Not verified"));
 }
 function groupScreen() {
   const d = st.gdetail, back = () => { st.screen = null; render(); };

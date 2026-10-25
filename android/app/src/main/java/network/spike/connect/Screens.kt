@@ -1,6 +1,12 @@
 package network.spike.connect
 
 import android.content.ClipData
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import kotlinx.coroutines.launch
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -342,7 +348,7 @@ fun ChatsTab(m: AppModel) {
                 when (r) {
                     is Item.P -> ChatRow(
                         r.c.name, square = false,
-                        tag = if (r.c.verified) null else "Not verified", tagKind = TagKind.Red, verified = r.c.verified,
+                        tag = if (r.c.verified) null else "Not verified", tagKind = TagKind.Amber, verified = r.c.verified,
                         preview = r.c.last ?: "No messages yet", time = listTime(r.c.lastTs), unread = r.c.unread,
                     ) { m.open(Screen.Chat(r.c.name)) }
                     is Item.G -> ChatRow(
@@ -916,9 +922,19 @@ fun SettingsTab(m: AppModel) {
         if (ok) { Prefs.setNotifyInBackground(ctx, true); ListenerService.start(ctx); alerts = true }
         else m.notice = "Allow notifications for Spike Connect in the phone's settings to get alerts."
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    // Links to each part of a long screen: each section records where it starts, a chip scrolls there.
+    val scroll = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    val at = remember { mutableStateMapOf<String, Int>() }
+    fun Modifier.section(key: String) = onGloballyPositioned { at[key] = it.positionInParent().y.toInt() }
+    Column(Modifier.fillMaxSize().verticalScroll(scroll).statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         H1("Network and privacy", 28.sp)
-        Text("Home relay", fontWeight = FontWeight.SemiBold)
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for ((key, label) in listOf("relay" to "Relay", "backup" to "Backup", "direct" to "Direct", "sees" to "What relays see", "phone" to "This phone", "alerts" to "Unlocking and alerts")) {
+                Chip(label) { scope.launch { scroll.animateScrollTo((at[key] ?: 0) - 8) } }
+            }
+        }
+        Text("Home relay", fontWeight = FontWeight.SemiBold, modifier = Modifier.section("relay"))
         CardBox {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Ico(Ic.Server, C.AvatarText, 26.dp)
@@ -967,9 +983,9 @@ fun SettingsTab(m: AppModel) {
                 }
             }
         }
-        BackupCard(m)
-        DirectCard(m)
-        Text("What any relay can see", fontWeight = FontWeight.SemiBold)
+        Box(Modifier.section("backup")) { BackupCard(m) }
+        Box(Modifier.section("direct")) { DirectCard(m) }
+        Text("What any relay can see", fontWeight = FontWeight.SemiBold, modifier = Modifier.section("sees"))
         CardBox {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -982,7 +998,7 @@ fun SettingsTab(m: AppModel) {
                 }
             }
         }
-        Text("This phone", fontWeight = FontWeight.SemiBold)
+        Text("This phone", fontWeight = FontWeight.SemiBold, modifier = Modifier.section("phone"))
         CardBox {
             Text("Your card", fontWeight = FontWeight.Medium)
             Muted("Fingerprint ${o.me.fingerprint}", 12.5.sp)
@@ -1000,7 +1016,7 @@ fun SettingsTab(m: AppModel) {
                 Switch(shots, { shots = it; Prefs.setAllowScreenshots(ctx, it); (ctx as? MainActivity)?.refreshScreenPrivacy() }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
             }
         }
-        Text("Unlocking and alerts", fontWeight = FontWeight.SemiBold)
+        Text("Unlocking and alerts", fontWeight = FontWeight.SemiBold, modifier = Modifier.section("alerts"))
         CardBox {
             if (bioAvailable) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1219,7 +1235,7 @@ fun NewGroupScreen(m: AppModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(c.name in picked, { on -> if (on) picked.add(c.name) else picked.remove(c.name) }, colors = CheckboxDefaults.colors(checkedColor = C.Accent))
                         Text(c.name, Modifier.weight(1f))
-                        if (!c.verified) Tag("Not verified", TagKind.Red)
+                        if (!c.verified) Tag("Not verified", TagKind.Amber)
                     }
                 }
             }

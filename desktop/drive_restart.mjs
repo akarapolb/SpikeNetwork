@@ -51,7 +51,12 @@ try {
   await sleep(2500);
   let [p1a, p1b] = [await packets(alice), await packets(bob)];
   check(p1a > p0a + 20 && p1b > p0b + 20, `audio keeps flowing after the restart (${p1a}, ${p1b} packets)`);
-  check(/\d+:\d\d/.test(await overlay(alice)) && /\d+:\d\d/.test(await overlay(bob)), "both call screens are still in the call");
+  // "Reconnecting…" ends on the next connection check (every 2 s) that hears sound again: wait for it.
+  const both = async () => /\d+:\d\d/.test(await overlay(alice)) && /\d+:\d\d/.test(await overlay(bob));
+  await until(both, "both screens show the call time", 8000);
+  const [oa, ob] = [await overlay(alice), await overlay(bob)];
+  const line = (t) => (t.split(/\r?\n/).find((l) => /\d+:\d\d|Reconnecting|Connecting/.test(l)) || "").trim();
+  check(/\d+:\d\d/.test(oa) && /\d+:\d\d/.test(ob), `both call screens are still in the call ("${line(oa)}", "${line(ob)}")`);
 
   // 2. the callee's network changes: it asks the caller, who restarts
   const [u1a, u1b] = [await ufrag(alice), await ufrag(bob)];
