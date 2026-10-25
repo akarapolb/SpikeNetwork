@@ -85,7 +85,7 @@ class SpikeConnectionService : ConnectionService() {
 class SpikeConnection(val name: String, val incoming: Boolean) : Connection() {
     init {
         connectionProperties = PROPERTY_SELF_MANAGED
-        connectionCapabilities = CAPABILITY_MUTE
+        connectionCapabilities = CAPABILITY_MUTE or CAPABILITY_HOLD
         audioModeIsVoip = true
         setAddress(SpikeTelecom.address(name), TelecomManager.PRESENTATION_ALLOWED)
         setCallerDisplayName(name, TelecomManager.PRESENTATION_ALLOWED)
@@ -100,6 +100,9 @@ class SpikeConnection(val name: String, val incoming: Boolean) : Connection() {
     override fun onAnswer() { CallManager.answerFromSystem() }
     override fun onAnswer(videoState: Int) { CallManager.answerFromSystem() }
     override fun onReject() { CallManager.decline() }
+    // A phone call came in (or ended): the system holds or resumes ours.
+    override fun onHold() { setOnHold(); CallManager.hold(true) }
+    override fun onUnhold() { setActive(); CallManager.hold(false) }
     override fun onDisconnect() { CallManager.hangUp() }
     override fun onAbort() { CallManager.hangUp() }
 

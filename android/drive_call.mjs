@@ -100,6 +100,21 @@ try {
   check(codeOf(dt) && codeOf(dt) === codeOf(screenText()), `both screens show the same call code (${codeOf(dt)})`);
   shot("2-phone-in-call");
   await desk.shot("in-call");
+  // ---- where the sound goes, and what happens when another call takes the audio
+  let au = debug("_audio", "");
+  console.log("   audio:", JSON.stringify(au));
+  // The emulator has no earpiece (only a speaker): there the call starts on the speaker. A phone starts on the earpiece.
+  const routes = (au.audio.match(/available=(\S*)/) || [])[1].split(",");
+  const first = (au.audio.match(/route=(\w+)/) || [])[1];
+  check(first === (routes.includes("Earpiece") ? "Earpiece" : "Speaker") && au.mic === "true", `a voice call starts on ${first} with the microphone open`);
+  au = debug("_audio", "next");
+  const want = routes[(routes.indexOf(first) + 1) % routes.length];
+  check(au.audio.includes(`route=${want}`), `the sound button steps from ${first} to ${want} (${au.audio})`);
+  au = debug("_audio", "hold");
+  check(au.held && au.mic === "false", "another call taking the audio holds this one and closes the microphone");
+  check(await waitText("On hold", 5000), "the call screen says it is on hold");
+  au = debug("_audio", "unhold");
+  check(!au.held && au.mic === "true", "when the other call ends the microphone opens again");
   await press(desk, "Hang up");
   check(await waitText("Chats", 15000), "the phone's call screen closes when the desktop hangs up");
 

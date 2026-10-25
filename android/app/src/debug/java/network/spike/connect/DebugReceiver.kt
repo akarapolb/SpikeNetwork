@@ -27,6 +27,23 @@ class DebugReceiver : BroadcastReceiver() {
             Log.i("SpikeDebug", "$tag#end")
             return
         }
+        if (cmd == "_audio") {
+            // What the call audio is doing, or (with "hold" / "unhold" / "next") as if another call took or gave back the
+            // audio, or the sound button was pressed. The work runs on the main thread, the answer is read after it.
+            val p = goAsync()
+            val main = android.os.Handler(android.os.Looper.getMainLooper())
+            if (args == "hold") main.post { CallManager.hold(true) }
+            if (args == "unhold") main.post { CallManager.hold(false) }
+            if (args == "next") main.post { CallManager.cycleAudio() }
+            thread {
+                try {
+                    Thread.sleep(400)
+                    Log.i("SpikeDebug", "$tag#0 {\"ok\":{\"audio\":\"${CallAudio.describe()}\",\"held\":${CallManager.ui?.held == true},\"mic\":\"${CallManager.micState()}\"}}")
+                    Log.i("SpikeDebug", "$tag#end")
+                } finally { p.finish() }
+            }
+            return
+        }
         if (cmd == "_pushendpoint") {
             // As if the push app had just given us this address (tests only).
             PushWake.gotEndpoint(context, args)

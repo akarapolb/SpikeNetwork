@@ -89,7 +89,10 @@ data class CallUi(
     val status: String,
     val connectedAt: Long = 0,
     val muted: Boolean = false,
-    val speaker: Boolean = false,
+    /** Another call or app has the audio (a phone call came in): we are paused until it ends. */
+    val held: Boolean = false,
+    /** The connection dropped and is being restored. */
+    val reconnecting: Boolean = false,
     val code: String = "",
     val verified: Boolean = false,
     val video: Boolean = false,
@@ -236,6 +239,7 @@ object CallManager {
                         }
                         val u = ui ?: return
                         if (u.connectedAt == 0L) { ui = u.copy(status = "connected", connectedAt = System.currentTimeMillis()); startStats() }
+                        CallAudio.connected(true)
                     }
                     // A dropped connection (a network change, a Wi-Fi hiccup) is restarted before the call is given up on.
                     PeerConnection.PeerConnectionState.DISCONNECTED -> {
@@ -272,11 +276,7 @@ object CallManager {
         p.addTrack(track, listOf("spike"))
         if (video && hasCamera()) addCamera(f, p)
         pc = p
-        appCtx?.let { c ->
-            val am = c.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.mode = AudioManager.MODE_IN_COMMUNICATION
-            am.isSpeakerphoneOn = false
-        }
+        appCtx?.let { c -> CallAudio.start(c, video) { h -> hold(h) } }
         return p
     }
 
@@ -392,8 +392,27 @@ object CallManager {
 
     fun toggleMute() {
         val u = ui ?: return
-        track?.setEnabled(u.muted) // was muted -> enable
         ui = u.copy(muted = !u.muted)
+        micOn()
+    }
+
+    /** The microphone is open only when the person has not muted it and nothing else has the audio. */
+    private fun micOn() {
+        val u = ui ?: return
+        track?.setEnabled(!u.muted && !u.held)
+    }
+
+    /** For tests: whether the microphone track is open. */
+    fun micState(): String = track?.enabled()?.toString() ?: "none"
+
+    /** A phone call (or another app that needs the audio) took over, or gave it back. */
+    fun hold(on: Boolean) {
+        val u = ui ?: return
+        if (u.held == on) return
+        Trace.add("call: " + if (on) "on hold, something else has the audio" else "off hold")
+        ui = u.copy(held = on)
+        micOn()
+        if (on) telecom?.setOnHold() else telecom?.setActive()
     }
 
     /**
@@ -458,11 +477,8 @@ object CallManager {
 
     fun switchCamera() { capturer?.switchCamera(null) }
 
-    fun toggleSpeaker() {
-        val u = ui ?: return
-        (appCtx?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)?.isSpeakerphoneOn = !u.speaker
-        ui = u.copy(speaker = !u.speaker)
-    }
+    /** Step the sound through earpiece, speaker and any headset that is connected. */
+    fun cycleAudio() { CallAudio.next() }
 
     private suspend fun handle(ev: JSONObject) {
         Trace.add("call event: ${ev.getString("type")}" + (if (ev.has("result")) " (${ev.getString("result")})" else "") + " screen=" + (appCtx?.getSystemService(android.os.PowerManager::class.java)?.isInteractive.let { if (it == true) "on" else "off" }))
@@ -624,10 +640,8 @@ object CallManager {
         }
         try { pc?.close() } catch (_: Exception) {}
         pc = null; track = null; callId = null; offerSdp = null; ready = null
+        CallAudio.stop()
         appCtx?.let {
-            val am = it.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.mode = AudioManager.MODE_NORMAL
-            am.isSpeakerphoneOn = false
             Notifier.clearIncomingCall(it)
             CallService.stop(it)
         }
@@ -708,6 +722,8 @@ val IcHandset = line("Handset", "M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-
 val IcMic = line("Mic", "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z", "M5 11a7 7 0 0 0 14 0", "M12 18v3")
 val IcMicOff = line("MicOff", "M4 4l16 16", "M9 9v3a3 3 0 0 0 5 2.2", "M15 11V6a3 3 0 0 0-5.7-1.3", "M5 11a7 7 0 0 0 11.2 5.6", "M19 11a7 7 0 0 1-.7 3", "M12 18v3")
 val IcSpeaker = line("Speaker", "M4 9v6h4l5 4V5L8 9H4z", "M16.5 9a4.5 4.5 0 0 1 0 6", "M19 6.5a8 8 0 0 1 0 11")
+val IcBluetooth = line("Bluetooth", "M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11")
+val IcHeadset = line("Headset", "M4 14v-2a8 8 0 0 1 16 0v2", "M4 14h3v5H4z", "M17 14h3v5h-3z")
 val IcEarpiece = line("Earpiece", "M4 9v6h4l5 4V5L8 9H4z")
 val IcVideo = line("VideoCam", "M3 6h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z", "M15 10l7-4v12l-7-4")
 val IcVideoOff = line("VideoOff", "M4 4l16 16", "M13 6H3a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1", "M15 10l7-4v12l-3-1.7")
@@ -758,7 +774,7 @@ fun CallScreen(u: CallUi) {
             val sub = when (u.status) {
                 "ringing" -> if (u.video) "Incoming video call" else "Incoming voice call"
                 "calling" -> "Ringing on all of their devices"
-                "connected" -> ((now - u.connectedAt) / 1000).let { "${it / 60}:${(it % 60).toString().padStart(2, '0')}" }
+                "connected" -> ((now - u.connectedAt) / 1000).let { "${it / 60}:${(it % 60).toString().padStart(2, '0')}" } + if (u.held) "  ·  On hold" else ""
                 else -> "Connecting"
             }
             Text(sub, color = Color(0xFFC3CED7), fontSize = 15.sp, modifier = Modifier.padding(top = 6.dp))
@@ -783,7 +799,16 @@ fun CallScreen(u: CallUi) {
                     RoundButton("Answer", Color(0xFF1F7A45), IcHandset) { answerGate() }
                 } else {
                     RoundButton(if (u.muted) "Unmute microphone" else "Mute microphone", if (u.muted) Color(0xFFE6EDF2) else Color(0xFF24313A), if (u.muted) IcMicOff else IcMic, tint = if (u.muted) dark else Color.White) { CallManager.toggleMute() }
-                    RoundButton(if (u.speaker) "Use earpiece" else "Use speaker", if (u.speaker) Color(0xFFE6EDF2) else Color(0xFF24313A), if (u.speaker) IcSpeaker else IcEarpiece, tint = if (u.speaker) dark else Color.White) { CallManager.toggleSpeaker() }
+                    val outs = CallAudio.available
+                    val cur = CallAudio.route
+                    val nextOut = outs[(outs.indexOf(cur) + 1) % outs.size]
+                    val loud = cur != CallAudio.Route.Earpiece
+                    RoundButton(
+                        if (outs.size < 2) "Sound: ${cur.label}" else "Sound: ${cur.label}. Tap for ${nextOut.label}",
+                        if (loud) Color(0xFFE6EDF2) else Color(0xFF24313A),
+                        when (cur) { CallAudio.Route.Speaker -> IcSpeaker; CallAudio.Route.Bluetooth -> IcBluetooth; CallAudio.Route.Headset -> IcHeadset; else -> IcEarpiece },
+                        tint = if (loud) dark else Color.White,
+                    ) { CallManager.cycleAudio() }
                     if (u.video) {
                         RoundButton(if (u.camOff) "Turn camera on" else "Turn camera off", if (u.camOff) Color(0xFFE6EDF2) else Color(0xFF24313A), if (u.camOff) IcVideoOff else IcVideo, tint = if (u.camOff) dark else Color.White) { CallManager.toggleCamera() }
                         RoundButton("Switch camera", Color(0xFF24313A), IcFlip) { CallManager.switchCamera() }
