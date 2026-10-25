@@ -790,7 +790,7 @@ fun DevicesTab(m: AppModel) {
                     Column(Modifier.weight(1f)) {
                         Text(if (d.self) "This phone" else "Device ${d.id.take(6)}", fontWeight = FontWeight.SemiBold)
                         Muted(
-                            if (d.self) "Added to your identity · you are here"
+                            if (d.self) "Added to your identity"
                             else if (d.approver) "Main device" else "Linked to your identity",
                             13.sp,
                         )
@@ -826,7 +826,7 @@ fun AgentsTab(m: AppModel) {
         if (a == null) Muted("Loading…", 14.sp)
         else {
             if (a.requests.isEmpty() && a.grants.isEmpty()) {
-                Muted("No agents yet. Agents are allowed from the computer app for now; their requests appear here for you to approve.", 14.sp)
+                EmptyState(Ic.Sparkle, "No agents yet. Agents are allowed from the computer app for now; their requests appear here for you to approve.")
             }
             for (r in a.requests) {
                 CardBox {

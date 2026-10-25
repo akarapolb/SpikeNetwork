@@ -285,7 +285,7 @@ fun LinkOldScreen(m: AppModel) {
                         QrScanner(Modifier.fillMaxWidth().height(280.dp)) { scanning = false; code = it; begin(it) }
                         OutlineButton("Type the code instead", Modifier.fillMaxWidth()) { scanning = false }
                     } else {
-                        PrimaryButton("Scan the code", icon = Ic.Link) { scanning = true }
+                        PrimaryButton("Scan the code", icon = Ic.Scan) { scanning = true }
                         Field("Code from the new device", code, { code = it }, singleLine = false, minHeight = 96.dp, maxLines = 4)
                         OutlineButton("Continue", Modifier.fillMaxWidth()) { if (code.isNotBlank()) begin(code) }
                     }

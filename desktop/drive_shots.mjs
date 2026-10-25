@@ -23,6 +23,8 @@ try {
   await sleep(1000);
   const alice = await launch("alice", 9351);
   await alice.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+  await alice.refresh();
+  await alice.shot("0-first-run");
   const bob = await launch("bob", 9352);
   const card = async (p) => (await p.invoke("overview")).me.card;
   for (const p of [alice, bob]) await p.invoke("sync");
@@ -38,6 +40,10 @@ try {
   await sleep(500);
 
   await both(alice, "1-chats-empty-main");
+  await alice.eval(`const i=document.querySelector('#list .search input'); if(i){ i.focus(); i.value='car'; i.dispatchEvent(new Event('input',{bubbles:true})); }`);
+  await sleep(300);
+  await alice.shot("1b-search");
+  await alice.eval(`const i=document.querySelector('#list .search input'); if(i){ i.value=''; i.dispatchEvent(new Event('input',{bubbles:true})); }`);
   await alice.click("Bob Tanaka", "#list");
   await sleep(800);
   await both(alice, "2-conversation");
