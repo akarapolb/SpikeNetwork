@@ -92,7 +92,16 @@ data class Message(
     val fromVerified: Boolean,
     val fileName: String? = null,
     val fileSize: Long = 0,
+    /** The message this one replies to, as a short quote. */
+    val reply: Quote? = null,
+    /** Reactions, most used first. */
+    val reactions: List<Reaction> = emptyList(),
 )
+
+/** A short quote of the message a reply answers: who wrote it ([out]: you) and the start of its text. */
+data class Quote(val id: String, val out: Boolean, val from: String?, val text: String, val deleted: Boolean)
+
+data class Reaction(val emoji: String, val count: Int, val mine: Boolean)
 
 fun parseMessages(a: JSONArray): List<Message> = a.mapObjects {
     Message(
@@ -101,6 +110,10 @@ fun parseMessages(a: JSONArray): List<Message> = a.mapObjects {
         it.getBoolean("from_verified"),
         if (it.isNull("file")) null else it.getJSONObject("file").getString("name"),
         if (it.isNull("file")) 0 else it.getJSONObject("file").getLong("size"),
+        it.optJSONObject("reply")?.let { r ->
+            Quote(r.getString("id"), r.getBoolean("out"), r.str("from"), r.getString("text"), r.getBoolean("deleted"))
+        },
+        it.optJSONArray("reactions")?.mapObjects { r -> Reaction(r.getString("emoji"), r.getInt("count"), r.getBoolean("mine")) } ?: emptyList(),
     )
 }
 

@@ -8,8 +8,9 @@ pub mod api;
 pub mod updates;
 
 use api::{
-    ActionTypeDto, AgentsDto, BlockedDto, CallEventDto, DirectDto, IceServerDto, GrantRequest, GroupDetailDto, GroupSendDto,
-    InstalledDto, LinkedDto, MessageDto, MessageRequestDto, Overview, Session, SyncDto,
+    ActionTypeDto, AgentsDto, BlockedDto, CallEventDto, DirectDto, GrantRequest, GroupDetailDto,
+    GroupSendDto, IceServerDto, InstalledDto, LinkedDto, MessageDto, MessageRequestDto, Overview,
+    Session, SyncDto,
 };
 use spike_core::vault::KdfParams;
 use std::path::PathBuf;
@@ -120,7 +121,12 @@ fn set_attention(app: tauri::AppHandle, count: usize) {
 #[tauri::command]
 fn notify_banner(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
-    app.notification().builder().title(title).body(body).show().map_err(|e| e.to_string())
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())
 }
 
 fn stop_listener(state: &State<'_, AppState>) {
@@ -309,7 +315,10 @@ async fn call_start(
     video: bool,
     sdp: String,
 ) -> Result<String, String> {
-    session(&state)?.call_start(&name, video, &sdp).await.map_err(err)
+    session(&state)?
+        .call_start(&name, video, &sdp)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -324,7 +333,10 @@ async fn call_restart(state: State<'_, AppState>, sdp: String) -> Result<(), Str
 
 #[tauri::command]
 async fn call_restart_answer(state: State<'_, AppState>, sdp: String) -> Result<(), String> {
-    session(&state)?.call_restart_answer(&sdp).await.map_err(err)
+    session(&state)?
+        .call_restart_answer(&sdp)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -354,7 +366,10 @@ async fn call_fail(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn call_ice(state: State<'_, AppState>, candidates: Vec<String>) -> Result<(), String> {
-    session(&state)?.call_local_ice(candidates).await.map_err(err)
+    session(&state)?
+        .call_local_ice(candidates)
+        .await
+        .map_err(err)
 }
 
 /// Wait up to `ms` for something the call screen must act on (ring, connect, candidates, end).
@@ -400,8 +415,22 @@ fn conversation(state: State<'_, AppState>, name: String) -> Result<Vec<MessageD
 }
 
 #[tauri::command]
-async fn send(state: State<'_, AppState>, name: String, text: String) -> Result<usize, String> {
-    session(&state)?.send(&name, &text).await.map_err(err)
+async fn send(
+    state: State<'_, AppState>,
+    name: String,
+    text: String,
+    reply_to: Option<String>,
+) -> Result<usize, String> {
+    session(&state)?
+        .send_reply(&name, &text, reply_to.as_deref())
+        .await
+        .map_err(err)
+}
+
+/// React to a message with one emoji, or take your reaction back (`emoji` empty).
+#[tauri::command]
+async fn react(state: State<'_, AppState>, id: String, emoji: String) -> Result<(), String> {
+    session(&state)?.react(&id, &emoji).await.map_err(err)
 }
 
 #[tauri::command]
@@ -581,8 +610,12 @@ async fn group_send(
     state: State<'_, AppState>,
     id: String,
     text: String,
+    reply_to: Option<String>,
 ) -> Result<GroupSendDto, String> {
-    session(&state)?.group_send(&id, &text).await.map_err(err)
+    session(&state)?
+        .group_send_reply(&id, &text, reply_to.as_deref())
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -967,6 +1000,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_status,
             notify_banner,
+            react,
             call_start,
             call_ice_servers,
             call_restart,

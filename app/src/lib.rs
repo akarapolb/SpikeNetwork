@@ -102,6 +102,9 @@ pub(crate) fn tally(out: &mut SyncDto, o: &Outcome) -> bool {
         Outcome::AgentRemotePending { .. } => out.agent_requests += 1,
         Outcome::MessageRequest { new: true, .. } => out.message_requests += 1,
         Outcome::GroupMessage { .. } => out.received += 1,
+        Outcome::Edited { .. } | Outcome::Deleted { .. } | Outcome::Reacted { .. } => {
+            out.changed += 1
+        }
         Outcome::GroupInvite { .. } => out.message_requests += 1,
         Outcome::GroupJoined { .. }
         | Outcome::GroupChanged { .. }
@@ -331,6 +334,31 @@ pub struct MessageDto {
     /// In a group: this came as history from someone else when you joined (their name), so the
     /// author shown is only as reliable as they are.
     pub shared_by: Option<String>,
+    /// The message this one replies to, as a short quote. `None` when it is not a reply, or the
+    /// message it replies to is not on this device.
+    pub reply: Option<ReplyDto>,
+    /// Reactions, most used first: each emoji once, with how many people chose it.
+    pub reactions: Vec<ReactionDto>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct ReplyDto {
+    pub id: String,
+    /// You wrote the message being replied to.
+    pub out: bool,
+    /// In a group: who wrote it (not you).
+    pub from: Option<String>,
+    /// The start of its text (or its file name); empty if it was deleted.
+    pub text: String,
+    pub deleted: bool,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct ReactionDto {
+    pub emoji: String,
+    pub count: usize,
+    /// One of them is yours.
+    pub mine: bool,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -341,6 +369,8 @@ pub struct SyncDto {
     pub message_requests: usize,
     /// Group changes, joins and removals.
     pub groups: usize,
+    /// Messages already shown that changed: edited, deleted, or reacted to.
+    pub changed: usize,
     pub notes: Vec<String>,
 }
 
@@ -698,13 +728,68 @@ impl Session {
 
     pub fn conversation(&self, name: &str, limit: usize) -> Result<Vec<MessageDto>> {
         let key = self.contact_key(name)?;
-        Ok(self
+        let me = self.my_owner()?;
+        let msgs = self
             .home
             .messages()?
-            .conversation(&key, limit.clamp(1, 500))?
+            .conversation(&key, limit.clamp(1, 500))?;
+        let replies = self.replies_in(&key, &msgs, false)?;
+        Ok(msgs
             .into_iter()
-            .map(|m| message_dto(m, None, true))
+            .map(|m| {
+                let reply = replies.get(&m.id).cloned();
+                let mut dto = message_dto(m, None, true, &me);
+                dto.reply = reply;
+                dto
+            })
             .collect())
+    }
+
+    /// For each message in `msgs` that replies to another message of the same conversation
+    /// (`conv`), a short quote of that message. In a group (`group`), it says who wrote it.
+    fn replies_in(
+        &self,
+        conv: &str,
+        msgs: &[spike_cli::messages::StoredMessage],
+        group: bool,
+    ) -> Result<std::collections::HashMap<String, ReplyDto>> {
+        let store = self.home.messages()?;
+        let mut out = std::collections::HashMap::new();
+        for m in msgs {
+            let Some(target) = m.reply_to.as_deref() else {
+                continue;
+            };
+            let t = match msgs.iter().find(|x| x.id == target) {
+                Some(t) => Some(t.clone()),
+                None => store.get(target)?,
+            };
+            let Some(t) = t.filter(|t| t.peer == conv) else {
+                continue;
+            };
+            let from = if group && t.direction == Direction::In {
+                t.author
+                    .as_deref()
+                    .map(|a| groups::display_name(&self.home, a))
+            } else {
+                None
+            };
+            let text = if t.deleted {
+                String::new()
+            } else {
+                preview(&t.body, t.attachment.as_ref().map(|a| a.name.as_str()))
+            };
+            out.insert(
+                m.id.clone(),
+                ReplyDto {
+                    id: t.id.clone(),
+                    out: t.direction == Direction::Out,
+                    from,
+                    text,
+                    deleted: t.deleted,
+                },
+            );
+        }
+        Ok(out)
     }
 
     // ----------------------------------------------------------- contacts
@@ -755,6 +840,16 @@ impl Session {
     // ------------------------------------------------------------ network
 
     pub async fn send(&self, name: &str, text: &str) -> Result<usize> {
+        self.send_reply(name, text, None).await
+    }
+
+    /// Send a message that replies to an earlier one of the conversation (`reply_to`, its id).
+    pub async fn send_reply(
+        &self,
+        name: &str,
+        text: &str,
+        reply_to: Option<&str>,
+    ) -> Result<usize> {
         let text = text.trim_end();
         if text.trim().is_empty() {
             bail!("nothing to send");
@@ -763,8 +858,35 @@ impl Session {
             bail!("messages are limited to {} KiB", MAX_MESSAGE / 1024);
         }
         let _net = self.net.lock().await;
-        let r = ops::send(&self.home, self.target(), name, text.as_bytes()).await?;
+        let r = match reply_to {
+            Some(t) => {
+                let key = self.contact_key(name)?;
+                self.reply_target(&key, t)?;
+                ops::send_reply(&self.home, self.target(), name, t, text).await?
+            }
+            None => ops::send(&self.home, self.target(), name, text.as_bytes()).await?,
+        };
         Ok(r.delivered())
+    }
+
+    /// A reply must point at a message of the same conversation that is still there.
+    fn reply_target(&self, conv: &str, id: &str) -> Result<()> {
+        match self.home.messages()?.get(id)? {
+            Some(m) if m.peer == conv && !m.deleted => Ok(()),
+            _ => bail!("the message you are replying to is not in this conversation"),
+        }
+    }
+
+    /// React to a message with one emoji, or take your reaction back (`emoji` empty).
+    pub async fn react(&self, id: &str, emoji: &str) -> Result<()> {
+        let emoji = emoji.trim();
+        if emoji.len() > spike_core::envelope::MAX_REACTION
+            || emoji.chars().any(char::is_whitespace)
+        {
+            bail!("a reaction is one emoji");
+        }
+        let _net = self.net.lock().await;
+        ops::react(&self.home, self.target(), id, emoji).await
     }
 
     /// Fetch what is waiting at the relay. `idle` is how long to wait for more
@@ -787,6 +909,7 @@ impl Session {
             agent_requests: 0,
             message_requests: 0,
             groups: 0,
+            changed: 0,
             notes: vec![],
         };
         ops::recv(&self.home, self.target(), Some(idle), |o| {
@@ -819,15 +942,18 @@ impl Session {
         match large::sync(&self.home, self.target()).await {
             Ok(events) => {
                 // A group joined, moved to a new mailbox or lost: listen to the right ones.
-                if events
-                    .iter()
-                    .any(|e| !matches!(e, large::Event::Message { .. }))
-                {
+                if events.iter().any(|e| {
+                    !matches!(
+                        e,
+                        large::Event::Message { .. } | large::Event::Reacted { .. }
+                    )
+                }) {
                     self.subs.notify_one();
                 }
                 for e in events {
                     match e {
                         large::Event::Message { .. } => out.received += 1,
+                        large::Event::Reacted { .. } => out.changed += 1,
                         large::Event::Changed { .. } | large::Event::OwnDevices => out.groups += 1,
                         large::Event::Left { group, who } => {
                             out.groups += 1;
@@ -1336,8 +1462,32 @@ fn message_dto(
     m: spike_cli::messages::StoredMessage,
     from: Option<String>,
     from_verified: bool,
+    me: &str,
 ) -> MessageDto {
+    // Each emoji once, with its count; taken-back reactions (empty) are not shown.
+    let mut reactions: Vec<ReactionDto> = Vec::new();
+    if !m.deleted {
+        for (who, r) in &m.reactions {
+            if r.emoji.is_empty() {
+                continue;
+            }
+            match reactions.iter_mut().find(|x| x.emoji == r.emoji) {
+                Some(x) => {
+                    x.count += 1;
+                    x.mine |= who == me;
+                }
+                None => reactions.push(ReactionDto {
+                    emoji: r.emoji.clone(),
+                    count: 1,
+                    mine: who == me,
+                }),
+            }
+        }
+        reactions.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.emoji.cmp(&b.emoji)));
+    }
     MessageDto {
+        reply: None,
+        reactions,
         out: m.direction == Direction::Out,
         body: if m.deleted { String::new() } else { m.body },
         file: if m.deleted {
@@ -1524,9 +1674,13 @@ impl Session {
         } else {
             groups::history(&self.home, id, limit.clamp(1, 500))?.1
         };
+        let me = self.my_owner()?;
+        let gid = msgs.first().map(|m| m.peer.clone()).unwrap_or_default();
+        let replies = self.replies_in(&gid, &msgs, true)?;
         Ok(msgs
             .into_iter()
             .map(|m| {
+                let reply = replies.get(&m.id).cloned();
                 let author = m.author.clone().unwrap_or_default();
                 let (from, verified) = if m.direction == Direction::Out {
                     (None, true)
@@ -1540,8 +1694,9 @@ impl Session {
                     .shared_by
                     .as_deref()
                     .map(|o| groups::display_name(&self.home, o));
-                let mut dto = message_dto(m, from, verified);
+                let mut dto = message_dto(m, from, verified, &me);
                 dto.shared_by = shared;
+                dto.reply = reply;
                 dto
             })
             .collect())
@@ -1596,6 +1751,16 @@ impl Session {
     }
 
     pub async fn group_send(&self, id: &str, text: &str) -> Result<GroupSendDto> {
+        self.group_send_reply(id, text, None).await
+    }
+
+    /// Send a group message that replies to an earlier one of the group (`reply_to`, its id).
+    pub async fn group_send_reply(
+        &self,
+        id: &str,
+        text: &str,
+        reply_to: Option<&str>,
+    ) -> Result<GroupSendDto> {
         let text = text.trim_end();
         if text.trim().is_empty() {
             bail!("nothing to send");
@@ -1604,11 +1769,20 @@ impl Session {
             bail!("messages are limited to {} KiB", MAX_MESSAGE / 1024);
         }
         if self.is_large(id) {
-            return self.large_send(id, text).await;
+            if let Some(t) = reply_to {
+                self.reply_target(&large::find(&self.home, id)?.id, t)?;
+            }
+            return self.large_send(id, text, reply_to).await;
         }
         let gid = groups::find(&self.home, id)?.id().to_string();
         let _net = self.net.lock().await;
-        let r = groups::send(&self.home, self.target(), &gid, text).await?;
+        let r = match reply_to {
+            Some(t) => {
+                self.reply_target(&gid, t)?;
+                groups::send_reply(&self.home, self.target(), &gid, t, text).await?
+            }
+            None => groups::send(&self.home, self.target(), &gid, text).await?,
+        };
         Ok(Self::sent_dto(&gid, &r))
     }
 
@@ -1929,9 +2103,17 @@ impl Session {
         })
     }
 
-    async fn large_send(&self, id: &str, text: &str) -> Result<GroupSendDto> {
+    async fn large_send(
+        &self,
+        id: &str,
+        text: &str,
+        reply_to: Option<&str>,
+    ) -> Result<GroupSendDto> {
         let _net = self.net.lock().await;
-        large::send(&self.home, self.target(), id, text).await?;
+        match reply_to {
+            Some(t) => large::send_reply(&self.home, self.target(), id, t, text).await?,
+            None => large::send(&self.home, self.target(), id, text).await?,
+        };
         let people = large::find(&self.home, id)?.members.saturating_sub(1);
         // Everyone reads the one stored copy; there is no per-person delivery to report.
         Ok(GroupSendDto {

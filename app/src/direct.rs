@@ -116,6 +116,7 @@ impl Session {
                 agent_requests: 0,
                 message_requests: 0,
                 groups: 0,
+                changed: 0,
                 notes: vec![],
             });
             if tally(out, &o) {

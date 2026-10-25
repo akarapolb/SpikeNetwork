@@ -187,6 +187,8 @@ async fn history_choice_is_honoured() {
             changed_at: 0,
             author: None,
             shared_by: None,
+            reply_to: None,
+            reactions: Default::default(),
             id: "aa".repeat(16),
             peer: owner(&bob),
             direction: Direction::In,

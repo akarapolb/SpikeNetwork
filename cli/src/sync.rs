@@ -167,6 +167,8 @@ mod tests {
             changed_at: 0,
             author: None,
             shared_by: None,
+            reply_to: None,
+            reactions: Default::default(),
         }
     }
 
@@ -239,6 +241,8 @@ mod tests {
                 peer: group.clone(),
                 author: Some(owner.clone()),
                 shared_by: None,
+                reply_to: None,
+                reactions: Default::default(),
                 ..msg(1, 1)
             }],
             last: true,

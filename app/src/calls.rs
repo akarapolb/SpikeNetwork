@@ -428,6 +428,8 @@ impl Session {
             changed_at: 0,
             author: None,
             shared_by: None,
+            reply_to: None,
+            reactions: Default::default(),
         });
     }
 

@@ -56,6 +56,12 @@ pub enum Outcome {
     Edited { who: String, id: String },
     /// A message was deleted.
     Deleted { who: String, id: String },
+    /// Someone reacted to a message (`emoji` empty: they took their reaction back).
+    Reacted {
+        who: String,
+        id: String,
+        emoji: String,
+    },
     /// A valid edit or delete that changes nothing here (older than what we have,
     /// for a message we never had, or already applied).
     Ignored,
@@ -229,6 +235,8 @@ pub fn apply_change(
                 changed_at: 0,
                 author: None,
                 shared_by: None,
+                reply_to: None,
+                reactions: Default::default(),
             })?;
         }
         _ => {}
@@ -237,6 +245,59 @@ pub fn apply_change(
 }
 
 pub use spike_core::merge::Action as MergeAction;
+
+/// Apply a reaction from `reactor` (an owner key) to a message in conversation `conv` (a contact's
+/// owner key or a group id). Anyone in the conversation may react; each person keeps one reaction
+/// per message, and only a newer one replaces it. A reaction to a message that is not here, is in
+/// another conversation, or was deleted changes nothing. Returns whether anything changed.
+pub fn apply_reaction(
+    home: &Home,
+    env: &Envelope,
+    reactor: &str,
+    conv: &str,
+    sender_device: &str,
+) -> anyhow::Result<bool> {
+    let Some(target) = env.target.as_deref() else {
+        return Ok(false);
+    };
+    let store = home.messages()?;
+    let Some(mut m) = store.get(target)? else {
+        return Ok(false);
+    };
+    if m.peer != conv || m.deleted {
+        return Ok(false);
+    }
+    let stamp = (env.lamport, sender_device.to_string());
+    let current = m
+        .reactions
+        .get(reactor)
+        .map(|r| (r.lamport, r.device.clone()));
+    if !spike_core::merge::reaction_wins(current.as_ref(), &stamp) {
+        return Ok(false);
+    }
+    m.reactions.insert(
+        reactor.to_string(),
+        messages::Reaction {
+            emoji: env.body.clone(),
+            lamport: stamp.0,
+            device: stamp.1,
+        },
+    );
+    store.update(&m)?;
+    Ok(true)
+}
+
+pub(crate) fn reaction_outcome(changed: bool, who: String, env: &Envelope) -> Outcome {
+    if changed {
+        Outcome::Reacted {
+            who,
+            id: env.target.clone().unwrap_or_default(),
+            emoji: env.body.clone(),
+        }
+    } else {
+        Outcome::Ignored
+    }
+}
 
 /// Decrypt one blob, store the message, then persist the ratchet state, all
 /// *before* returning, so the caller can safely ack afterwards.
@@ -380,6 +441,12 @@ pub fn process(
                         .iter()
                         .find(|c| c.conversation_key().ok().as_deref() == Some(to.as_str()))
                         .map_or_else(|| to.clone(), |c| c.name.clone());
+                    if env.kind == Kind::React {
+                        let mine = home.load_device_list()?.owner;
+                        let done = apply_reaction(home, &env, &mine, &to, &sender_device)?;
+                        persist(sessions, me)?;
+                        return Ok(reaction_outcome(done, "you".into(), &env));
+                    }
                     if env.kind != Kind::Text {
                         let action = apply_change(home, &env, true, &to, &sender_device)?;
                         persist(sessions, me)?;
@@ -404,6 +471,8 @@ pub fn process(
                         changed_at: 0,
                         author: None,
                         shared_by: None,
+                        reply_to: env.reply_to.clone(),
+                        reactions: Default::default(),
                     })?;
                     persist(sessions, me)?;
                     if !fresh {
@@ -456,6 +525,11 @@ pub fn process(
                         persist(sessions, me)?;
                         return Ok(outcome);
                     }
+                    if env.kind == Kind::React {
+                        let done = apply_reaction(home, &env, &peer, &peer, &sender_device)?;
+                        persist(sessions, me)?;
+                        return Ok(reaction_outcome(done, contacts[contact].name.clone(), &env));
+                    }
                     if env.kind != Kind::Text {
                         let action = apply_change(home, &env, false, &peer, &sender_device)?;
                         persist(sessions, me)?;
@@ -480,6 +554,8 @@ pub fn process(
                         changed_at: 0,
                         author: None,
                         shared_by: None,
+                        reply_to: env.reply_to.clone(),
+                        reactions: Default::default(),
                     })?;
                     persist(sessions, me)?;
                     if !fresh {

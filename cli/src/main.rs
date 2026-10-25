@@ -970,6 +970,7 @@ async fn run() -> Result<()> {
                                 println!("your other devices were updated in your large groups")
                             }
                             Event::Left { group, who } => println!("[{group}] {who} is leaving"),
+                            Event::Reacted { group, who } => println!("[{group}] {who} reacted"),
                             Event::Removed { group } => {
                                 println!("[{group}] you were removed; its history stays here")
                             }
@@ -1740,6 +1741,12 @@ async fn run() -> Result<()> {
                 ),
                 Outcome::Edited { who, id } => println!("[{who} edited message {}]", &id[..8]),
                 Outcome::Deleted { who, id } => println!("[{who} deleted message {}]", &id[..8]),
+                Outcome::Reacted { who, id, emoji } if emoji.is_empty() => {
+                    println!("[{who} took back their reaction to message {}]", &id[..8])
+                }
+                Outcome::Reacted { who, id, emoji } => {
+                    println!("[{who} reacted {emoji} to message {}]", &id[..8])
+                }
                 Outcome::Rejected { reason } => eprintln!("ignored a change: {reason}"),
                 Outcome::ReadSynced { peer } => println!("[your other device marked {peer} read]"),
                 Outcome::CaughtUp { changed, last } => {

@@ -208,7 +208,7 @@ private fun Ready(m: AppModel) {
             ConversationScreen(
                 m, s.name, "End-to-end encrypted · $n ${if (n == 1) "device" else "devices"}", c?.verified == true, false,
                 if (n == 1) "Encrypted for ${s.name}'s device and your own other devices" else "Encrypted separately for each of ${s.name}'s $n devices and your own other devices",
-                { t -> Bridge.call("send", args("name" to s.name, "text" to t)) },
+                { t, replyTo -> Bridge.call("send", args("name" to s.name, "text" to t, "reply_to" to replyTo)) },
                 { m.open(Screen.Verify(s.name)) },
                 { video -> CallManager.call(s.name, c?.verified == true, video) },
                 { fileName, f -> Bridge.call("send_file", args("name" to s.name, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
@@ -222,7 +222,7 @@ private fun Ready(m: AppModel) {
                 "$people ${if (people == 1) "person" else "people"} · ${if (g?.large == true) "large group (MLS)" else "end-to-end encrypted"}",
                 false, true,
                 if (g?.large == true) "One encrypted copy for everyone in the group" else "Encrypted separately for every device of every member",
-                { t -> Bridge.call("group_send", args("id" to s.id, "text" to t)) },
+                { t, replyTo -> Bridge.call("group_send", args("id" to s.id, "text" to t, "reply_to" to replyTo)) },
                 { m.open(Screen.Members(s.id)) },
                 null, // group calls come last (ADR 0028)
                 // Files in large groups are not built yet (the engine refuses them).

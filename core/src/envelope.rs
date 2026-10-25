@@ -47,7 +47,13 @@ pub enum Kind {
     LargeLists,
     /// Call setup (ADR 0028): the body is a `call::Signal` as JSON. Never stored as a message.
     Call,
+    /// A reaction to message `target`: the body is one emoji, or empty to take the reaction back.
+    /// Each person has at most one reaction on a message; the newest replaces the last.
+    React,
 }
+
+/// Longest reaction accepted, in bytes: one emoji, with room for skin tones and joiners.
+pub const MAX_REACTION: usize = 32;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Envelope {
@@ -86,6 +92,10 @@ pub struct Envelope {
     /// out-of-date member list from their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gstate: Option<String>,
+    /// On a text message: the earlier message it replies to (its envelope id). Older versions
+    /// ignore the field and show the text alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
 }
 
 /// Longest introduction accepted: a card with a generous number of devices.
@@ -115,7 +125,26 @@ impl Envelope {
             intro: None,
             group: None,
             gstate: None,
+            reply_to: None,
         })
+    }
+
+    /// A text message that replies to message `target`.
+    pub fn reply(target: &str, body: &str) -> Result<Self> {
+        let mut e = Self::text(body)?;
+        e.reply_to = Some(target.to_string());
+        Ok(e)
+    }
+
+    /// A reaction (`emoji`, or empty to take it back) to message `target`.
+    pub fn react(target: &str, emoji: &str) -> Result<Self> {
+        if emoji.len() > MAX_REACTION {
+            return Err(Error::TooLarge { max: MAX_REACTION });
+        }
+        let mut e = Self::text(emoji)?;
+        e.kind = Kind::React;
+        e.target = Some(target.to_string());
+        Ok(e)
     }
 
     /// An edit: new full text for message `target`.
@@ -238,7 +267,9 @@ impl Envelope {
                 | Kind::LargeLeave
                 | Kind::LargeLists => e.group.is_none() && e.gstate.is_none(),
                 // A group message says which member list it was sent with.
-                Kind::Text | Kind::Edit | Kind::Delete => e.group.is_some() == e.gstate.is_some(),
+                Kind::Text | Kind::Edit | Kind::Delete | Kind::React => {
+                    e.group.is_some() == e.gstate.is_some()
+                }
             };
         let target_ok = match e.kind {
             Kind::Text
@@ -253,7 +284,7 @@ impl Envelope {
             | Kind::LargeWelcome
             | Kind::LargeLeave
             | Kind::LargeLists => e.target.is_none(),
-            Kind::Edit | Kind::Delete => e.target.as_ref().is_some_and(|t| {
+            Kind::Edit | Kind::Delete | Kind::React => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
                         .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
@@ -264,6 +295,11 @@ impl Envelope {
             Kind::Text => true,
             Kind::Edit => e.attachment.is_none(),
             Kind::Delete => e.attachment.is_none() && e.body.is_empty(),
+            Kind::React => {
+                e.attachment.is_none()
+                    && e.body.len() <= MAX_REACTION
+                    && !e.body.chars().any(|c| c.is_control() || c.is_whitespace())
+            }
             Kind::Sync
             | Kind::Call
             | Kind::AgentRequest
@@ -276,7 +312,13 @@ impl Envelope {
             Kind::LargeWelcome => e.attachment.is_some() && !e.body.is_empty(),
             Kind::LargeLeave | Kind::LargeLists => e.attachment.is_none() && !e.body.is_empty(),
         };
+        // Only a text message replies, and it names a message id.
+        let reply_ok = e
+            .reply_to
+            .as_deref()
+            .is_none_or(|r| e.kind == Kind::Text && hex_of(r, 32));
         if e.v != VERSION
+            || !reply_ok
             || !id_ok
             || !to_ok
             || !att_ok
@@ -295,6 +337,34 @@ impl Envelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replies_and_reactions_validate() {
+        let target = "ab".repeat(16);
+        let r = Envelope::reply(&target, "yes").unwrap();
+        assert_eq!(Envelope::from_bytes(&r.to_bytes()).unwrap(), r);
+        let k = Envelope::react(&target, "👍🏽").unwrap();
+        assert_eq!(Envelope::from_bytes(&k.to_bytes()).unwrap(), k);
+        let back = Envelope::react(&target, "").unwrap();
+        assert!(
+            Envelope::from_bytes(&back.to_bytes()).is_ok(),
+            "taking a reaction back"
+        );
+        assert!(Envelope::react(&target, &"x".repeat(MAX_REACTION + 1)).is_err());
+        // Only a text replies; a reaction needs a target and is never a sentence or a file.
+        let mut bad = Envelope::edit(&target, "x").unwrap();
+        bad.reply_to = Some(target.clone());
+        assert!(Envelope::from_bytes(&bad.to_bytes()).is_err());
+        let mut bad = r.clone();
+        bad.reply_to = Some("nope".into());
+        assert!(Envelope::from_bytes(&bad.to_bytes()).is_err());
+        let mut bad = k.clone();
+        bad.target = None;
+        assert!(Envelope::from_bytes(&bad.to_bytes()).is_err());
+        let mut bad = k.clone();
+        bad.body = "nice one".into();
+        assert!(Envelope::from_bytes(&bad.to_bytes()).is_err());
+    }
 
     #[test]
     fn group_fields_are_checked() {

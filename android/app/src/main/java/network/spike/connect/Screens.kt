@@ -2,6 +2,8 @@ package network.spike.connect
 
 import android.content.ClipData
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -55,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -413,7 +416,7 @@ private fun ChatRow(
 @Composable
 fun ConversationScreen(
     m: AppModel, title: String, sub: String, verified: Boolean, square: Boolean, caption: String,
-    onSend: suspend (String) -> Unit, onInfo: () -> Unit,
+    onSend: suspend (String, String?) -> Unit, onInfo: () -> Unit,
     onCall: ((Boolean) -> Unit)? = null,
     attach: (suspend (String, java.io.File) -> Unit)? = null,
 ) {
@@ -433,8 +436,26 @@ fun ConversationScreen(
         }
     }
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // Search in this conversation: the matches (oldest first), which one is current, and each message's place in the list.
+    var finding by remember { mutableStateOf(false) }
+    // Replying to a message, and the message whose reactions menu is open (long press).
+    var replyTo by remember { mutableStateOf<Message?>(null) }
+    var menuFor by remember { mutableStateOf<String?>(null) }
+    val who = { x: Message -> if (x.out) "You" else x.from ?: title }
+    var query by remember { mutableStateOf("") }
+    var cur by remember { mutableStateOf(0) }
+    val q = if (finding) query.trim() else ""
+    val hits = if (q.isEmpty()) emptyList() else m.messages.filter { !it.deleted && it.body.contains(q, ignoreCase = true) }.map { it.id }
+    val rowOf = remember(m.messages) {
+        var row = 1
+        buildMap { m.messages.forEachIndexed { i, msg -> if (i == 0 || !sameDay(m.messages[i - 1].ts, msg.ts)) row++; put(msg.id, row++) } }
+    }
     LaunchedEffect(m.messages.size) {
-        if (m.messages.isNotEmpty()) listState.scrollToItem(m.messages.size)
+        if (m.messages.isNotEmpty() && q.isEmpty()) listState.scrollToItem(m.messages.size)
+    }
+    LaunchedEffect(q, cur, hits.size) {
+        hits.getOrNull(cur)?.let { rowOf[it] }?.let { listState.animateScrollToItem(maxOf(0, it - 1)) }
     }
     Page(C.BgChat) {
         Row(
@@ -448,15 +469,47 @@ fun ConversationScreen(
                     Text(title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     if (verified) Ico(Ic.ShieldCheck, C.Green, 16.dp)
                 }
-                Muted(sub, 12.5.sp)
+                Text(sub, color = C.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (onCall != null) {
                 val gate = rememberMicGate { onCall(false) }
                 val vgate = rememberMicGate(camera = true) { onCall(true) }
-                Box(Modifier.size(44.dp).clip(CircleShape).clickable { gate() }.semantics { contentDescription = "Voice call" }, contentAlignment = Alignment.Center) { Ico(IcHandset) }
-                Box(Modifier.size(44.dp).clip(CircleShape).clickable { vgate() }.semantics { contentDescription = "Video call" }, contentAlignment = Alignment.Center) { Ico(IcVideo) }
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { gate() }.semantics { contentDescription = "Voice call" }, contentAlignment = Alignment.Center) { Ico(IcHandset) }
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { vgate() }.semantics { contentDescription = "Video call" }, contentAlignment = Alignment.Center) { Ico(IcVideo) }
             }
-            Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onInfo).semantics { contentDescription = "Details" }, contentAlignment = Alignment.Center) { Ico(Ic.Info) }
+            Box(
+                Modifier.size(40.dp).clip(CircleShape).background(if (finding) C.AccentSoft else Color.Transparent)
+                    .clickable { finding = !finding; if (!finding) query = "" }.semantics { contentDescription = "Search in this conversation" },
+                contentAlignment = Alignment.Center,
+            ) { Ico(Ic.Search, if (finding) C.AccentSoftText else C.Text) }
+            Box(Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onInfo).semantics { contentDescription = "Details" }, contentAlignment = Alignment.Center) { Ico(Ic.Info) }
+        }
+        if (finding) {
+            Row(
+                Modifier.fillMaxWidth().background(C.Surface).padding(start = 14.dp, end = 6.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Row(
+                    Modifier.weight(1f).heightIn(min = 40.dp).clip(RoundedCornerShape(20.dp)).background(C.Subtle).padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Ico(Ic.Search, C.Muted, 18.dp)
+                    BasicTextField(
+                        query, { query = it; cur = maxOf(0, m.messages.count { x -> !x.deleted && x.body.contains(it.trim(), ignoreCase = true) } - 1) },
+                        singleLine = true, cursorBrush = SolidColor(C.Accent),
+                        textStyle = TextStyle(fontFamily = Plex, fontSize = 15.sp, color = C.Text), modifier = Modifier.weight(1f),
+                        decorationBox = { inner -> if (query.isEmpty()) Text("Search in this conversation", color = C.Muted, fontSize = 15.sp); inner() },
+                    )
+                }
+                Muted(if (q.isEmpty()) "" else if (hits.isEmpty()) "No matches" else "${cur + 1} of ${hits.size}", 12.5.sp, Modifier.widthIn(min = 64.dp))
+                val step = { d: Int -> if (hits.isNotEmpty()) cur = (cur + d + hits.size) % hits.size }
+                Box(Modifier.size(36.dp).clip(CircleShape).clickable(enabled = hits.isNotEmpty()) { step(-1) }.semantics { contentDescription = "Older match" }, contentAlignment = Alignment.Center) {
+                    Ico(Ic.Chevron, C.Text, 20.dp, Modifier.rotate(-90f))
+                }
+                Box(Modifier.size(36.dp).clip(CircleShape).clickable(enabled = hits.isNotEmpty()) { step(1) }.semantics { contentDescription = "Newer match" }, contentAlignment = Alignment.Center) {
+                    Ico(Ic.Chevron, C.Text, 20.dp, Modifier.rotate(90f))
+                }
+            }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
         LazyColumn(
@@ -475,7 +528,22 @@ fun ConversationScreen(
                         }
                     }
                 }
-                item(key = msg.id) { Bubble(msg, onCall) { m.run { saveAndOpen(ctx, msg.id) } } }
+                item(key = msg.id) {
+                    val hit = msg.id in hits
+                    Bubble(
+                        msg, onCall, mark = if (hit) q else null, current = hit && hits.getOrNull(cur) == msg.id,
+                        quoteName = msg.reply?.let { r -> if (r.out) "You" else r.from ?: title },
+                        menu = menuFor == msg.id,
+                        onLongPress = { menuFor = if (menuFor == msg.id) null else msg.id },
+                        onReply = { replyTo = msg; menuFor = null },
+                        onQuote = { id -> rowOf[id]?.let { row -> scope.launch { listState.animateScrollToItem(maxOf(0, row - 1)) } } },
+                        onReact = { e ->
+                            menuFor = null
+                            val mine = msg.reactions.firstOrNull { it.mine }?.emoji
+                            m.run { Bridge.call("react", args("id" to msg.id, "emoji" to if (mine == e) "" else e)); m.refresh() }
+                        },
+                    ) { m.run { saveAndOpen(ctx, msg.id) } }
+                }
             }
             item { Spacer(Modifier.height(2.dp)) }
         }
@@ -484,6 +552,21 @@ fun ConversationScreen(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Box(Modifier.fillMaxWidth().height(0.dp))
+            replyTo?.let { r ->
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.Subtle).padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.width(3.dp).height(34.dp).background(C.Accent))
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Text(if (r.out) "Replying to yourself" else "Replying to ${who(r)}", color = C.AccentSoftText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text(r.body.ifEmpty { r.fileName ?: "" }, color = C.Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Box(Modifier.size(40.dp).clip(CircleShape).clickable { replyTo = null }.semantics { contentDescription = "Cancel the reply" }, contentAlignment = Alignment.Center) {
+                        Ico(Ic.Plus, C.Muted, 20.dp, Modifier.rotate(45f))
+                    }
+                }
+            }
             // One pill holds the attach button, the text and the send button, as on the desktop.
             Row(
                 Modifier.clip(RoundedCornerShape(26.dp)).background(C.Subtle).padding(4.dp),
@@ -513,8 +596,10 @@ fun ConversationScreen(
                     Modifier.size(44.dp).clip(CircleShape).background(if (text.isBlank()) C.Accent.copy(alpha = 0.4f) else C.Accent)
                         .clickable(enabled = text.isNotBlank()) {
                             val t = text
+                            val r = replyTo?.id
                             text = ""
-                            m.run { onSend(t); m.refresh() }
+                            replyTo = null
+                            m.run { onSend(t, r); m.refresh() }
                         }.semantics { contentDescription = "Send" },
                     contentAlignment = Alignment.Center,
                 ) { Ico(Ic.Send, C.OnAccent, 20.dp) }
@@ -524,8 +609,24 @@ fun ConversationScreen(
     }
 }
 
+/** The text with each match of [q] on a yellow highlight, for search in a conversation. */
+private fun marked(text: String, q: String?): androidx.compose.ui.text.AnnotatedString = androidx.compose.ui.text.buildAnnotatedString {
+    append(text)
+    if (q.isNullOrEmpty()) return@buildAnnotatedString
+    var at = text.indexOf(q, ignoreCase = true)
+    while (at >= 0) {
+        addStyle(androidx.compose.ui.text.SpanStyle(background = Color(0xFFFFE58A), color = Color(0xFF13202A)), at, at + q.length)
+        at = text.indexOf(q, at + q.length, ignoreCase = true)
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Unit) {
+private fun Bubble(
+    msg: Message, onCall: ((Boolean) -> Unit)?, mark: String? = null, current: Boolean = false,
+    quoteName: String? = null, menu: Boolean = false, onLongPress: () -> Unit = {}, onReply: () -> Unit = {},
+    onQuote: (String) -> Unit = {}, onReact: (String) -> Unit = {}, onFile: () -> Unit,
+) {
     // A line the call itself left in the conversation offers to call again, the same kind of call.
     val callVideo = msg.body.contains("video call", ignoreCase = true)
     val callBack = if (msg.id.startsWith("call-") && !msg.deleted && onCall != null) rememberMicGate(camera = callVideo) { onCall(callVideo) } else null
@@ -537,9 +638,21 @@ private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Uni
             Text(msg.from + if (msg.fromVerified) "" else " · not verified", fontSize = 12.sp, color = C.Muted, modifier = Modifier.padding(start = 6.dp))
         }
         val shape = if (msg.out) RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp) else RoundedCornerShape(18.dp, 18.dp, 18.dp, 6.dp)
+        msg.reply?.let { r ->
+            Column(
+                Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(10.dp)).background(C.Subtle)
+                    .clickable { onQuote(r.id) }.padding(horizontal = 10.dp, vertical = 5.dp)
+                    .semantics { contentDescription = "Replying to ${quoteName ?: ""}: ${if (r.deleted) "Message deleted" else r.text}" },
+            ) {
+                Text(quoteName ?: "", color = C.AccentSoftText, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                Text(if (r.deleted) "Message deleted" else r.text, color = C.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
         Box(
             Modifier.widthIn(max = 300.dp).clip(shape)
+                .then(if (msg.deleted || msg.id.startsWith("call-")) Modifier else Modifier.combinedClickable(onClick = { if (menu) onLongPress() }, onLongClick = onLongPress))
                 .background(if (msg.out) C.BubbleOut else C.Surface)
+                .then(if (current) Modifier.border(2.dp, C.Accent, shape) else Modifier)
                 .padding(horizontal = 14.dp, vertical = 9.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -557,7 +670,7 @@ private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Uni
                 }
                 if (msg.deleted || msg.body.isNotEmpty() || msg.fileName == null) {
                     Text(
-                        if (msg.deleted) "Message deleted" else msg.body, fontSize = 15.sp,
+                        if (msg.deleted) androidx.compose.ui.text.AnnotatedString("Message deleted") else marked(msg.body, mark), fontSize = 15.sp,
                         color = if (msg.out) C.OnBubbleOut else C.Text,
                         fontStyle = if (msg.deleted) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
                     )
@@ -570,9 +683,46 @@ private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Uni
                 }
             }
         }
+        if (menu) {
+            // Long press: quick reactions and Reply, in one row.
+            Row(
+                Modifier.clip(RoundedCornerShape(22.dp)).background(C.Surface).border(1.dp, C.Border, RoundedCornerShape(22.dp)).padding(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                for (e in QUICK_REACTIONS) {
+                    Box(Modifier.size(40.dp).clip(CircleShape).clickable { onReact(e) }.semantics { contentDescription = "React $e" }, contentAlignment = Alignment.Center) {
+                        Text(e, fontSize = 20.sp)
+                    }
+                }
+                Text(
+                    "Reply", color = C.Accent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onReply).padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+        }
+        if (msg.reactions.isNotEmpty() && !msg.deleted) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                for (r in msg.reactions) {
+                    Row(
+                        Modifier.heightIn(min = 30.dp).clip(RoundedCornerShape(15.dp))
+                            .background(if (r.mine) C.AccentSoft else C.Surface)
+                            .border(1.dp, if (r.mine) C.Accent else C.Border, RoundedCornerShape(15.dp))
+                            .clickable { onReact(r.emoji) }.padding(horizontal = 9.dp)
+                            .semantics { contentDescription = "${r.emoji} ${r.count}${if (r.mine) ", yours" else ""}" },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(r.emoji, fontSize = 15.sp)
+                        if (r.count > 1) Text("${r.count}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.AvatarText)
+                    }
+                }
+            }
+        }
         Muted(clock(msg.ts) + if (msg.edited) " · edited" else "", 11.5.sp)
     }
 }
+
+/** The six quick reactions, the same as the desktop's. */
+val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
 
 
 // ---- 4 · verify a contact -----------------------------------------------------------------------------

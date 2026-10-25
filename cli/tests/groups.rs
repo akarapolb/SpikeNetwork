@@ -1220,6 +1220,8 @@ async fn new_members_see_the_last_seven_days_when_the_group_says_so() {
             changed_at: 0,
             author: Some(owner(&alice)),
             shared_by: None,
+            reply_to: None,
+            reactions: Default::default(),
         })
         .unwrap();
 
@@ -1409,4 +1411,38 @@ async fn accepting_an_invite_asks_for_the_history_the_group_offers() {
     let got = recv(&eve, &url).await;
     assert_eq!(group_history_outcome(&got), Some(1), "{got:?}");
     assert_eq!(history_bodies(&eve, &gid), ["before eve"]);
+}
+
+#[tokio::test]
+async fn group_members_reply_and_react_and_everyone_sees_it() {
+    let (url, alice, bob, carol) = pilot().await;
+    let r = groups::send(&bob.0, url.as_str(), "Pilot", "draft is up")
+        .await
+        .unwrap();
+    recv(&alice, &url).await;
+    recv(&carol, &url).await;
+    // Carol (not Bob's contact) replies and reacts; anyone in the group may react to anything.
+    let reply = groups::send_reply(&carol.0, url.as_str(), "Pilot", &r.id, "reading it now")
+        .await
+        .unwrap();
+    ops::react(&carol.0, url.as_str(), &r.id, "👀")
+        .await
+        .unwrap();
+    ops::react(&alice.0, url.as_str(), &r.id, "👍")
+        .await
+        .unwrap();
+    for d in [&alice, &bob, &carol] {
+        recv(d, &url).await;
+        recv(d, &url).await;
+        let m = d.0.messages().unwrap().get(&reply.id).unwrap().unwrap();
+        assert_eq!(m.reply_to.as_deref(), Some(r.id.as_str()));
+        let target = d.0.messages().unwrap().get(&r.id).unwrap().unwrap();
+        let mut emojis: Vec<&str> = target
+            .reactions
+            .values()
+            .map(|x| x.emoji.as_str())
+            .collect();
+        emojis.sort();
+        assert_eq!(emojis, ["👀", "👍"]);
+    }
 }

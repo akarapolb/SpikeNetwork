@@ -387,6 +387,8 @@ pub fn accept(home: &Home, id: &str, name: &str) -> Result<usize> {
             changed_at: 0,
             author: None,
             shared_by: None,
+            reply_to: None,
+            reactions: Default::default(),
         })? {
             added += 1;
         }

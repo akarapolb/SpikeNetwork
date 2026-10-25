@@ -789,3 +789,43 @@ async fn the_relay_pushes_a_new_entry_to_a_member_who_is_listening() {
     let ev = large::sync(&bob.0, url.as_str()).await.unwrap();
     assert_eq!(said(&ev), [("alice".to_string(), "push me".to_string())]);
 }
+
+#[tokio::test]
+async fn large_group_replies_and_reactions_reach_everyone() {
+    let (url, alice, bob, carol) = org().await;
+    for d in [&alice, &bob, &carol] {
+        large::sync(&d.0, url.as_str()).await.unwrap();
+    }
+    let first = large::send(&alice.0, url.as_str(), "Org", "agenda is above")
+        .await
+        .unwrap();
+    for d in [&bob, &carol] {
+        large::sync(&d.0, url.as_str()).await.unwrap();
+    }
+    let reply = large::send_reply(&bob.0, url.as_str(), "Org", &first, "read it")
+        .await
+        .unwrap();
+    ops::react(&carol.0, url.as_str(), &first, "🙌")
+        .await
+        .unwrap();
+    for d in [&alice, &bob, &carol] {
+        let ev = large::sync(&d.0, url.as_str()).await.unwrap();
+        assert!(
+            !ev.iter().any(|e| matches!(e, Event::Refused { .. })),
+            "nothing refused: {ev:?}"
+        );
+        let (_, h) = large::history(&d.0, "Org", 50).unwrap();
+        // A reaction is not a message: only the two texts are in the history.
+        assert_eq!(h.len(), 2, "{h:?}");
+        let r = h.iter().find(|m| m.id == reply).unwrap();
+        assert_eq!(r.reply_to.as_deref(), Some(first.as_str()));
+        let f = h.iter().find(|m| m.id == first).unwrap();
+        assert_eq!(
+            f.reactions
+                .values()
+                .map(|x| x.emoji.as_str())
+                .collect::<Vec<_>>(),
+            ["🙌"]
+        );
+    }
+}

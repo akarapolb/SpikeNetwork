@@ -39,6 +39,9 @@ const PATHS = {
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
   group: '<circle cx="9" cy="8" r="3"/><circle cx="16.5" cy="9.5" r="2.5"/><path d="M3 19c.7-3 3-4.8 6-4.8s5.3 1.8 6 4.8"/><path d="M15 14.6c2.6.1 4.6 1.6 5.2 4.4"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+  up: '<path d="M6 15l6-6 6 6"/>',
+  down: '<path d="M6 9l6 6 6-6"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
   newgroup: '<circle cx="8" cy="8" r="3"/><path d="M2.5 19c.7-3 3-4.8 5.5-4.8s4.8 1.8 5.5 4.8"/><circle cx="15" cy="9" r="2.3"/><path d="M19 13v6M16 16h6"/>',
 };
 function icon(name) { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("class", "i"); s.setAttribute("aria-hidden", "true"); s.innerHTML = PATHS[name]; return s; }
@@ -179,7 +182,7 @@ async function lockNow() { try { await invoke("lock"); } catch (_) {} gate("unlo
 function render() {
   if (!st.ov) return;
   renderRail();
-  const searching = document.activeElement && document.activeElement.closest && document.activeElement.closest(".search");
+  const fe = document.activeElement, keep = fe && fe.dataset && fe.dataset.keep;
   const S = SECTIONS[st.section], items = S.list ? S.list() : [];
   $("list").replaceChildren(...items);
   $("shell").classList.toggle("nolist", !items.length);
@@ -187,9 +190,12 @@ function render() {
   const banners = [];
   if (st.ov.me.removed) banners.push(h("div", { class: "err-banner", role: "alert" }, h("b", {}, "This device was removed from your identity."), " It keeps what it already has but receives nothing new. Create a new identity here, or link it again from your main device."));
   if (st.offline) banners.push(h("div", { class: "err-banner", role: "status" }, "Cannot reach the relay at ", h("b", {}, st.ov.relay), ". Messages are kept and sent when it is back. Check Settings."));
-  $("main").replaceChildren(...banners, ...main);
+  // A screen may leave a slot empty (no search bar, no warning): replaceChildren would print it as "null".
+  $("main").replaceChildren(...banners, ...main.filter(Boolean));
   // A redraw (typing, or a message arriving) keeps the search box focused with the cursor at the end.
-  if (searching) { const i = $("list").querySelector(".search input"); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
+  if (keep) { const i = document.querySelector(`[data-keep="${keep}"]`); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
+  // Searching in a conversation: bring the current match into view once, when it changes.
+  if (st.find && st.find.jump) { st.find.jump = false; $("main").querySelector(".msg.current")?.scrollIntoView({ block: "center" }); }
 }
 function header(title, back) { return h("div", { class: "head" }, back ? h("button", { class: "iconbtn", type: "button", "aria-label": "Back", onclick: back }, icon("back")) : null, h("h1", {}, title)); }
 function tile(c, sm) { return h("span", { class: `tile${sm ? " sm" : ""}${c.agent ? " sq" : ""} ${tint(c.name)}`, "aria-hidden": "true" }, ini(c.name)); }
@@ -217,7 +223,7 @@ function chatsList() {
     .filter((e) => !q || e.name.toLowerCase().includes(q))
     .sort((x, y) => y.ts - x.ts || x.name.localeCompare(y.name));
   const search = cs.length + gs.length > 0 ? h("div", { class: "field search" }, icon("search"),
-    h("input", { type: "search", "aria-label": "Search chats", placeholder: `Search chats  (${MOD}K)`, value: st.query || "", oninput: (e) => { st.query = e.target.value; render(); },
+    h("input", { type: "search", "data-keep": "chats", "aria-label": "Search chats", placeholder: `Search chats  (${MOD}K)`, value: st.query || "", oninput: (e) => { st.query = e.target.value; render(); },
       onkeydown: (e) => { if (e.key === "Escape") { st.query = ""; render(); } } })) : null;
   return [h("div", { class: "listhead" }, h("div", { class: "title" }, h("h1", {}, "Chats"),
       h("button", { class: "iconbtn", type: "button", "aria-label": "New group", title: "New group", onclick: () => { if (!cs.length) return toast("Add a contact first: a group is made from your contacts."); st.newGroup = { name: "", members: [], anyCanAdd: false, week: false, large: false }; st.screen = "newgroup"; render(); } }, icon("newgroup")),
@@ -268,7 +274,7 @@ async function saveFile(m) {
   try { toast("Saved to " + (await invoke("save_attachment", { id: m.id })) + ". Only open files from people you trust."); } catch (e) { toast(String(e)); }
 }
 async function openChat(name) {
-  st.chat = name; st.group = null; st.gdetail = null; st.screen = null; st.verifyDone = null; st.verifyFor = null;
+  st.chat = name; st.group = null; st.gdetail = null; st.screen = null; st.verifyDone = null; st.verifyFor = null; st.find = null; st.replyTo = null; st.reacting = null;
   try { st.msgs = await invoke("conversation", { name }); } catch (e) { toast(String(e)); }
   render(); scrollEnd();
   const c = st.ov.contacts.find((x) => x.name === name);
@@ -287,23 +293,105 @@ async function markOpenRead() {
   if (!c || !c.unread) return;
   try { await invoke("mark_read", { name: st.chat }); st.ov = await invoke("overview"); st.msgs = await invoke("conversation", { name: st.chat }); render(); scrollEnd(); } catch (_) {}
 }
-function scrollEnd() { const s = $("main").querySelector(".scroll"); if (s) s.scrollTop = s.scrollHeight; }
+function scrollEnd() { if (st.find && st.find.q) return; const s = $("main").querySelector(".scroll"); if (s) s.scrollTop = s.scrollHeight; }
 /* A call line in the conversation offers to call again, the same kind of call. */
 function callBack(video) {
   if (cs) { toast("You are already in a call."); return; }
   if (st.chat) startCall(st.chat, video);
 }
+/* ---------- search in a conversation ---------- */
+// Messages whose text contains the words, oldest first. Deleted messages are not searched.
+function findHits() {
+  const q = st.find && st.find.q.trim().toLowerCase();
+  return q ? st.msgs.filter((m) => !m.deleted && m.body && m.body.toLowerCase().includes(q)).map((m) => m.id) : [];
+}
+// The text with each match marked; every piece stays a text node.
+function marked(text) {
+  const q = st.find && st.find.q.trim();
+  if (!q) return text;
+  const out = [], low = text.toLowerCase(), ql = q.toLowerCase();
+  let at = 0;
+  for (let i = low.indexOf(ql); i >= 0; i = low.indexOf(ql, at)) { out.push(text.slice(at, i), h("mark", {}, text.slice(i, i + q.length))); at = i + q.length; }
+  out.push(text.slice(at));
+  return out;
+}
+function openFind() { st.find = st.find || { q: "", i: 0 }; render(); $("main").querySelector(".findbar input")?.focus(); }
+function findBar() {
+  if (!st.find) return null;
+  const hits = findHits(), n = hits.length, f = st.find;
+  if (f.i >= n) f.i = n - 1;
+  const step = (d) => { if (!n) return; f.i = (f.i + d + n) % n; f.jump = true; render(); };
+  return h("div", { class: "findbar" },
+    h("div", { class: "field search" }, icon("search"),
+      h("input", { type: "search", "data-keep": "find", "aria-label": "Search in this conversation", placeholder: "Search in this conversation", value: f.q,
+        oninput: (e) => { f.q = e.target.value; f.i = findHits().length - 1; f.jump = true; render(); },
+        onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); step(e.shiftKey ? 1 : -1); } else if (e.key === "Escape") { st.find = null; render(); scrollEnd(); } } })),
+    h("span", { class: "note findcount", role: "status" }, !f.q.trim() ? "" : n ? `${f.i + 1} of ${n}` : "No matches"),
+    h("button", { class: "iconbtn", type: "button", "aria-label": "Older match", title: "Older match (Enter)", disabled: !n || null, onclick: () => step(-1) }, icon("up")),
+    h("button", { class: "iconbtn", type: "button", "aria-label": "Newer match", title: "Newer match (Shift+Enter)", disabled: !n || null, onclick: () => step(1) }, icon("down")),
+    h("button", { class: "iconbtn", type: "button", "aria-label": "Close search", title: "Close (Esc)", onclick: () => { st.find = null; render(); scrollEnd(); } }, icon("close")));
+}
+function findButton() { return h("button", { class: "iconbtn", type: "button", "aria-label": "Search in this conversation", title: `Search in this conversation  (${MOD}F)`, "aria-pressed": String(!!st.find), onclick: () => (st.find ? (st.find = null, render(), scrollEnd()) : openFind()) }, icon("search")); }
+
+/* ---------- replies and reactions ---------- */
+const QUICK = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+// Who wrote a message, as the reply strip and quotes say it.
+function authorOf(m, inGroup) { return m.out ? "You" : inGroup ? (m.from || "Someone") : st.chat; }
+function startReply(m, inGroup) {
+  st.replyTo = { id: m.id, who: authorOf(m, inGroup), text: m.body || (m.file ? m.file.name : "") };
+  st.reacting = null; render(); $("main").querySelector(".composer textarea")?.focus();
+}
+function replyStrip() {
+  const r = st.replyTo;
+  if (!r) return null;
+  return h("div", { class: "replystrip" }, h("span", { class: "rs-body" }, h("b", {}, `Replying to ${r.who === "You" ? "yourself" : r.who}`), h("span", {}, r.text)),
+    h("button", { class: "iconbtn", type: "button", "aria-label": "Cancel the reply", title: "Cancel the reply (Esc)", onclick: () => { st.replyTo = null; render(); } }, icon("close")));
+}
+async function react(m, emoji) {
+  // Choosing the reaction you already have takes it back.
+  const mine = (m.reactions || []).find((r) => r.mine);
+  const next = mine && mine.emoji === emoji ? "" : emoji;
+  st.reacting = null;
+  try { await invoke("react", { id: m.id, emoji: next }); await refresh(); } catch (e) { toast(String(e)); render(); }
+}
+// The quote above a reply. Clicking it brings the original into view.
+function quoteOf(m) {
+  const q = m.reply;
+  if (!q) return null;
+  const who = q.out ? "You" : q.from || st.chat || "Them";
+  return h("button", { class: "quote", type: "button", title: "Show the message this replies to", onclick: () => {
+    const el = $("main").querySelector(`.msg[data-id="${q.id}"]`);
+    if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1200); }
+  } }, h("b", {}, who), h("span", {}, q.deleted ? "Message deleted" : q.text));
+}
+function reactionsOf(m) {
+  if (m.deleted) return null;
+  const chips = (m.reactions || []).map((r) => h("button", { class: "react" + (r.mine ? " mine" : ""), type: "button", title: r.mine ? "Take your reaction back" : `React ${r.emoji}`, "aria-label": `${r.emoji} ${r.count}${r.mine ? ", yours" : ""}`, onclick: () => react(m, r.emoji) }, r.emoji, r.count > 1 ? h("span", {}, String(r.count)) : null));
+  const picker = st.reacting === m.id ? h("div", { class: "picker", role: "group", "aria-label": "Choose a reaction" }, QUICK.map((e) => h("button", { type: "button", "aria-label": `React ${e}`, onclick: () => react(m, e) }, e))) : null;
+  return chips.length || picker ? h("div", { class: "reacts" }, chips, picker) : null;
+}
+// Reply and React show when you point at a message (or tab to it), like Edit and Delete.
+function msgActions(m, inGroup) {
+  if (m.deleted || (typeof m.id === "string" && m.id.startsWith("call-"))) return null;
+  const btn = (label, fn) => h("button", { class: "linkish own", type: "button", style: "border:0;background:none;padding:0 0 0 8px;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: fn }, label);
+  return [btn("Reply", () => startReply(m, inGroup)), btn("React", () => { st.reacting = st.reacting === m.id ? null : m.id; render(); })];
+}
+
 function threadItems(inGroup) {
   const items = []; let day = "", prev = null;
+  const hits = findHits(), current = hits.length && st.find ? hits[st.find.i] : null;
   for (const m of st.msgs) {
     const d = dayOf(m.ts); if (d !== day) { day = d; prev = null; items.push(h("div", { class: "day" }, d)); }
     // A message right after one from the same sender sits closer to it.
     const cont = prev && prev.out === m.out && prev.from === m.from && m.ts - prev.ts < 300000; prev = m;
-    items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") },
+    const hit = hits.includes(m.id);
+    items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") + (hit ? " hit" : "") + (hit && m.id === current ? " current" : ""), "data-id": m.id },
+      quoteOf(m),
       inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag waiting", style: "margin-left:6px" }, "Not verified")) : null,
-      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, m.body) : null),
+      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, hit ? marked(m.body) : m.body) : null),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
-      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
+      reactionsOf(m),
+      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", st.editing !== m.id ? msgActions(m, inGroup) : null, m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
   }
   return items;
 }
@@ -312,18 +400,18 @@ function chatMain() {
   const c = st.ov.contacts.find((x) => x.name === st.chat);
   if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), startState()];
   const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name), h("span", { class: c.agent ? "verified" : null }, c.agent ? [icon("shield"), "Agent"] : `End-to-end encrypted · ${c.devices} device${c.devices > 1 ? "s" : ""}`)),
-    callButtons(c), h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
+    findButton(), callButtons(c), h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
   const items = threadItems(false);
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
-  const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: `Message ${c.name}`, rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } } });
+  const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: `Message ${c.name}`, rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
   async function send() {
     const text = ta.value; if (!text.trim()) return; ta.disabled = true;
-    try { const n = await invoke("send", { name: c.name, text }); ta.value = ""; if (!n) toast("Saved, but no device could be reached yet. It will be delivered when they connect."); await refresh(); scrollEnd(); }
+    try { const n = await invoke("send", { name: c.name, text, replyTo: st.replyTo ? st.replyTo.id : null }); ta.value = ""; st.replyTo = null; if (!n) toast("Saved, but no device could be reached yet. It will be delivered when they connect."); await refresh(); scrollEnd(); }
     catch (e) { toast(String(e)); }
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
-  return [head, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
-    h("div", { class: "composer" }, h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
+  return [head, findBar(), h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
+    h("div", { class: "composer" }, replyStrip(), h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
 }
 
 /* ---------- verify + add ---------- */
@@ -719,7 +807,7 @@ async function loadGroup() {
   catch (_) { st.group = null; st.gdetail = null; st.msgs = []; if (st.screen === "group") st.screen = null; }
 }
 async function openGroup(id) {
-  st.group = id; st.chat = null; st.screen = null; st.verifyDone = null; st.verifyFor = null; st.picking = false; st.nameMember = null;
+  st.group = id; st.chat = null; st.screen = null; st.verifyDone = null; st.verifyFor = null; st.picking = false; st.nameMember = null; st.find = null; st.replyTo = null; st.reacting = null;
   await loadGroup();
   render(); scrollEnd();
   const g = st.ov.groups.find((x) => x.id === id);
@@ -739,18 +827,18 @@ function groupMain() {
   if (d.status === "invited") return inviteScreen();
   const left = d.status !== "joined";
   const head = h("div", { class: "head" }, groupTile(true), h("span", { class: "who" }, h("b", {}, d.name), h("span", {}, left ? "You are not in this group" : `${plural(d.members.length, "person", "people")} · end-to-end encrypted${d.large ? " · large group" : ""}`)),
-    h("button", { class: "btn", type: "button", onclick: openMembers }, icon("group"), "Members"));
+    findButton(), h("button", { class: "btn", type: "button", onclick: openMembers }, icon("group"), "Members"));
   const warn = !left && d.unverified ? h("div", { class: "sysline attention", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
     h("span", { style: "flex:1" }, `${unverifiedText(d)} Messages from them are marked.`),
     h("button", { class: "btn", type: "button", onclick: openMembers }, "Review")) : null;
   const refusedNote = !left && d.large && d.refused ? h("div", { class: "sysline", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
     h("span", { style: "flex:1" }, `${plural(d.refused, "change was", "changes were")} refused because ${d.refused === 1 ? "it" : "they"} broke the group's rules, and skipped. Latest: ${d.refused_why || "unknown"}.`)) : null;
   const items = threadItems(true);
-  const ta = h("textarea", { "aria-label": "Message to " + d.name, placeholder: `Message ${d.name}`, rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } } });
+  const ta = h("textarea", { "aria-label": "Message to " + d.name, placeholder: `Message ${d.name}`, rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
   async function send() {
     const text = ta.value; if (!text.trim()) return; ta.disabled = true;
     try {
-      const r = await invoke("group_send", { id: d.id, text }); ta.value = "";
+      const r = await invoke("group_send", { id: d.id, text, replyTo: st.replyTo ? st.replyTo.id : null }); ta.value = ""; st.replyTo = null;
       if (r.reached < r.people) toast(`Reached ${r.reached} of ${r.people} people. The others could not be reached yet.`);
       r.notes.forEach(toast); await refresh(); scrollEnd();
     } catch (e) { toast(String(e)); }
@@ -758,9 +846,9 @@ function groupMain() {
   }
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendGroupFile(d.id, f, ta.value); } });
   const composer = left ? h("div", { class: "composer" }, h("span", { class: "note" }, d.large ? "You are not in this group. Your history stays on this computer; an admin can invite you again." : "You are not in this group. Your history stays on this computer; nobody can add you back without your OK."))
-    : h("div", { class: "composer" }, h("div", { class: "bar" }, d.large ? null : h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), d.large ? null : picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
+    : h("div", { class: "composer" }, replyStrip(), h("div", { class: "bar" }, d.large ? null : h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), d.large ? null : picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
       h("span", { class: "note" }, d.large ? `One encrypted copy for all ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}. Files are not available in large groups yet.` : `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
-  return [head, warn, refusedNote, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState("No messages yet.")), composer].filter(Boolean);
+  return [head, findBar(), warn, refusedNote, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState("No messages yet.")), composer].filter(Boolean);
 }
 const HISTORY_CHOICES = [["join", "Messages from when they join"], ["week", "The last 7 days"]];
 const historyNote = (v) => v === "week"
@@ -898,6 +986,7 @@ document.addEventListener("keydown", (e) => {
   if (!(MAC ? e.metaKey : e.ctrlKey) || e.altKey || $("app").hidden) return;
   const k = { "1": "chats", "2": "agents", "3": "devices", "4": "settings" }[e.key];
   if (k) { e.preventDefault(); go(k); }
+  else if (e.key.toLowerCase() === "f" && st.section === "chats" && !st.screen && (st.chat || st.group)) { e.preventDefault(); openFind(); }
   else if (e.key.toLowerCase() === "k") { e.preventDefault(); if (st.section !== "chats" || st.screen) go("chats"); $("list").querySelector(".search input")?.focus(); } else if (e.key.toLowerCase() === "l") { e.preventDefault(); lockNow(); }
 });
 window.addEventListener("DOMContentLoaded", () => { listenToBackend(); gate(); });

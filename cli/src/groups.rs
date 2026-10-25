@@ -467,6 +467,28 @@ pub async fn send(
     send_env(home, &relay.into(), group, Envelope::text(text)?).await
 }
 
+/// A text message to a group that replies to an earlier message of it (`reply_to`, its id).
+pub async fn send_reply(
+    home: &Home,
+    relay: impl Into<Target>,
+    group: &str,
+    reply_to: &str,
+    text: &str,
+) -> Result<GroupSend> {
+    send_env(home, &relay.into(), group, Envelope::reply(reply_to, text)?).await
+}
+
+/// React to a message of a group you are in (`emoji` empty: take your reaction back).
+pub async fn react(
+    home: &Home,
+    relay: impl Into<Target>,
+    group: &str,
+    target: &str,
+    emoji: &str,
+) -> Result<GroupSend> {
+    send_env(home, &relay.into(), group, Envelope::react(target, emoji)?).await
+}
+
 /// Send a text, edit or delete to a group, store it here once someone has it.
 async fn send_env(home: &Home, base: &Target, group: &str, mut env: Envelope) -> Result<GroupSend> {
     let rec = find(home, group)?;
@@ -502,6 +524,9 @@ async fn send_env(home: &Home, base: &Target, group: &str, mut env: Envelope) ->
         }
         Kind::Edit | Kind::Delete => {
             apply_group_change(home, &cur.group, &env, &me, &me, &my_device)?;
+        }
+        Kind::React => {
+            crate::apply_reaction(home, &env, &me, &cur.group, &my_device)?;
         }
         _ => {}
     }
@@ -1188,6 +1213,8 @@ fn store_message(
         changed_at: 0,
         author: Some(author.to_string()),
         shared_by: None,
+        reply_to: env.reply_to.clone(),
+        reactions: Default::default(),
     };
     // A tombstone left by someone else for this id must not suppress the real message:
     // in a group, other members see a message before you might and could "delete" it first.
@@ -1331,7 +1358,7 @@ pub fn on_envelope(home: &Home, sender: Sender<'_>, env: &Envelope) -> Result<Ou
                 added,
             })
         }
-        Kind::Text | Kind::Edit | Kind::Delete => {
+        Kind::Text | Kind::Edit | Kind::Delete | Kind::React => {
             let Some(mut rec) = rec else {
                 return Ok(Outcome::Ignored);
             };
@@ -1353,6 +1380,10 @@ pub fn on_envelope(home: &Home, sender: Sender<'_>, env: &Envelope) -> Result<Ou
                     } else {
                         Outcome::Duplicate
                     });
+                }
+                if env.kind == Kind::React {
+                    let done = crate::apply_reaction(home, env, &me, &gid, sender.device)?;
+                    return Ok(crate::reaction_outcome(done, "you".into(), env));
                 }
                 let a = apply_group_change(home, &gid, env, &me, &me, sender.device)?;
                 return Ok(crate::change_outcome(
@@ -1446,6 +1477,10 @@ fn accept_message(
     out_of_date: bool,
 ) -> Result<Outcome> {
     let who = display_name(home, author);
+    if env.kind == Kind::React {
+        let done = crate::apply_reaction(home, env, author, gid, device)?;
+        return Ok(crate::reaction_outcome(done, who, env));
+    }
     if env.kind != Kind::Text {
         let a = apply_group_change(home, gid, env, author, me, device)?;
         return Ok(crate::change_outcome(
@@ -1728,6 +1763,9 @@ pub struct HistoryMsg {
     pub attachment: Option<Attachment>,
     #[serde(default)]
     pub edited: bool,
+    /// The message it replies to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -1788,6 +1826,7 @@ async fn history_envelopes(home: &Home, base: &Target, group: &str) -> Result<Ve
             body,
             attachment,
             edited: m.edited,
+            reply_to: m.reply_to.clone(),
         });
     }
     let mut batches: Vec<HistoryBatch> = vec![HistoryBatch::default()];
@@ -1854,6 +1893,8 @@ fn import_history(
             changed_at: 0,
             author: Some(m.author.clone()),
             shared_by: Some(sharer.to_string()),
+            reply_to: m.reply_to.clone(),
+            reactions: Default::default(),
         };
         if store.insert(&stored)? {
             added += 1;

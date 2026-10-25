@@ -71,13 +71,36 @@ pub fn decide(
         | Kind::GroupHistory
         | Kind::LargeWelcome
         | Kind::LargeLeave
-        | Kind::LargeLists => Action::Ignore,
+        | Kind::LargeLists
+        | Kind::React => Action::Ignore,
     }
+}
+
+/// Reactions: anyone in the conversation may react, and each person has at most one reaction on a
+/// message. A reaction (or taking it back) replaces that person's earlier one only when its stamp
+/// is newer, so every device ends with the same reactions whatever order they arrive in.
+pub fn reaction_wins(current: Option<&(u64, String)>, stamp: &(u64, String)) -> bool {
+    current.is_none_or(|c| stamp > c)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newer_reactions_replace_older_ones() {
+        assert!(reaction_wins(None, &stamp(1, "a")));
+        assert!(reaction_wins(Some(&stamp(1, "a")), &stamp(2, "a")));
+        assert!(!reaction_wins(Some(&stamp(2, "a")), &stamp(1, "b")));
+        assert!(
+            !reaction_wins(Some(&stamp(2, "a")), &stamp(2, "a")),
+            "a replay changes nothing"
+        );
+        assert!(
+            reaction_wins(Some(&stamp(2, "a")), &stamp(2, "b")),
+            "the device id breaks ties"
+        );
+    }
 
     fn st(mine: bool, deleted: bool, l: u64, d: &str) -> State {
         State {
