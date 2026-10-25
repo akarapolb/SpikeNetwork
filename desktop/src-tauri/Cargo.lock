@@ -5050,7 +5050,7 @@ version = "0.0.1"
 dependencies = [
  "argon2",
  "base64 0.22.1",
- "chacha20poly1305 0.10.1",
+ "chacha20poly1305 0.11.0",
  "hex",
  "hkdf 0.12.4",
  "hmac 0.12.1",
@@ -5123,6 +5123,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
