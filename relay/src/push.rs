@@ -91,10 +91,20 @@ pub fn parse(url: &str, allow_insecure: bool) -> Result<Endpoint, &'static str> 
         if !allow_insecure && !is_public(&ip) {
             return Err("push URL points at a private address");
         }
-    } else if !allow_insecure && (!host.contains('.') || host.ends_with(".local") || host.ends_with(".internal") || host.ends_with(".localhost")) {
+    } else if !allow_insecure
+        && (!host.contains('.')
+            || host.ends_with(".local")
+            || host.ends_with(".internal")
+            || host.ends_with(".localhost"))
+    {
         return Err("push URL must name a public host");
     }
-    Ok(Endpoint { tls, host, port, target })
+    Ok(Endpoint {
+        tls,
+        host,
+        port,
+        target,
+    })
 }
 
 /// True for an address that is ordinary and reachable on the public Internet.
@@ -154,12 +164,16 @@ pub async fn send(ep: &Endpoint, allow_insecure: bool) -> Outcome {
 
 async fn send_inner(ep: &Endpoint, allow_insecure: bool) -> Outcome {
     // We resolve the name and keep only public addresses: connecting to what we checked, not to whatever the name says later.
-    let Ok(addrs) = tokio::net::lookup_host((ep.host.as_str(), ep.port)).await else { return Outcome::Failed };
+    let Ok(addrs) = tokio::net::lookup_host((ep.host.as_str(), ep.port)).await else {
+        return Outcome::Failed;
+    };
     let addrs: Vec<SocketAddr> = addrs.collect();
     if addrs.is_empty() || (!allow_insecure && addrs.iter().any(|a| !is_public(&a.ip()))) {
         return Outcome::Failed;
     }
-    let Ok(Ok(tcp)) = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addrs[0])).await else {
+    let Ok(Ok(tcp)) =
+        tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addrs[0])).await
+    else {
         return Outcome::Failed;
     };
     let request = format!(
@@ -171,9 +185,15 @@ async fn send_inner(ep: &Endpoint, allow_insecure: bool) -> Outcome {
     let mut head = request.into_bytes();
     head.extend_from_slice(BODY);
     let status = if ep.tls {
-        let Some(connector) = tls_connector() else { return Outcome::Failed };
-        let Ok(name) = rustls_pki_types::ServerName::try_from(ep.host.clone()) else { return Outcome::Failed };
-        let Ok(Ok(mut tls)) = tokio::time::timeout(Duration::from_secs(5), connector.connect(name, tcp)).await else {
+        let Some(connector) = tls_connector() else {
+            return Outcome::Failed;
+        };
+        let Ok(name) = rustls_pki_types::ServerName::try_from(ep.host.clone()) else {
+            return Outcome::Failed;
+        };
+        let Ok(Ok(mut tls)) =
+            tokio::time::timeout(Duration::from_secs(5), connector.connect(name, tcp)).await
+        else {
             return Outcome::Failed;
         };
         if tls.write_all(&head).await.is_err() {
@@ -195,7 +215,11 @@ async fn send_inner(ep: &Endpoint, allow_insecure: bool) -> Outcome {
 }
 
 fn host_header(ep: &Endpoint) -> String {
-    let host = if ep.host.contains(':') { format!("[{}]", ep.host) } else { ep.host.clone() };
+    let host = if ep.host.contains(':') {
+        format!("[{}]", ep.host)
+    } else {
+        ep.host.clone()
+    };
     let default = if ep.tls { 443 } else { 80 };
     if ep.port == default {
         host
@@ -229,11 +253,13 @@ async fn read_status<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> Option<u16> 
 fn tls_connector() -> Option<tokio_rustls::TlsConnector> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .ok()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .ok()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
     Some(tokio_rustls::TlsConnector::from(Arc::new(cfg)))
 }
 
@@ -245,7 +271,10 @@ pub struct Throttle {
 
 impl Throttle {
     pub fn new(min_interval: Duration) -> Self {
-        Self { last: Mutex::new(HashMap::new()), min_interval }
+        Self {
+            last: Mutex::new(HashMap::new()),
+            min_interval,
+        }
     }
 
     pub fn due(&self, device: &str) -> bool {
@@ -271,11 +300,33 @@ mod tests {
     #[test]
     fn good_endpoints_parse() {
         let e = parse("https://ntfy.example.org/upabc123?x=1", false).unwrap();
-        assert_eq!(e, Endpoint { tls: true, host: "ntfy.example.org".into(), port: 443, target: "/upabc123?x=1".into() });
-        assert_eq!(parse("https://push.example.org:8443/t", false).unwrap().port, 8443);
-        assert_eq!(parse("https://push.example.org", false).unwrap().target, "/");
-        assert_eq!(parse("https://push.example.org?a=b", false).unwrap().target, "/?a=b");
-        assert_eq!(parse("https://93.184.216.34/t", false).unwrap().host, "93.184.216.34");
+        assert_eq!(
+            e,
+            Endpoint {
+                tls: true,
+                host: "ntfy.example.org".into(),
+                port: 443,
+                target: "/upabc123?x=1".into()
+            }
+        );
+        assert_eq!(
+            parse("https://push.example.org:8443/t", false)
+                .unwrap()
+                .port,
+            8443
+        );
+        assert_eq!(
+            parse("https://push.example.org", false).unwrap().target,
+            "/"
+        );
+        assert_eq!(
+            parse("https://push.example.org?a=b", false).unwrap().target,
+            "/?a=b"
+        );
+        assert_eq!(
+            parse("https://93.184.216.34/t", false).unwrap().host,
+            "93.184.216.34"
+        );
     }
 
     #[test]
@@ -325,7 +376,22 @@ mod tests {
         for ok in ["93.184.216.34", "8.8.8.8", "2606:4700:4700::1111"] {
             assert!(is_public(&ok.parse().unwrap()), "{ok}");
         }
-        for no in ["127.0.0.1", "10.1.2.3", "172.31.0.1", "192.168.0.9", "169.254.1.1", "100.100.0.1", "0.1.2.3", "224.0.0.1", "255.255.255.255", "::1", "::", "fc00::1", "fe80::2", "::ffff:127.0.0.1"] {
+        for no in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.31.0.1",
+            "192.168.0.9",
+            "169.254.1.1",
+            "100.100.0.1",
+            "0.1.2.3",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fc00::1",
+            "fe80::2",
+            "::ffff:127.0.0.1",
+        ] {
             assert!(!is_public(&no.parse().unwrap()), "{no}");
         }
     }

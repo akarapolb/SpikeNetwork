@@ -457,7 +457,10 @@ impl Store {
     }
 
     pub fn clear_push(&self, device: &str) -> rusqlite::Result<()> {
-        self.conn.lock().unwrap().execute("DELETE FROM push_endpoints WHERE device = ?1", [device])?;
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM push_endpoints WHERE device = ?1", [device])?;
         Ok(())
     }
 
@@ -465,7 +468,11 @@ impl Store {
         self.conn
             .lock()
             .unwrap()
-            .query_row("SELECT url FROM push_endpoints WHERE device = ?1", [device], |r| r.get(0))
+            .query_row(
+                "SELECT url FROM push_endpoints WHERE device = ?1",
+                [device],
+                |r| r.get(0),
+            )
             .optional()
     }
 

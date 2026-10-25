@@ -9,8 +9,8 @@
 //! blocking thread so a slow disk cannot stall the connections of everyone else (ADR 0022).
 
 pub mod limits;
-pub mod push;
 pub mod metrics;
+pub mod push;
 pub mod store;
 pub mod tls;
 
@@ -200,7 +200,12 @@ pub async fn serve_with_metrics(
         push_tx,
     });
     if let Some(rx) = push_rx {
-        tokio::spawn(push_worker(state.clone(), rx, cfg.push_allow_insecure, cfg.push_min_interval));
+        tokio::spawn(push_worker(
+            state.clone(),
+            rx,
+            cfg.push_allow_insecure,
+            cfg.push_min_interval,
+        ));
     }
     let acceptor = cfg.tls.as_ref().map(tls::acceptor).transpose()?;
     let cfg = Arc::new(cfg);
@@ -637,8 +642,14 @@ fn dispatch(
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
                 let ttl = cfg.turn_ttl.as_secs();
-                let (username, credential) = spike_core::turn::credentials(secret.as_bytes(), &p.me, now, ttl);
-                ServerMsg::TurnCredentials { urls: cfg.turn_urls.clone(), username, credential, ttl_secs: ttl }
+                let (username, credential) =
+                    spike_core::turn::credentials(secret.as_bytes(), &p.me, now, ttl);
+                ServerMsg::TurnCredentials {
+                    urls: cfg.turn_urls.clone(),
+                    username,
+                    credential,
+                    ttl_secs: ttl,
+                }
             }
             _ => ServerMsg::Error {
                 code: "no_turn".into(),
@@ -797,22 +808,35 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
 /// Sends the wake-up pushes. One at a time per device at most every `min_interval`, a few devices in parallel, and an
 /// endpoint that says it is gone is forgotten. A failure is silent: the message is queued, and the device reads it the
 /// next time it connects, as it always did.
-async fn push_worker(state: Arc<Shared>, mut rx: mpsc::Receiver<String>, allow_insecure: bool, min_interval: Duration) {
+async fn push_worker(
+    state: Arc<Shared>,
+    mut rx: mpsc::Receiver<String>,
+    allow_insecure: bool,
+    min_interval: Duration,
+) {
     let throttle = Arc::new(push::Throttle::new(min_interval));
     let gate = Arc::new(tokio::sync::Semaphore::new(16));
     while let Some(device) = rx.recv().await {
         if !throttle.due(&device) {
             continue;
         }
-        let Ok(permit) = gate.clone().try_acquire_owned() else { continue };
+        let Ok(permit) = gate.clone().try_acquire_owned() else {
+            continue;
+        };
         let state = state.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let dev = device.clone();
             let s2 = state.clone();
-            let url = tokio::task::spawn_blocking(move || s2.store.push_url(&dev)).await.ok().and_then(Result::ok).flatten();
+            let url = tokio::task::spawn_blocking(move || s2.store.push_url(&dev))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten();
             let Some(url) = url else { return };
-            let Ok(ep) = push::parse(&url, allow_insecure) else { return };
+            let Ok(ep) = push::parse(&url, allow_insecure) else {
+                return;
+            };
             Metrics::inc(&state.metrics.pushes_sent);
             if push::send(&ep, allow_insecure).await == push::Outcome::Gone {
                 let s3 = state.clone();

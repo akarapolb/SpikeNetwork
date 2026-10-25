@@ -19,8 +19,17 @@ pub fn hmac_sha1(key: &[u8], data: &[u8]) -> Vec<u8> {
 
 /// A username and password valid until `now_secs + ttl_secs`. The part of the username after the colon is
 /// only a label for the TURN server's own logs: the first 8 characters of the device id (never the full id).
-pub fn credentials(secret: &[u8], device_id: &str, now_secs: u64, ttl_secs: u64) -> (String, String) {
-    let label: String = device_id.chars().filter(|c| c.is_ascii_hexdigit()).take(8).collect();
+pub fn credentials(
+    secret: &[u8],
+    device_id: &str,
+    now_secs: u64,
+    ttl_secs: u64,
+) -> (String, String) {
+    let label: String = device_id
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .take(8)
+        .collect();
     let username = format!("{}:{}", now_secs + ttl_secs, label);
     let password = STANDARD.encode(hmac_sha1(secret, username.as_bytes()));
     (username, password)
@@ -28,14 +37,23 @@ pub fn credentials(secret: &[u8], device_id: &str, now_secs: u64, ttl_secs: u64)
 
 /// What a TURN server does with a login: true if `password` matches `username` and the expiry in it has not passed.
 pub fn verify(secret: &[u8], username: &str, password: &str, now_secs: u64) -> bool {
-    let Some((expiry, _)) = username.split_once(':') else { return false };
-    let Ok(expiry) = expiry.parse::<u64>() else { return false };
+    let Some((expiry, _)) = username.split_once(':') else {
+        return false;
+    };
+    let Ok(expiry) = expiry.parse::<u64>() else {
+        return false;
+    };
     if expiry < now_secs {
         return false;
     }
     let expected = STANDARD.encode(hmac_sha1(secret, username.as_bytes()));
     // Same length, so compare without an early exit.
-    expected.len() == password.len() && expected.bytes().zip(password.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0
+    expected.len() == password.len()
+        && expected
+            .bytes()
+            .zip(password.bytes())
+            .fold(0u8, |a, (x, y)| a | (x ^ y))
+            == 0
 }
 
 #[cfg(test)]
@@ -56,7 +74,10 @@ mod tests {
         assert!(verify(secret, &user, &pass, 1_000));
         assert!(verify(secret, &user, &pass, 4_600));
         assert!(!verify(secret, &user, &pass, 4_601), "expired");
-        assert!(!verify(b"another secret", &user, &pass, 1_000), "wrong secret");
+        assert!(
+            !verify(b"another secret", &user, &pass, 1_000),
+            "wrong secret"
+        );
         // changing the expiry (to live longer) breaks the MAC
         assert!(!verify(secret, "9999999:abababab", &pass, 1_000));
         assert!(!verify(secret, &user, "AAAA", 1_000));

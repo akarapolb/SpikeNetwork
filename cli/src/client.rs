@@ -632,7 +632,8 @@ impl Relay {
 
     /// Tell the relay where to send a wake-up push for this device while it is not connected (UnifiedPush, ADR 0028).
     pub async fn register_push(&mut self, url: &str) -> Result<()> {
-        self.write(&ClientMsg::RegisterPush { url: url.into() }).await?;
+        self.write(&ClientMsg::RegisterPush { url: url.into() })
+            .await?;
         loop {
             match self.read().await? {
                 ServerMsg::PushRegistered => return Ok(()),
@@ -667,8 +668,18 @@ impl Relay {
         self.write(&ClientMsg::TurnCredentials).await?;
         loop {
             match self.read().await? {
-                ServerMsg::TurnCredentials { urls, username, credential, ttl_secs } => {
-                    return Ok(Some(TurnServers { urls, username, credential, ttl_secs }))
+                ServerMsg::TurnCredentials {
+                    urls,
+                    username,
+                    credential,
+                    ttl_secs,
+                } => {
+                    return Ok(Some(TurnServers {
+                        urls,
+                        username,
+                        credential,
+                        ttl_secs,
+                    }))
                 }
                 ServerMsg::Error { code, .. } if code == "no_turn" => return Ok(None),
                 ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),

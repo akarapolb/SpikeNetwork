@@ -279,7 +279,11 @@ impl Engine {
             "call_ice" => val(rt.block_on(x.call_local_ice(list(a, "candidates")?))?),
             // Wait up to `ms` for something to act on: ring, connect, remote candidates, end.
             "call_wait" => {
-                let ms = a.get("ms").and_then(Value::as_u64).unwrap_or(20_000).min(120_000);
+                let ms = a
+                    .get("ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(20_000)
+                    .min(120_000);
                 val(rt.block_on(x.call_wait(ms)))
             }
             "backup_status" => val(x.backup_status()?),
