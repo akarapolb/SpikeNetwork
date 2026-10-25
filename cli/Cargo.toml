@@ -41,3 +41,7 @@ spike-cli = { path = ".", features = ["test-hooks"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 rustls-pki-types = "1"
 spike-relay = { path = "../relay" }
+
+# Only for examples/relay_check.rs (asks a TURN server for an allocation).
+turn = "0.17"
+webrtc-util = "0.17"

@@ -43,6 +43,12 @@ sudo docker compose logs caddy | tail  # "certificate obtained successfully"
 curl -i https://relay.example.org/     # any HTTP answer over a valid certificate is right
 ```
 
+### Check it from your own computer
+With the Rust toolchain installed, this one command signs in like a phone would and tests the certificate, the TURN logins and a TURN allocation (UDP), and says what to fix if something fails:
+```sh
+cargo run -p spike-cli --example relay_check -- wss://relay.example.org
+```
+
 ## 6. Use it
 In each app: **Settings, Home relay**, enter `wss://relay.example.org`, then **Test connection** (it says
 "certificate verified"). On the desktop, **Settings, Calls** should now say your relay offers a TURN server. A device
