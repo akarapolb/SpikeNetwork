@@ -476,7 +476,7 @@ fun ConversationScreen(
                         }
                     }
                 }
-                item(key = msg.id) { Bubble(msg) { m.run { saveAndOpen(ctx, msg.id) } } }
+                item(key = msg.id) { Bubble(msg, onCall) { m.run { saveAndOpen(ctx, msg.id) } } }
             }
             item { Spacer(Modifier.height(2.dp)) }
         }
@@ -523,7 +523,10 @@ fun ConversationScreen(
 }
 
 @Composable
-private fun Bubble(msg: Message, onFile: () -> Unit) {
+private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Unit) {
+    // A line the call itself left in the conversation offers to call again, the same kind of call.
+    val callVideo = msg.body.contains("video call", ignoreCase = true)
+    val callBack = if (msg.id.startsWith("call-") && !msg.deleted && onCall != null) rememberMicGate(camera = callVideo) { onCall(callVideo) } else null
     Column(
         Modifier.fillMaxWidth(), horizontalAlignment = if (msg.out) Alignment.End else Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -556,6 +559,12 @@ private fun Bubble(msg: Message, onFile: () -> Unit) {
                         if (msg.deleted) "Message deleted" else msg.body, fontSize = 15.sp,
                         color = if (msg.out) Color.White else C.Text,
                         fontStyle = if (msg.deleted) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
+                    )
+                }
+                if (callBack != null) {
+                    Text(
+                        "Call back", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (msg.out) Color.White else C.Accent,
+                        modifier = Modifier.clickable { callBack() }.padding(vertical = 2.dp).semantics { contentDescription = "Call back" },
                     )
                 }
             }

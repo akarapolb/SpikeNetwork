@@ -54,11 +54,12 @@ function newPeer(servers) {
     if (!cs) return;
     if (s === "connected") {
       clearTimeout(cs.discTimer); clearTimeout(cs.giveUp); cs.restartedAt = 0;
-      if (!cs.connectedAt) { cs.connectedAt = Date.now(); cs.status = "connected"; }
-      cs.status = "connected"; describePath(); drawCall();
+      if (!cs.connectedAt) { cs.connectedAt = Date.now(); cs.status = "connected"; cs.qTimer = setInterval(measure, 2000); }
+      cs.status = "connected"; cs.reconnecting = false; describePath(); drawCall();
     }
     // A dropped connection (a network change, a Wi-Fi hiccup) is restarted before the call is given up on.
     if (s === "disconnected" && cs.connectedAt) {
+      cs.reconnecting = true; cs.reconnectAt = Date.now(); drawCall();
       clearTimeout(cs.discTimer);
       const me = cs;
       cs.discTimer = setTimeout(() => { if (cs === me && me.pc.connectionState === "disconnected") restartIce(); }, 3000);
@@ -90,6 +91,44 @@ async function callCode() {
   const v = new DataView(buf).getUint32(0);
   return String(v % 10000).padStart(4, "0");
 }
+/* How the connection is doing, as a word: packet loss over the last two seconds and the round trip. */
+async function measure() {
+  const c = cs;
+  if (!c || !c.pc) return;
+  try {
+    const stats = await c.pc.getStats();
+    let rx = 0, lost = 0, rtt = null;
+    stats.forEach((r) => {
+      if (r.type === "inbound-rtp" && r.kind === "audio") { rx = r.packetsReceived || 0; lost = r.packetsLost || 0; }
+      if (r.type === "candidate-pair" && (r.selected || r.nominated) && r.state === "succeeded" && r.currentRoundTripTime != null) rtt = r.currentRoundTripTime;
+    });
+    const dRx = Math.max(0, rx - (c.prevRx || 0)), dLost = Math.max(0, lost - (c.prevLost || 0));
+    c.prevRx = rx; c.prevLost = lost;
+    // Sound arriving again is the end of "Reconnecting", whether or not the connection ever reported a drop.
+    // And no sound for four seconds is the start of it, even before the connection reports a drop.
+    c.stall = dRx > 0 ? 0 : (c.stall || 0) + 1;
+    if (c.stall >= 2 && !c.reconnecting) { c.reconnecting = true; c.reconnectAt = Date.now(); }
+    else if (c.reconnecting && dRx > 0 && c.pc.connectionState === "connected" && Date.now() - (c.reconnectAt || 0) > 1500) c.reconnecting = false;
+    if (c.reconnecting) { showSub(); return; }
+    const loss = dRx + dLost > 0 ? dLost / (dRx + dLost) : 0;
+    c.quality = loss > 0.10 || (rtt != null && rtt > 0.6) ? "poor" : loss > 0.03 || (rtt != null && rtt > 0.3) ? "fair" : "good";
+    c.qualityNote = `${rtt != null ? Math.round(rtt * 1000) + " ms round trip, " : ""}${Math.round(loss * 100)}% of packets lost`;
+    if (cs === c) showSub();
+  } catch (_) {}
+}
+const QUALITY = { good: "Good connection", fair: "Fair connection", poor: "Poor connection" };
+/* The line under the name once connected: the time, then how the connection is doing. */
+function connLine(c) {
+  if (c.reconnecting) return "Reconnecting…";
+  return clockOf(Date.now() - c.connectedAt) + (c.quality ? "  ·  " + QUALITY[c.quality] : "");
+}
+function showSub() {
+  const s = callRoot().querySelector(".sub");
+  if (!s || !cs || !cs.connectedAt) return;
+  s.textContent = connLine(cs);
+  s.title = cs.qualityNote || "";
+  s.classList.toggle("warn", !!cs.reconnecting || cs.quality === "poor");
+}
 async function describePath() {
   try {
     const stats = await cs.pc.getStats();
@@ -109,6 +148,7 @@ async function restartIce() {
   const me = cs;
   clearTimeout(cs.giveUp);
   cs.restartedAt = Date.now();
+  cs.reconnecting = true; cs.reconnectAt = Date.now(); drawCall();
   cs.giveUp = setTimeout(() => { if (cs === me && me.pc.connectionState !== "connected") giveUpCall("Call lost: the connection could not be restored."); }, 20000);
   try {
     // fresh TURN login, in case the call has outlived the old one
@@ -158,7 +198,7 @@ async function stopShare() {
 
 function stopMedia() {
   if (!cs) return;
-  clearTimeout(cs.iceTimer); clearTimeout(cs.discTimer); clearTimeout(cs.giveUp);
+  clearTimeout(cs.iceTimer); clearTimeout(cs.discTimer); clearTimeout(cs.giveUp); clearInterval(cs.qTimer);
   if (cs.local) cs.local.getTracks().forEach((t) => t.stop());
   if (cs.shareStream) cs.shareStream.getTracks().forEach((t) => t.stop());
   if (cs.pc) { cs.pc.onconnectionstatechange = null; cs.pc.close(); }
@@ -295,7 +335,7 @@ function drawCall() {
   const title = c.status === "ringing" ? `${c.name} is calling` : c.status === "calling" ? `Calling ${c.name}` : c.name;
   const sub = c.status === "ringing" ? (c.video ? "Incoming video call" : "Incoming voice call")
     : c.status === "calling" ? "Ringing on all of their devices"
-    : c.connectedAt ? clockOf(Date.now() - c.connectedAt) : "Connecting";
+    : c.connectedAt ? connLine(c) : "Connecting";
   const facts = [
     h("span", { class: "ok" }, icon("shield"), c.verified ? `${c.name} is a verified contact` : `${c.name} is not verified yet`),
     c.code ? h("span", { class: c.verified ? "" : "warn" }, `Call code ${c.code}${c.verified ? "" : ": read it to each other; it must match"}`) : null,
@@ -318,7 +358,7 @@ function drawCall() {
       c.video && c.local ? self : null,
       h("div", { class: "facts" }, ...facts)),
     h("div", { class: "controls" }, ...ctl)));
-  if (c.connectedAt) drawCall.t = setInterval(() => { const s = r.querySelector(".sub"); if (s && cs) s.textContent = clockOf(Date.now() - cs.connectedAt); }, 1000);
+  if (c.connectedAt) { drawCall.t = setInterval(showSub, 1000); showSub(); }
 }
 
 /** Settings card: where calls may connect, and whether to hide this computer's address from the other person. */

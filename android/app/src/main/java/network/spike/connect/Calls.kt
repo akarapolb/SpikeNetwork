@@ -93,6 +93,8 @@ data class CallUi(
     val held: Boolean = false,
     /** The connection dropped and is being restored. */
     val reconnecting: Boolean = false,
+    /** How the connection is doing, from packet loss and round-trip time: good, fair or poor. Empty until measured. */
+    val quality: String = "",
     val code: String = "",
     val verified: Boolean = false,
     val video: Boolean = false,
@@ -231,6 +233,7 @@ object CallManager {
                 when (s) {
                     PeerConnection.PeerConnectionState.CONNECTED -> {
                         discJob?.cancel(); giveUpJob?.cancel(); restarted = false
+                        ui = ui?.copy(reconnecting = false)
                         telecom?.setActive()
                         // What was negotiated, without any content: media lines and directions only.
                         for ((n, d) in listOf("local" to pc?.localDescription, "remote" to pc?.remoteDescription)) {
@@ -244,6 +247,7 @@ object CallManager {
                     // A dropped connection (a network change, a Wi-Fi hiccup) is restarted before the call is given up on.
                     PeerConnection.PeerConnectionState.DISCONNECTED -> {
                         if (ui?.connectedAt != 0L) {
+                            ui = ui?.copy(reconnecting = true); reconnectAt = System.currentTimeMillis()
                             discJob?.cancel()
                             val mine = pc
                             discJob = scope.launch { delay(3000); if (pc === mine) restartIce() }
@@ -424,6 +428,7 @@ object CallManager {
         val p = pc ?: return
         if (u.connectedAt == 0L) return
         restarted = true
+        ui = ui?.copy(reconnecting = true); reconnectAt = System.currentTimeMillis()
         giveUpJob?.cancel()
         giveUpJob = scope.launch {
             delay(20_000)
@@ -685,15 +690,22 @@ object CallManager {
     }
 
     /** Debug aid and test evidence: packet counts, never content. */
+    private var reconnectAt = 0L
+
     private fun startStats() {
         stats?.cancel()
+        var prevRx = 0L; var prevLost = 0L; var stall = 0
         stats = scope.launch {
             while (isActive) {
                 pc?.getStats { report ->
-                    var rx = 0L; var energy = 0.0; var tx = 0L; var local = ""; var vrx = 0L
+                    var rx = 0L; var energy = 0.0; var tx = 0L; var local = ""; var vrx = 0L; var lost = 0L; var rtt = -1.0
                     for (s in report.statsMap.values) {
+                        if (s.type == "candidate-pair" && s.members["state"] == "succeeded" && (s.members["nominated"] == true || s.members["selected"] == true)) {
+                            (s.members["currentRoundTripTime"] as? Number)?.let { rtt = it.toDouble() }
+                        }
                         if (s.type == "inbound-rtp" && s.members["kind"] == "audio") {
                             rx = (s.members["packetsReceived"] as? Number)?.toLong() ?: 0
+                            lost = (s.members["packetsLost"] as? Number)?.toLong() ?: 0
                             energy = (s.members["totalAudioEnergy"] as? Number)?.toDouble() ?: 0.0
                         }
                         if (s.type == "inbound-rtp" && s.members["kind"] == "video") vrx = (s.members["packetsReceived"] as? Number)?.toLong() ?: 0
@@ -701,6 +713,17 @@ object CallManager {
                         if (s.type == "local-candidate" && local.isEmpty()) local = s.members["candidateType"]?.toString() ?: ""
                     }
                     Log.i(TAG, "stats rx=$rx energy=$energy tx=$tx code=${ui?.code} vrx=$vrx")
+                    // Loss over the last interval and the round trip, as a word the person can read.
+                    val dRx = (rx - prevRx).coerceAtLeast(0); val dLost = (lost - prevLost).coerceAtLeast(0)
+                    prevRx = rx; prevLost = lost
+                    val loss = if (dRx + dLost > 0) dLost.toDouble() / (dRx + dLost) else 0.0
+                    val q = if (loss > 0.10 || rtt > 0.6) "poor" else if (loss > 0.03 || rtt > 0.3) "fair" else "good"
+                    // Sound arriving again ends "Reconnecting", whether or not the connection ever reported a drop.
+                    // And no sound for four seconds is the start of it, even before the connection reports a drop.
+                    stall = if (dRx > 0) 0 else stall + 1
+                    if (stall >= 2 && ui?.reconnecting == false && ui?.connectedAt != 0L) { ui = ui?.copy(reconnecting = true); reconnectAt = System.currentTimeMillis() }
+                    else if (ui?.reconnecting == true && dRx > 0 && System.currentTimeMillis() - reconnectAt > 1500) ui = ui?.copy(reconnecting = false)
+                    ui?.let { if (it.quality != q && it.connectedAt != 0L) ui = it.copy(quality = q) }
                 }
                 delay(2000)
             }
@@ -774,10 +797,10 @@ fun CallScreen(u: CallUi) {
             val sub = when (u.status) {
                 "ringing" -> if (u.video) "Incoming video call" else "Incoming voice call"
                 "calling" -> "Ringing on all of their devices"
-                "connected" -> ((now - u.connectedAt) / 1000).let { "${it / 60}:${(it % 60).toString().padStart(2, '0')}" } + if (u.held) "  ·  On hold" else ""
+                "connected" -> if (u.reconnecting) "Reconnecting…" else ((now - u.connectedAt) / 1000).let { "${it / 60}:${(it % 60).toString().padStart(2, '0')}" } + (if (u.held) "  ·  On hold" else "") + (when (u.quality) { "good" -> "  ·  Good connection"; "fair" -> "  ·  Fair connection"; "poor" -> "  ·  Poor connection"; else -> "" })
                 else -> "Connecting"
             }
-            Text(sub, color = Color(0xFFC3CED7), fontSize = 15.sp, modifier = Modifier.padding(top = 6.dp))
+            Text(sub, color = if (u.reconnecting || u.quality == "poor") Color(0xFFF5DDB0) else Color(0xFFC3CED7), fontSize = 15.sp, modifier = Modifier.padding(top = 6.dp))
             Spacer(Modifier.height(16.dp))
             Text(
                 if (u.verified) "${u.name} is a verified contact" else "${u.name} is not verified yet",
@@ -835,7 +858,8 @@ private fun VideoView(track: VideoTrack, mirror: Boolean, modifier: Modifier) {
                 init(CallManager.egl.eglBaseContext, null)
                 setEnableHardwareScaler(true)
                 setMirror(mirror)
-                setScalingType(org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+                // Your own preview fills its small window; the other person's picture is shown whole, so a shared screen is not cropped.
+                setScalingType(if (mirror) org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FILL else org.webrtc.RendererCommon.ScalingType.SCALE_ASPECT_FIT)
                 if (mirror) setZOrderMediaOverlay(true)
                 track.addSink(this)
             }

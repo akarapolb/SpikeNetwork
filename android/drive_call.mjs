@@ -131,6 +131,7 @@ try {
   await sleep(5000);
   ps = phoneStats(); ds = await audioIn(desk);
   console.log("   phone:", JSON.stringify(ps), "desktop:", JSON.stringify(ds));
+  check(/(Good|Fair|Poor) connection/.test(screenText()), "the call screen shows how the connection is doing (" + ((/(Good|Fair|Poor) connection/.exec(screenText()) || [])[0] || "nothing") + ")");
   check(ps && ps.rx > 20 && ps.energy > 0, "the phone receives the desktop's audio (phone as caller)");
   check(ds && ds.packets > 20, "the desktop receives audio from the phone (phone as caller)");
   shot("3-phone-calling");
@@ -144,6 +145,15 @@ try {
   check(lastLines.some((b) => /^Voice call, \d+:\d\d$/.test(b)), `the desktop's conversation has call lines (${lastLines.filter((b) => /call/i.test(b)).join(" | ")})`);
   const phoneLines = debug("conversation", { name: "Alice" }).map((m) => m.body);
   check(phoneLines.some((b) => /^Voice call, \d+:\d\d$/.test(b)), `the phone's conversation has call lines (${phoneLines.filter((b) => /call/i.test(b)).join(" | ")})`);
+
+  // ---- calling back from a call line
+  console.log("-- call back from the log line");
+  check(await waitText("Call back", 5000), "a call line in the phone's conversation offers Call back");
+  await tapText("Call back", true);
+  check(await until(async () => (await overlay(desk)).includes("is calling"), 40000), "tapping Call back rings the desktop");
+  await press(desk, "Decline");
+  check(await waitText("declined the call", 15000), "and the phone is told it was declined");
+  await sleep(1500);
 
   // ---- declined
   console.log("-- decline");

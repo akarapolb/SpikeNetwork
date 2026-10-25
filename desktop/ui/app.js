@@ -230,6 +230,11 @@ async function markOpenRead() {
   try { await invoke("mark_read", { name: st.chat }); st.ov = await invoke("overview"); st.msgs = await invoke("conversation", { name: st.chat }); render(); scrollEnd(); } catch (_) {}
 }
 function scrollEnd() { const s = $("main").querySelector(".scroll"); if (s) s.scrollTop = s.scrollHeight; }
+/* A call line in the conversation offers to call again, the same kind of call. */
+function callBack(video) {
+  if (cs) { toast("You are already in a call."); return; }
+  if (st.chat) startCall(st.chat, video);
+}
 function threadItems(inGroup) {
   const items = []; let day = "";
   for (const m of st.msgs) {
@@ -238,7 +243,7 @@ function threadItems(inGroup) {
       inGroup && !m.out && m.from ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag bad", style: "margin-left:6px" }, "Not verified")) : null,
       m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, m.body) : null),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
-      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
+      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
   }
   return items;
 }

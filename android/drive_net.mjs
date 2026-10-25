@@ -63,7 +63,7 @@ try {
   adb("reverse", `tcp:${RELAY_PORT}`, `tcp:${RELAY_PORT}`);
   sh("svc power stayon true; settings put system screen_off_timeout 2147483647; settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0");
   sh(`am start -n ${PKG}/.MainActivity`);
-  await sleep(6000);
+  await sleep(3000);
   debug("create_identity", { passphrase: PHONE_PASS });
   sh(`am force-stop ${PKG}`);
   debug("unlock", { passphrase: PHONE_PASS });
@@ -93,7 +93,9 @@ try {
   console.log("   before:", JSON.stringify(before));
   check(before.phone && before.phone.rx > 20 && before.desk && before.desk.packets > 20, "audio flows before the change");
   sh("svc wifi disable");
-  await sleep(12000);
+  // The emulator may move the call to its mobile connection within seconds: catch the message while it lasts.
+  check(await waitText("Reconnecting", 15000), "the call screen says it is reconnecting while the network is gone");
+  await sleep(3000);
   sh("svc wifi enable");
   console.log("   Wi-Fi back on; waiting for the call to recover");
   const recovered = await until(async () => {

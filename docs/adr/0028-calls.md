@@ -126,3 +126,23 @@ One honest design point on candidates: the caller must include its candidates in
   none for an online or unregistered one, coalescing, 410 forgets, private/odd endpoints refused) and
   `android/drive_push.mjs` (process killed; the relay posts the wake-up; the wake-up delivered by `adb` to the killed app;
   the phone rings). Not tested: a real push app or server, the push app's own battery rules. `docs/unifiedpush.md`.
+- **Polish and checks (after UnifiedPush).**
+  - *Audio on Android* (`CallAudio.kt`): one button steps through earpiece, speaker, Bluetooth headset and wired headset as they
+    are available; plugging one in moves the sound there unless the person chose; the screen switches off against the ear
+    on a voice call on the earpiece (proximity sensor); another call or app taking the audio puts the call on hold (the
+    system's hold, and audio focus as a fallback) and closes the microphone until it ends. Driven on the emulator, which has
+    only a speaker and no proximity sensor: the earpiece, Bluetooth and the sensor are built but not seen working.
+  - *Screen sharing on the desktop*, in video calls only: the picture of the screen takes the camera's place on the same
+    connection (`replaceTrack`), nothing is negotiated again; stopping puts the camera back (`desktop/drive_share.mjs`, two
+    windows: the other side keeps receiving frames at screen size and again from the camera after). Voice calls offer no share
+    button. Android shows the other person's picture whole instead of cropped, so a shared screen reads; it cannot share its own.
+  - *Call screens*: "Reconnecting…" when sound stops or the connection drops, a word for the connection (good, fair, poor, from
+    packet loss and round trip; the numbers are in the tooltip on the desktop), and "Call back" on a call line in the conversation.
+  - *Randomized tests of the state machine* (`core/tests/call_sim.rs`): two people dial, answer, decline and hang up at random
+    while signals arrive late, out of order and twice; no machine goes quiet without telling the front end, nothing rings
+    twice, nobody is left ringing, and the two sides agree at the end. 20,000 histories pass. They found two real bugs, now fixed
+    and covered by unit tests: an invite that arrived after the caller's hang-up rang a call nobody was making, and the same
+    answer delivered twice told the callee the call was over.
+  - *`cli/examples/relay_check.rs`*: one command to test a deployed relay from outside (name, certificate, sign-in, TURN
+    logins, TURN allocation over UDP, TCP reachability); `deploy/README.md` shows it. Run against a local relay and the
+    stand-in TURN server; not yet against a real server.
