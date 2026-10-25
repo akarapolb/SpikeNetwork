@@ -576,6 +576,9 @@ fun VerifyScreen(m: AppModel, name: String) {
     val o = m.overview ?: return
     val c = o.contacts.firstOrNull { it.name == name } ?: run { m.open(null); return }
     var typed by remember { mutableStateOf("") }
+    var typing by remember { mutableStateOf(false) }
+    var mismatch by remember { mutableStateOf(false) }
+    val first = name.split(" ").first()
     Page {
         TopBar("Verify $name", { m.open(Screen.Chat(name)) })
         Scrolling {
@@ -596,10 +599,33 @@ fun VerifyScreen(m: AppModel, name: String) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Ico(Ic.ShieldCheck, C.Green); Text("You verified $name.", fontWeight = FontWeight.Medium)
                 }
+            } else if (mismatch) {
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(C.RedBg).padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text("Do not trust this conversation yet.", color = C.RedText, fontWeight = FontWeight.SemiBold)
+                    Text("Someone may be in the middle. Ask $first to show you their code in person.", color = C.RedText, fontSize = 14.sp)
+                }
+                OutlineButton("Compare again", Modifier.fillMaxWidth()) { mismatch = false }
             } else {
-                Field("Type the fingerprint $name reads to you", typed, { typed = it }, placeholder = "xxxxx-xxxxx-…")
-                PrimaryButton("Mark $name as verified", enabled = typed.isNotBlank() && !m.busy) {
-                    m.run { Bridge.call("mark_verified", args("name" to name, "fingerprint" to typed.trim())); m.notice = "Verified."; m.refresh() }
+                // As on the desktop: compare out loud, then say whether they match. Typing the code stays as an option.
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlineButton("They don't match", Modifier.weight(1f).heightIn(min = 52.dp)) { mismatch = true }
+                    PrimaryButton("They match", enabled = !m.busy, modifier = Modifier.weight(1f)) {
+                        m.run { Bridge.call("mark_verified", args("name" to name, "fingerprint" to c.fingerprint)); m.notice = "Verified."; m.refresh() }
+                    }
+                }
+                if (!typing) {
+                    Text(
+                        "Type the code instead", color = C.Accent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
+                        modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { typing = true }.padding(vertical = 8.dp),
+                    )
+                } else {
+                    Field("Type the fingerprint $name reads to you", typed, { typed = it }, placeholder = "xxxxx-xxxxx-…")
+                    OutlineButton("Mark $name as verified", Modifier.fillMaxWidth(), enabled = typed.isNotBlank() && !m.busy) {
+                        m.run { Bridge.call("mark_verified", args("name" to name, "fingerprint" to typed.trim())); m.notice = "Verified."; m.refresh() }
+                    }
                 }
             }
         }

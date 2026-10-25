@@ -109,6 +109,11 @@ try {
   await tapText("Details", true);
   check(await waitText("fingerprint"), "the verify screen shows fingerprints");
   shot("8-verify");
+  check(screenText().includes("They don't match") && screenText().includes("Type the code instead"), "the verify screen offers match buttons and typing the code");
+  await tapText("They match", true);
+  check(await waitText("You verified"), "pressing They match verifies the contact");
+  check(debug("overview").contacts.find((x) => x.name === "Alice")?.verified === true, "the engine has Alice as verified");
+  shot("8b-verified");
   back(); await sleep(500); back(); await sleep(800);
 
   console.log("-- a large group made on the desktop, joined on the phone");
