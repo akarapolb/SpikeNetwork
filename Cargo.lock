@@ -2928,7 +2928,7 @@ dependencies = [
  "chacha20poly1305 0.10.1",
  "hex",
  "hkdf 0.12.4",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "rand 0.8.8",
  "serde",
  "serde_json",
