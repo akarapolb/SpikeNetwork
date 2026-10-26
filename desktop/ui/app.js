@@ -102,6 +102,7 @@ function listenToBackend() {
   const ev = window.__TAURI__ && window.__TAURI__.event;
   if (!ev) return;
   ev.listen("synced", async (e) => { if (!st.ov) return; st.offline = false; for (const n of (e.payload && e.payload.notes) || []) { const t = st.seenNotes.get(n); if (!t || Date.now() - t > 10000) toast(n); st.seenNotes.set(n, Date.now()); } await refresh(); await markOpenRead(); scrollEnd(); });
+  ev.listen("banner-open", (e) => { try { openFromBanner(JSON.parse(e.payload)); } catch (_) {} });
   ev.listen("relay-status", (e) => { if (!st.ov) return; const off = !e.payload.online; if (off !== st.offline) { st.offline = off; render(); } });
 }
 
@@ -119,24 +120,38 @@ function armAutoLock() {
 /* ---------- notification banners ---------- */
 const BANNER_CHOICES = [["some", "Say that something arrived"], ["who", "Say who it is from"], ["off", "Off"]];
 function bannerMode() { try { return localStorage.getItem("banners") || "some"; } catch (_) { return "some"; } }
-/* After each refresh: what is new since the last one. The first refresh after unlocking only takes note. */
+/* After each refresh: what is new since the last one. The first refresh after unlocking only takes note.
+   A banner about one thing remembers where it leads, so a click on it opens that chat, group or screen. */
 function banners() {
   if (!st.ov) return;
-  const now = { chats: new Map([...st.ov.contacts.map((c) => [c.name, c.unread]), ...st.ov.groups.map((g) => ["#" + g.name, g.unread])]),
-    requests: st.ov.requests, invites: invitesCount(), waiting: st.ov.waiting };
+  const now = { chats: new Map([...st.ov.contacts.map((c) => ["c:" + c.name, c.unread]), ...st.ov.groups.map((g) => ["g:" + g.id, g.unread])]),
+    requests: st.ov.requests, invited: st.ov.groups.filter((g) => g.status === "invited").map((g) => g.id), waiting: st.ov.waiting };
   const was = st.seen; st.seen = now;
   if (!was || document.hasFocus() || bannerMode() === "off") return;
-  let count = 0; const from = [];
-  for (const [k, n] of now.chats) { const d = n - (was.chats.get(k) || 0); if (d > 0) { count += d; from.push(k.startsWith("#") ? k.slice(1) : k); } }
+  let count = 0; const from = [], where = [];
+  const label = (k) => (k.startsWith("c:") ? k.slice(2) : (st.ov.groups.find((g) => "g:" + g.id === k) || {}).name || "a group");
+  const place = (k) => (k.startsWith("c:") ? { chat: k.slice(2) } : { group: k.slice(2) });
+  for (const [k, n] of now.chats) { const d = n - (was.chats.get(k) || 0); if (d > 0) { count += d; from.push(label(k)); where.push(place(k)); } }
+  const invites = now.invited.filter((id) => !was.invited.includes(id));
   const who = bannerMode() === "who", list = (a) => (a.length > 2 ? `${a.slice(0, 2).join(", ")} and ${a.length - 2} more` : a.join(" and "));
   const notes = [];
   if (count) notes.push(who ? `${count === 1 ? "New message" : `${count} new messages`} from ${list(from)}` : count === 1 ? "New message" : `${count} new messages`);
-  if (now.requests > was.requests) notes.push("Someone new wants to message you");
-  if (now.invites > was.invites) notes.push("You were invited to a group");
-  if (now.waiting > was.waiting) notes.push("An agent is waiting for your approval");
-  if (notes.length) showBanner(notes.join(". ") + ".");
+  if (now.requests > was.requests) { notes.push("Someone new wants to message you"); where.push({ screen: "requests" }); }
+  if (invites.length) { notes.push("You were invited to a group"); invites.forEach((id) => where.push({ group: id })); }
+  if (now.waiting > was.waiting) { notes.push("An agent is waiting for your approval"); where.push({ section: "agents" }); }
+  const same = where.length && where.every((w) => JSON.stringify(w) === JSON.stringify(where[0]));
+  if (notes.length) showBanner(notes.join(". ") + ".", same ? where[0] : null);
 }
-function showBanner(body) { invoke("notify_banner", { title: "Spike Connect", body }).catch(() => {}); }
+/* `open` is where a click on the banner leads (null: just bring the window forward). */
+function showBanner(body, open = null) { invoke("notify_banner", { title: "Spike Connect", body, open: open ? JSON.stringify(open) : null }).catch(() => {}); }
+/* A click on a banner: the backend has already brought the window forward. */
+async function openFromBanner(open) {
+  if (!st.ov || $("app").hidden || st.linking) return;
+  if (open.chat && st.ov.contacts.some((c) => c.name === open.chat)) { st.section = "chats"; await openChat(open.chat); }
+  else if (open.group && st.ov.groups.some((g) => g.id === open.group)) { st.section = "chats"; await openGroup(open.group); }
+  else if (open.screen === "requests") { st.section = "chats"; st.chat = null; st.group = null; st.screen = "requests"; st.naming = null; render(); }
+  else if (open.section) go(open.section);
+}
 
 /* ---------- data ---------- */
 async function refresh() {

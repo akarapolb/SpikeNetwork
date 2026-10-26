@@ -1,6 +1,7 @@
 // Notification banners: two real desktop windows. Alice's window is treated as not focused; Bob writes and calls.
 // Checks what each banner says for each setting: who it is from (the name), or only that something arrived,
-// never the message text, and nothing when banners are off or the window is in use.
+// never the message text, and nothing when banners are off or the window is in use. A banner about one chat
+// remembers it, and a click on the banner (the backend's "banner-open") opens that chat.
 //   cargo build -p spike-relay && (cd desktop/src-tauri && cargo build)
 //   node desktop/drive_banner.mjs [screenshot-dir]
 import { join } from "node:path";
@@ -30,9 +31,10 @@ try {
 
   // Record every banner the window asks for (and still show it); "focused" is ours to set.
   await alice.eval(`window.__banners = []; window.__focused = false; document.hasFocus = () => window.__focused;
-    const real = window.showBanner; window.showBanner = (body) => { window.__banners.push(body); real(body); };`);
+    const real = window.showBanner; window.showBanner = (body, open) => { window.__banners.push(body); window.__opens.push(open || null); real(body, open); }; window.__opens = [];`);
   const banners = () => alice.eval("return window.__banners.slice()");
-  const mode = (m) => alice.eval(`localStorage.setItem("banners", ${JSON.stringify(m)}); window.__banners = [];`);
+  const opens = () => alice.eval("return window.__opens.slice()");
+  const mode = (m) => alice.eval(`localStorage.setItem("banners", ${JSON.stringify(m)}); window.__banners = []; window.__opens = [];`);
 
   let shown = "ok";
   try { await alice.invoke("notify_banner", { title: "Spike Connect", body: "Banner test." }); } catch (e) { shown = String(e.message || e); }
@@ -43,6 +45,16 @@ try {
   const b1 = await until(async () => (await banners())[0]);
   check(b1 === "New message from Bob.", `"who it is from": the banner names the sender ("${b1}")`);
   check(!(b1 || "").includes("secret"), "the banner never carries the message text");
+  const o1 = (await opens())[0];
+  check(o1 && o1.chat === "Bob", `the banner remembers the chat it is about (${JSON.stringify(o1)})`);
+  // A click on it: the backend brings the window forward and hands back where it leads.
+  await alice.eval("st.section = 'settings'; st.chat = null; st.screen = null; render();");
+  // (The page may not emit events itself, so this calls what the "banner-open" listener calls.)
+  await alice.eval(`await openFromBanner(JSON.parse(${JSON.stringify(JSON.stringify(o1 || {}))}));`);
+  const opened = await until(() => alice.eval("return st.section === 'chats' && st.chat === 'Bob' && !!document.querySelector('.composer');"));
+  check(opened, "a click on the banner opens that chat");
+  await alice.shot("banner-opened-chat");
+  await alice.eval("st.section = 'settings'; st.chat = null; render();");
 
   await mode("some");
   await bob.invoke("send", { name: "Alice", text: "and another" });
@@ -67,6 +79,7 @@ try {
   await bob.eval(`document.querySelector('[aria-label="Voice call Alice"]').click()`);
   const b3 = await until(async () => (await banners()).find((b) => b.includes("calling")));
   check(b3 === "Bob is calling.", `an incoming call shows a banner ("${b3}")`);
+  check((await opens()).every((o) => o === null), "a call banner only brings the window forward (the call screen is already there)");
   await alice.shot("banner-ringing");
   await bob.eval(`const b=[...document.querySelectorAll('#callov button')].find(x=>x.getAttribute('aria-label')==='Hang up'); b && b.click();`);
 } catch (e) {

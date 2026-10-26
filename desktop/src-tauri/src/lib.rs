@@ -117,16 +117,41 @@ fn set_attention(app: tauri::AppHandle, count: usize) {
 }
 
 /// A desktop notification banner. The window decides when (not focused, something new) and what it says:
-/// at most who a message is from, never its text.
+/// at most who a message is from, never its text. `open` is where a click on it leads (the window's own
+/// description of a chat, group or screen); it stays in this process and is handed back on a click.
 #[tauri::command]
-fn notify_banner(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+fn notify_banner(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+    open: Option<String>,
+) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
-    app.notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-        .map_err(|e| e.to_string())
+    let mut b = app.notification().builder().title(title).body(body);
+    if let Some(open) = open {
+        b = b.extra("open", open);
+    }
+    b.show().map_err(|e| e.to_string())
+}
+
+/// A click on one of our banners: bring the window forward and tell it what the banner was about.
+/// (Windows reports a click only while the banner is on screen, not from the Action Center.)
+fn banner_clicked(app: &tauri::AppHandle, performed: &tauri_plugin_notification::ActionPerformed) {
+    if performed.action_id() != "tap" {
+        return;
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    let open = performed
+        .notification()
+        .and_then(|n| n.extra().get("open"))
+        .and_then(|v| v.as_str());
+    if let Some(open) = open {
+        let _ = app.emit("banner-open", open);
+    }
 }
 
 fn stop_listener(state: &State<'_, AppState>) {
@@ -995,6 +1020,12 @@ pub fn run() {
                 listener: Mutex::new(None),
                 backup: Mutex::new(None),
             });
+            {
+                use tauri_plugin_notification::NotificationExt;
+                let handle = app.handle().clone();
+                app.notification()
+                    .on_action(move |p| banner_clicked(&handle, p))?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
