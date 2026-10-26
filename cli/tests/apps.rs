@@ -474,3 +474,67 @@ async fn a_removed_member_cannot_send_app_data_to_the_group() {
     );
     assert!(apps::take(&alice.0, APP, 0, 100).unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_delivery_is_handled_on_the_open_connection_and_acknowledged() {
+    use spike_cli::client::{Incoming, Relay};
+    use spike_cli::transport::Target;
+    let (url, alice, bob) = two_people().await;
+    register(&[&alice[0], &bob[0]]);
+    // Bob's first device listens on one connection, as the desktop listener does.
+    let target: Target = url.as_str().into();
+    let me = bob[0].0.load_identity().unwrap();
+    let mut relay = Relay::connect(target.clone(), &me).await.unwrap();
+    apps::send(
+        &alice[0].0,
+        url.as_str(),
+        &To::Contact("bob".into()),
+        APP,
+        "sheet-1",
+        Mode::Stored,
+        b"A1=1",
+    )
+    .await
+    .unwrap();
+    // Sending connected as Alice, not Bob: Bob's connection is still his own.
+    let Some(Incoming::Delivery(d)) = relay
+        .next_incoming(Some(Duration::from_secs(5)))
+        .await
+        .unwrap()
+    else {
+        panic!("nothing pushed to the listener");
+    };
+    let mut got = vec![];
+    ops::handle_delivery(&bob[0].0, &target, &mut relay, &d, |o| got.push(o))
+        .await
+        .unwrap();
+    let evs = app_events(&got);
+    assert_eq!(evs.len(), 1, "{got:?}");
+    assert_eq!(bytes_of(&evs[0]), b"A1=1");
+    assert_eq!(apps::take(&bob[0].0, APP, 0, 10).unwrap().len(), 1);
+    // Acknowledged, and the same connection still works: a second send arrives on it.
+    apps::send(
+        &alice[0].0,
+        url.as_str(),
+        &To::Contact("bob".into()),
+        APP,
+        "sheet-1",
+        Mode::Stored,
+        b"A2=2",
+    )
+    .await
+    .unwrap();
+    let Some(Incoming::Delivery(d2)) = relay
+        .next_incoming(Some(Duration::from_secs(5)))
+        .await
+        .unwrap()
+    else {
+        panic!("the connection did not stay usable");
+    };
+    assert_ne!(d.id, d2.id, "the first was acknowledged, not offered again");
+    drop(relay);
+    // Only the second is left for a later sync.
+    let rest = app_events(&recv(&bob[0], &url).await);
+    assert_eq!(rest.len(), 1);
+    assert_eq!(bytes_of(&rest[0]), b"A2=2");
+}

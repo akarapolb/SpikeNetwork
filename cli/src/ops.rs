@@ -667,6 +667,25 @@ pub async fn recv(
     Ok(())
 }
 
+/// Handle one delivery on the connection it arrived on, without disconnecting: open and store it,
+/// acknowledge it, then do what is owed because of it. This is what lets a listener hand app data
+/// (ADR 0030) to an application in milliseconds instead of dropping the connection for a full sync.
+/// The caller holds the lock that serialises sends and syncs, and must fall back to a sync if this
+/// fails (an unacknowledged delivery is simply offered again).
+pub async fn handle_delivery(
+    home: &Home,
+    base: &Target,
+    relay: &mut Relay,
+    d: &crate::client::Delivery,
+    mut on: impl FnMut(Outcome),
+) -> Result<()> {
+    let mut me = home.load_identity()?;
+    let mut sessions = home.load_sessions()?;
+    let outcome = classify(home, base, &mut me, &mut sessions, Some(relay), &d.blob).await?;
+    relay.ack(&d.id).await?;
+    follow_up(home, base, &mut me, &mut sessions, outcome, &mut on).await
+}
+
 /// A blob that has been opened and stored, and what is still owed because of it.
 pub struct Received {
     me: Identity,

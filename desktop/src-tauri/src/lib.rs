@@ -275,6 +275,38 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
             };
             tokio::select! {
                 r = relay.next_incoming(Some(Duration::from_secs(50))) => match r {
+                    // The fast path (ADR 0030): a one-to-one delivery is stored and acknowledged right
+                    // here, on this connection, which stays open. Anything that goes wrong (another
+                    // operation took the connection, the delivery was odd) falls back to a full sync,
+                    // which is offered the same delivery again.
+                    Ok(Some(spike_cli::client::Incoming::Delivery(d))) => {
+                        let Some(s) = weak.upgrade() else { return };
+                        if s.paused() {
+                            break true;
+                        }
+                        match s.listener_receive(&mut relay, &d).await {
+                            Ok(r) => {
+                                let attention = s.attention().unwrap_or(0);
+                                drop(s);
+                                if r.received + r.changed + r.message_requests + r.groups + r.agent_requests > 0 || !r.notes.is_empty() {
+                                    if let Some(w) = app.get_webview_window("main") {
+                                        if !w.is_focused().unwrap_or(true) {
+                                            let _ = w.request_user_attention(Some(
+                                                tauri::UserAttentionType::Informational,
+                                            ));
+                                        }
+                                    }
+                                    set_title(&app, attention);
+                                    let _ = app.emit("synced", r);
+                                }
+                                continue;
+                            }
+                            Err(e) => {
+                                dbg_log!("fast path failed ({e:#}); syncing");
+                                break true;
+                            }
+                        }
+                    }
                     Ok(Some(_)) => break true,
                     Ok(None) => continue,
                     // Displaced by an operation that connected, or the connection dropped.

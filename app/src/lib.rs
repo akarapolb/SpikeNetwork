@@ -589,6 +589,33 @@ impl Session {
         Relay::connect(target, &me).await
     }
 
+    /// Handle a delivery the listener received, on the listener's own open connection (ADR 0030,
+    /// the fast path): store it, acknowledge it and tell the app crate's waiters, without the
+    /// reconnect and full sync a normal wake costs. `Err` means the listener should fall back to a
+    /// sync, which will be offered the same delivery again.
+    pub async fn listener_receive(
+        &self,
+        relay: &mut Relay,
+        d: &spike_cli::client::Delivery,
+    ) -> Result<SyncDto> {
+        let _net = self.net.lock().await;
+        let mut out = SyncDto {
+            received: 0,
+            agent_requests: 0,
+            message_requests: 0,
+            groups: 0,
+            changed: 0,
+            notes: vec![],
+        };
+        ops::handle_delivery(&self.home, &self.target(), relay, d, |o| {
+            self.calls.on_outcome(&o);
+            self.apps.on_outcome(&o);
+            tally(&mut out, &o);
+        })
+        .await?;
+        Ok(out)
+    }
+
     /// True while something (linking) needs the relay mailbox to itself.
     pub fn paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)

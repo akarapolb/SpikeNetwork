@@ -2,8 +2,9 @@
 
 Status: **built in part, 2026-10-26**: the `App` kind with stored and live data, full state for late joiners,
 the library API, CLI commands, and a local API on the desktop with an approval prompt. One to one and small
-groups (ADR 0024). **Not built:** the fast path (section 2), live data that the relay never queues, large groups,
-a local API on Android. Not reviewed.
+groups (ADR 0024), and (2026-10-26, later) a fast path in the desktop listener. **Not built:** the relay-side
+`fast` flag and live data that the relay never queues, the fast path on Android, large groups, a local API on
+Android. Not reviewed.
 Proposed: 2026-10-25.
 
 ## Problem
@@ -81,14 +82,26 @@ The receiving code gets `Outcome::App(AppEvent)`; the event says what it is (`da
 `state`), the app, the channel, the mode, who sent it (name as this device knows them, owner key, device,
 whether it is one of your own devices), the group if any, the envelope id and the sender's time.
 
-### 2. Fast path on the live connection (not built)
+### 2. Fast path on the live connection (built for the desktop listener, without the relay flag)
 
-The proposal: process app envelopes on the listener's open connection instead of waking a full sync, with a
-`fast` bit in the relay header. Not built in this slice. What was measured instead, in the real desktop app
-(`desktop/drive_apps.mjs`): a live update sent by a program through Bob's desktop reached a program waiting
-on Alice's desktop in **about 470 ms**, through the existing instant delivery (ADR 0020). This number is one
-run on one machine with a local relay. The fast path stays the way to go below 200 ms; it needs the listener
-change and the relay flag described in the proposal.
+The proposal: process app envelopes on the listener's open connection instead of waking a full sync. Built as
+follows. When the desktop listener receives a one-to-one delivery it no longer drops its connection and runs a
+sync: it takes the session lock, opens and stores the delivery, acknowledges it **on the same connection**,
+does what is owed because of it (`ops::handle_delivery`, `Session::listener_receive`), tells the screen, and
+goes on listening. Any failure (another operation displaced the connection, an odd delivery) falls back to the
+old path: the delivery was not acknowledged, so the sync is offered it again. The rule of ADR 0020 holds: only
+one operation touches the ratchet at a time, because the fast path runs under the same lock as sends and syncs.
+
+This applies to every one-to-one delivery, not only app data (the listener cannot tell before opening it),
+so chat gets the same speedup. Group mailbox entries (large groups) still take the sync.
+
+*Different from the proposal:* no `fast` header bit. The listener does not need to know before decrypting, and
+the relay therefore learns nothing new (the proposal's metadata cost is not paid).
+
+Measured in the real desktop app (`desktop/drive_apps.mjs`, three runs, local relay, one machine): a live update
+sent by a program through Bob's desktop reached a program waiting on Alice's desktop in **77, 77 and 113 ms**
+(from the send request to the answer of the waiting request), against about 470 ms before. That meets the
+200 ms target. Not measured: a relay across the internet, a busy machine, the phone.
 
 ### 3. Batching (as proposed)
 
@@ -177,7 +190,7 @@ banner tells them to allow a program only if they just started it.
 - Core (`core/src/app.rs`, `core/src/envelope.rs`): app ids and channels, size limits, base64; envelopes
   round-trip and are refused with a bad body, a target, an introduction, a missing or extra attachment, or a
   group without its member list.
-- Engine, real relay (`cli/tests/apps.rs`, 6 tests): stored data reaches both of Bob's devices after they were
+- Engine, real relay (`cli/tests/apps.rs`, 7 tests; the last handles a delivery on an open connection, acknowledges it, and the connection stays usable): stored data reaches both of Bob's devices after they were
   offline, each exactly once, and Alice's other device as her own copy, never in the history; data for an app
   not set up is dropped, acknowledged and counted, and removing an app forgets what waited; live data is never
   kept and a late live envelope is dropped; a stranger's app data is dropped and is not a message request; a
@@ -190,7 +203,7 @@ banner tells them to allow a program only if they just started it.
   no token and a wrong token refused; a refused program gets nothing.
 - Desktop, real windows (`node desktop/drive_apps.mjs`): two windows, two "programs" (the script); the banner
   and Allow; Settings lists the app as connected and counts what it sent and received; data between the
-  programs never shows as chat; a live update wakes the other program (about 470 ms); remove revokes; data
+  programs never shows as chat; a live update wakes the other program (under 120 ms); remove revokes; data
   that still arrives is shown as dropped; turning the API off closes the port.
 - Android, emulator (`ANDROID_SERIAL=emulator-5554 node android/drive_apps.mjs`): data for an app not set up
   is shown as dropped; once set up, Settings counts what arrived and nothing shows in the chats; Remove asks
@@ -201,7 +214,8 @@ banner tells them to allow a program only if they just started it.
 - **Metadata.** The relay can see how often a conversation's devices receive deliveries, as for chat; it
   cannot tell app data from messages, nor which application or channel.
 - **Ordering.** Spike does not order app traffic. Applications must merge in any order (a CRDT does).
-- **Speed.** About half a second program to program on a local relay, without the fast path.
+- **Speed.** Under 120 ms program to program on a local relay with the desktop fast path (above); the phone's
+  listener (a service in Kotlin) does not have the fast path yet, so it still takes the full sync.
 - **Live data is queued by the relay** for offline devices (then dropped by them as late): it costs relay
   storage it need not.
 - **Large groups** (ADR 0025) are not supported. **Android** has no local API: apps on the phone would link the
