@@ -281,7 +281,7 @@ object CallManager {
         p.addTrack(track, listOf("spike"))
         if (video && hasCamera()) addCamera(f, p)
         pc = p
-        appCtx?.let { c -> CallAudio.start(c, video) { h -> hold(h) } }
+        appCtx?.let { c -> CallAudio.start(c, video, { systemCall }) { h -> hold(h) } }
         return p
     }
 
@@ -338,7 +338,7 @@ object CallManager {
     fun call(name: String, verified: Boolean, video: Boolean = false) {
         if (ui != null) return
         ui = CallUi(name, false, "calling", verified = verified, video = video)
-        appCtx?.let { CallService.start(it, video); SpikeTelecom.outgoing(it, name) }
+        appCtx?.let { CallService.start(it, video); systemCall = SpikeTelecom.outgoing(it, name) }
         watchNetwork()
         scope.launch {
             try {
@@ -521,7 +521,8 @@ object CallManager {
                 val c = appCtx ?: return
                 // Let the system know a call is coming in; it asks for our UI (showIncoming). If it will not take the
                 // call, or says nothing, we show the alert ourselves.
-                if (SpikeTelecom.incoming(c, name)) {
+                systemCall = SpikeTelecom.incoming(c, name)
+                if (systemCall) {
                     scope.launch { delay(1500); if (!alerted && ui?.status == "ringing") showIncoming(name) }
                 } else showIncoming(name)
                 if (ev.optBoolean("glare")) answer()
@@ -606,8 +607,14 @@ object CallManager {
     /** The call as the phone's own call app sees it (Telecom, see Telecom.kt). */
     @Volatile private var telecom: SpikeConnection? = null
     @Volatile private var alerted = false
+    /**
+     * The system's calling framework took this call (from the moment we hand it over, before it attaches). It then
+     * holds and resumes the call itself when another call needs the audio, and it takes the audio focus for the call:
+     * that focus change is not "something else has the audio" (it put our own new call on hold, ADR 0028).
+     */
+    @Volatile private var systemCall = false
 
-    fun attach(c: SpikeConnection) { telecom = c }
+    fun attach(c: SpikeConnection) { telecom = c; systemCall = true }
 
     /** Called when the system asks for the incoming-call UI (or when it refused the call and we show it ourselves). */
     fun showIncoming(name: String) {
@@ -617,7 +624,10 @@ object CallManager {
         Trace.add("incoming call alert posted; channel importance=" + (c.getSystemService(android.app.NotificationManager::class.java).getNotificationChannel("calls_v2")?.importance ?: -1) + " (4=high), lock-screen allowed=" + (if (android.os.Build.VERSION.SDK_INT >= 34) c.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent().toString() else "n/a") + ", battery-exempt=" + c.getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(c.packageName))
     }
 
-    fun telecomRefused(name: String) { if (!alerted) showIncoming(name) }
+    fun telecomRefused(name: String) { systemCall = false; if (!alerted) showIncoming(name) }
+
+    /** The system would not place our call: it goes on without it, and audio focus is ours to watch. */
+    fun telecomOutgoingRefused() { systemCall = false }
 
     /** Answered from outside the screen (a Bluetooth headset, a car). */
     fun answerFromSystem() {
@@ -631,6 +641,7 @@ object CallManager {
         discJob?.cancel(); giveUpJob?.cancel(); restarted = false
         telecom?.let { try { it.finish(if (msg == null) android.telecom.DisconnectCause.LOCAL else android.telecom.DisconnectCause.REMOTE) } catch (_: Exception) {} }
         telecom = null
+        systemCall = false
         stopRing()
         stats?.cancel(); stats = null
         iceJob?.cancel()

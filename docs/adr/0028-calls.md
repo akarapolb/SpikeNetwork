@@ -146,3 +146,12 @@ One honest design point on candidates: the caller must include its candidates in
   - *`cli/examples/relay_check.rs`*: one command to test a deployed relay from outside (name, certificate, sign-in, TURN
     logins, TURN allocation over UDP, TCP reachability); `deploy/README.md` shows it. Run against a local relay and the
     stand-in TURN server; not yet against a real server.
+
+## Update: 2026-10-26
+
+- *Audio focus as a fallback only.* On Android a call the system's calling framework manages (self-managed Telecom)
+  is held and resumed by the system (`SpikeConnection.onHold` / `onUnhold`). The app also asked for audio focus, and
+  the system then takes focus *for that same call*; when its request came second, the app read the loss as "another
+  call has the audio" and put its own new call on hold, microphone closed. A call the phone placed then sent no sound
+  about half the time (`android/drive_call.mjs`, phone as caller). Audio focus changes now only hold the call when the
+  system is not managing it.

@@ -35,6 +35,7 @@ object CallAudio {
     private var focus: AudioFocusRequest? = null
     private var prox: PowerManager.WakeLock? = null
     private var onHold: ((Boolean) -> Unit)? = null
+    private var bySystem: () -> Boolean = { false }
     private var chose = false
     private var connected = false
     private var video = false
@@ -46,6 +47,12 @@ object CallAudio {
     }
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        // A call the system manages is held and resumed by the system (SpikeConnection.onHold); the focus it takes
+        // for that call is not another call taking the audio.
+        if (bySystem()) {
+            Trace.add("audio: focus change $change left to the system")
+            return@OnAudioFocusChangeListener
+        }
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> onHold?.invoke(true)
             AudioManager.AUDIOFOCUS_GAIN -> onHold?.invoke(false)
@@ -53,11 +60,13 @@ object CallAudio {
         }
     }
 
-    fun start(c: Context, withVideo: Boolean, hold: (Boolean) -> Unit) {
+    /** `managedBySystem`: whether the system's calling framework has the call (then it decides about hold). */
+    fun start(c: Context, withVideo: Boolean, managedBySystem: () -> Boolean, hold: (Boolean) -> Unit) {
         val m = c.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         am = m
         pm = c.getSystemService(Context.POWER_SERVICE) as PowerManager
         onHold = hold
+        bySystem = managedBySystem
         video = withVideo
         connected = false
         chose = false
@@ -86,7 +95,7 @@ object CallAudio {
         } catch (_: Exception) {}
         m.isSpeakerphoneOn = false
         m.mode = AudioManager.MODE_NORMAL
-        am = null; onHold = null
+        am = null; onHold = null; bySystem = { false }
         route = Route.Earpiece
         available = listOf(Route.Earpiece, Route.Speaker)
     }

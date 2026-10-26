@@ -44,7 +44,15 @@ edits and deletes) so it redraws.
 ## Known gaps
 
 - In a large group, a version without this change drops a reaction as "a message that is not one of ours" and
-  counts it as refused (`large.rs` `refuse`). Groups should upgrade together.
-- A reaction that arrives before its message (possible in a small group when the reaction overtakes the
-  message on another member's path) is dropped, not kept for later.
+  counts it as refused (`large.rs` `refuse`). Groups should upgrade together. From this version on, an
+  envelope of a kind the build does not know (`Envelope::is_newer_kind`) is skipped quietly instead, so the
+  next new kind will not repeat this.
 - Reactions on files work like on text; reacting from the notification is not built.
+
+## Later changes
+
+- 2026-10-26: a reaction that arrives before its message (possible in a small group when the reaction
+  overtakes the message on another member's path) waits for it, sealed in the history database
+  (`early_reactions`, at most 500, oldest dropped first), and joins the message when it is stored, if that
+  message is in the same conversation and not deleted. Catching up from another of your devices
+  (`merge_record`) now also merges reactions on messages both devices already have.

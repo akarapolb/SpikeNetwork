@@ -248,8 +248,9 @@ pub use spike_core::merge::Action as MergeAction;
 
 /// Apply a reaction from `reactor` (an owner key) to a message in conversation `conv` (a contact's
 /// owner key or a group id). Anyone in the conversation may react; each person keeps one reaction
-/// per message, and only a newer one replaces it. A reaction to a message that is not here, is in
-/// another conversation, or was deleted changes nothing. Returns whether anything changed.
+/// per message, and only a newer one replaces it. A reaction to a message that is not here yet waits
+/// for it (`MessageStore::park_reaction`); one to a message in another conversation, or deleted,
+/// changes nothing. Returns whether anything visible changed.
 pub fn apply_reaction(
     home: &Home,
     env: &Envelope,
@@ -261,28 +262,21 @@ pub fn apply_reaction(
         return Ok(false);
     };
     let store = home.messages()?;
+    let reaction = messages::Reaction {
+        emoji: env.body.clone(),
+        lamport: env.lamport,
+        device: sender_device.to_string(),
+    };
     let Some(mut m) = store.get(target)? else {
+        store.park_reaction(target, conv, reactor, &reaction)?;
         return Ok(false);
     };
     if m.peer != conv || m.deleted {
         return Ok(false);
     }
-    let stamp = (env.lamport, sender_device.to_string());
-    let current = m
-        .reactions
-        .get(reactor)
-        .map(|r| (r.lamport, r.device.clone()));
-    if !spike_core::merge::reaction_wins(current.as_ref(), &stamp) {
+    if !messages::fold_reaction(&mut m, reactor, &reaction) {
         return Ok(false);
     }
-    m.reactions.insert(
-        reactor.to_string(),
-        messages::Reaction {
-            emoji: env.body.clone(),
-            lamport: stamp.0,
-            device: stamp.1,
-        },
-    );
     store.update(&m)?;
     Ok(true)
 }

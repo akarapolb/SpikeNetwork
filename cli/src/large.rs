@@ -1547,6 +1547,10 @@ async fn sync_group(
             match res {
                 Ok(Processed::Message(body, from)) => {
                     let Ok(env) = Envelope::from_bytes(&body) else {
+                        if Envelope::is_newer_kind(&body) {
+                            // From a newer version of the app: nothing this one can show.
+                            continue;
+                        }
                         refuse(
                             &mut events,
                             rec,

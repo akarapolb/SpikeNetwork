@@ -9,7 +9,7 @@
 //   bash android/build-native.sh --release && (cd android && ./gradlew assembleDebug)
 //   cargo build -p spike-relay && (cd desktop/src-tauri && cargo build)   (or SPIKE_DESKTOP_EXE=<other build>)
 //   node android/drive_call.mjs [screenshot-dir]
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createDrive, sleep } from "../desktop/drive_lib.mjs";
 import { createPhone, APK, PKG } from "./phone_lib.mjs";
@@ -90,7 +90,9 @@ try {
   shot("1-phone-ringing");
   await tapText("Answer", true);
   check(await until(async () => /\d+:\d\d/.test(await overlay(desk)) && !(await overlay(desk)).includes("Connecting"), 30000), "the desktop's call connects");
-  check(await waitText("Hang up", 5000), "the phone is in the call");
+  const inCall = await waitText("Hang up", 5000);
+  check(inCall, "the phone is in the call");
+  if (!inCall) writeFileSync(join(D.shots, "phone-logcat-call-ended.txt"), adb("logcat", "-d"));
   await sleep(5000);
   ps = phoneStats(); ds = await audioIn(desk);
   console.log("   phone:", JSON.stringify(ps), "desktop:", JSON.stringify(ds));
@@ -128,10 +130,16 @@ try {
   await desk.shot("ringing");
   check(await press(desk, "Answer"), "the desktop answers");
   check(await until(async () => /\d+:\d\d/.test(await overlay(desk)) && !(await overlay(desk)).includes("Connecting"), 30000), "the call connects");
-  await sleep(5000);
+  // Audio and the quality line come a few seconds after "connected"; wait for them (and say how long it took).
+  const tc = Date.now();
+  const heard = await until(async () => { const d = await audioIn(desk); return d && d.packets > 20; }, 15000);
+  console.log(`   (the desktop heard the phone ${heard ? `after ${Date.now() - tc} ms` : "not within 15 s"})`);
+  if (!heard) writeFileSync(join(D.shots, "phone-logcat-no-audio.txt"), adb("logcat", "-d"));
+  const quality = await until(async () => (/(Good|Fair|Poor) connection/.exec(screenText()) || [])[0], 15000);
+  await sleep(Math.max(0, 5000 - (Date.now() - tc)));
   ps = phoneStats(); ds = await audioIn(desk);
   console.log("   phone:", JSON.stringify(ps), "desktop:", JSON.stringify(ds));
-  check(/(Good|Fair|Poor) connection/.test(screenText()), "the call screen shows how the connection is doing (" + ((/(Good|Fair|Poor) connection/.exec(screenText()) || [])[0] || "nothing") + ")");
+  check(quality, `the call screen shows how the connection is doing (${quality || "nothing"})`);
   check(ps && ps.rx > 20 && ps.energy > 0, "the phone receives the desktop's audio (phone as caller)");
   check(ds && ds.packets > 20, "the desktop receives audio from the phone (phone as caller)");
   shot("3-phone-calling");
@@ -198,7 +206,7 @@ try {
   check(/mWakefulness=Awake/.test(sh("dumpsys power")), "and turns the screen on");
   shot("6-locked-ringing");
   await sleep(1500);
-  check(screenText().includes("is calling"), "the phone shows who is calling");
+  check(await waitText("is calling", 10000), "the phone shows who is calling");
   await tapText("Decline", true);
   await sleep(3000);
   check(!/CallActivity/.test(sh("dumpsys activity activities | grep -E 'ResumedActivity|topResumedActivity'")), "after the call the call window closes by itself");
