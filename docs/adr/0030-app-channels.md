@@ -3,7 +3,7 @@
 Status: **built in part, 2026-10-26**: the `App` kind with stored and live data, full state for late joiners,
 the library API, CLI commands, and a local API on the desktop with an approval prompt. One to one and small
 groups (ADR 0024), and (2026-10-26, later) a fast path in the desktop listener and in the phone's. and
-(later still) live data the relay never stores. **Not built:** large groups, a local API on Android. Not reviewed.
+(later still) live data the relay never stores. and large (MLS) groups. **Not built:** a local API on Android. Not reviewed.
 Proposed: 2026-10-25.
 
 ## Problem
@@ -77,7 +77,10 @@ app registered on the sending device.
 **Who may send:** the same rules as messages. In a group, only current members, by the group state the
 receiver holds (an envelope naming an older member list is refused, as for text). One to one, only contacts.
 App data from a stranger is dropped and never becomes a message request (only a text with an introduction
-does, ADR 0021). Large (MLS) groups skip app envelopes quietly.
+does, ADR 0021). In a large (MLS) group the group itself vouches for the sender; an app
+envelope is an ordinary message of the group, and the group is the conversation. It is sent to the whole
+group, so a snapshot answering one member reaches everyone, who refuse it because they did not ask. Live data
+in a large group is kept in the mailbox like the rest (it is a log); readers drop it if it is late.
 
 The receiving code gets `Outcome::App(AppEvent)`; the event says what it is (`data`, `state_request` or
 `state`), the app, the channel, the mode, who sent it (name as this device knows them, owner key, device,
@@ -181,7 +184,7 @@ banner tells them to allow a program only if they just started it.
 - Core: three kinds (`App`, `AppStateRequest`, `AppState`) and their checks (`core/src/app.rs`). No new
   cryptography, no relay change.
 - Engine: `cli/src/apps.rs` (registry, inbox, senders), hooks in `process` (contacts, own devices) and in the
-  small-group receive path, `groups::send_app`, and a skip in large groups.
+  small-group receive path, `groups::send_app`, and `large::send_app` with `large::Event::App` for large groups.
 - App crate: `app/src/apps.rs` (DTOs, live events, waiting), `app/src/local_api.rs` (the HTTP API, on
   `httparse` and tokio, about 450 lines).
 - Desktop: Settings → Apps (turn the local API on, list apps with what they sent and received, remove, the
@@ -222,7 +225,8 @@ banner tells them to allow a program only if they just started it.
 - **Live data reaches only devices connected at that moment.** A device that is offline (or whose listener is
   between connections) never gets it, which is what live means. It applies to one-to-one sends; live data to a
   small group is still stored. The first message to a device (it starts the session) is always stored.
-- **Large groups** (ADR 0025) are not supported. **Android** has no local API: apps on the phone would link the
+- **Large groups** (ADR 0025) work, but a state answer cannot be private to the asker, and live data is kept in
+  the mailbox. **Android** has no local API: apps on the phone would link the
   library in-process; nothing does yet.
 - **One device's inbox.** Each device keeps its own inbox; a program on the desktop does not see what an app
   on the phone already took.

@@ -1060,6 +1060,17 @@ async fn run() -> Result<()> {
                                     ""
                                 }
                             ),
+                            Event::App(a) => println!(
+                                "[app {}] {} sent {} on {}",
+                                a.app,
+                                a.from,
+                                match a.kind {
+                                    spike_cli::apps::EventKind::Data => "data",
+                                    spike_cli::apps::EventKind::StateRequest => "a state request",
+                                    spike_cli::apps::EventKind::State => "state",
+                                },
+                                a.channel
+                            ),
                             Event::OwnDevices => {
                                 println!("your other devices were updated in your large groups")
                             }

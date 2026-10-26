@@ -8,6 +8,7 @@
 //! is only accepted when this device asked for that channel's state, from that conversation.
 
 use crate::groups;
+use crate::large;
 use crate::ops;
 use crate::state::Home;
 use crate::transport::Target;
@@ -496,6 +497,15 @@ async fn deliver(home: &Home, base: Target, to: &To, env: Envelope, quick: bool)
                 delivered: r.delivered(),
             })
         }
+        To::Group(g) | To::Member { group: g, .. } if groups::find(home, g).is_err() => {
+            // Not a small group: a large one (ADR 0025). Everyone in it gets it, even a state meant
+            // for one member (they ignore a state they did not ask for).
+            let (id, others) = large::send_app(home, &base, g, env).await?;
+            Ok(Sent {
+                id,
+                delivered: others,
+            })
+        }
         To::Group(g) => {
             let r = groups::send_app(home, &base, g, None, env).await?;
             Ok(Sent {
@@ -554,7 +564,10 @@ pub async fn request_state(
             .find(|c| &c.name == name)
             .with_context(|| format!("no contact '{name}'"))?
             .conversation_key()?,
-        To::Group(g) => groups::find(home, g)?.id().to_string(),
+        To::Group(g) => match groups::find(home, g) {
+            Ok(r) => r.id().to_string(),
+            Err(_) => large::find(home, g)?.id,
+        },
         To::Member { .. } => bail!("ask the whole group for its state"),
     };
     let env = Envelope::app_state_request(&AppChannel::new(app_id, channel)?)?;

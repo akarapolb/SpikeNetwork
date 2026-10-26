@@ -215,6 +215,15 @@ impl Session {
                     id: r.id().to_string(),
                 })
             })
+            .chain(
+                spike_cli::large::list(&self.home)?
+                    .into_iter()
+                    .filter(|r| r.status == spike_cli::large::Status::Active)
+                    .map(|r| TargetGroup {
+                        name: r.name,
+                        id: r.id,
+                    }),
+            )
             .collect();
         Ok(TargetsDto { contacts, groups })
     }
