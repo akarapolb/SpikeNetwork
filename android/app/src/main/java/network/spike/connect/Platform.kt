@@ -46,6 +46,9 @@ object Prefs {
     fun setNotifyInBackground(c: Context, on: Boolean) = p(c).edit().putBoolean("notify_background", on).apply()
 
     /** Screenshots, screen recording and the recent-apps thumbnail. Off in release builds (FLAG_SECURE), on in debug. */
+    /** Show who wrote and the text in notifications, with quick reactions and a reply box (off by default). */
+    fun notificationPreviews(c: Context) = p(c).getBoolean("notification_previews", false)
+    fun setNotificationPreviews(c: Context, on: Boolean) = p(c).edit().putBoolean("notification_previews", on).apply()
     fun allowScreenshots(c: Context) = p(c).getBoolean("allow_screenshots", BuildConfig.DEBUG)
     fun setAllowScreenshots(c: Context, on: Boolean) = p(c).edit().putBoolean("allow_screenshots", on).apply()
 }
@@ -141,7 +144,7 @@ object Trace {
 }
 
 object Notifier {
-    private const val NEWS = "news"
+    const val NEWS = "news"
     private const val SERVICE = "service"
     const val SERVICE_ID = 1
     private const val NEWS_ID = 2
@@ -151,6 +154,8 @@ object Notifier {
         nm.createNotificationChannel(NotificationChannel(NEWS, "New messages", NotificationManager.IMPORTANCE_DEFAULT))
         nm.createNotificationChannel(NotificationChannel(SERVICE, "Listening for messages", NotificationManager.IMPORTANCE_LOW))
     }
+
+    fun openApp(ctx: Context): PendingIntent = open(ctx)
 
     private fun open(ctx: Context, call: Boolean = false): PendingIntent =
         PendingIntent.getActivity(
@@ -193,10 +198,11 @@ object Notifier {
             .build()
     }
 
-    /** Says that something arrived, never what: the text of a message stays out of notifications. */
+    /** Says that something arrived, never what, unless the person turned on message previews ([Previews]). */
     fun news(ctx: Context, count: Int) {
         if (!allowed(ctx)) return
         ensureChannels(ctx)
+        if (Prefs.notificationPreviews(ctx) && Previews.show(ctx)) return
         val n = NotificationCompat.Builder(ctx, NEWS)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle("Spike Connect")
@@ -270,6 +276,7 @@ object Notifier {
 
     fun clearNews(ctx: Context) {
         ctx.getSystemService(NotificationManager::class.java).cancel(NEWS_ID)
+        Previews.clear(ctx)
     }
 }
 
