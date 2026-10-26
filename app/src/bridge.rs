@@ -331,6 +331,30 @@ impl Engine {
                     }
                 })?)
             }
+            // Like `wait_for_push`, but a one-to-one delivery that arrives is stored and
+            // acknowledged right here on the open connection (ADR 0030, the fast path). Returns
+            // `{pushed, sync}`: `sync` is the result when it was handled, null when the caller
+            // should run `sync` (a group entry, a failure, linking in progress, nothing arrived).
+            "listen_once" => {
+                let ms = a
+                    .get("ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(25_000)
+                    .min(120_000);
+                val(rt.block_on(async {
+                    let mut relay = x.listener_connect().await?;
+                    x.listener_subscribe(&mut relay).await;
+                    match relay.next_incoming(Some(Duration::from_millis(ms))).await {
+                        Ok(Some(spike_cli::client::Incoming::Delivery(d))) if !x.paused() => {
+                            let sync = x.listener_receive(&mut relay, &d).await.ok();
+                            Ok::<Value, anyhow::Error>(serde_json::json!({"pushed": true, "sync": sync}))
+                        }
+                        Ok(Some(_)) => Ok(serde_json::json!({"pushed": true, "sync": null})),
+                        Ok(None) => Ok(serde_json::json!({"pushed": false, "sync": null})),
+                        Err(e) => Err(e),
+                    }
+                })?)
+            }
             // Files travel by path: the app copies what the person picked into its own cache, the
             // engine reads it (and `save_attachment` writes into a folder the app names).
             "send_file" => {

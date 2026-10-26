@@ -103,10 +103,11 @@ object Listener {
     private suspend fun loop(ctx: Context) {
         while (currentCoroutineContext().isActive) {
             try {
-                val pushed = Bridge.call("wait_for_push", args("ms" to 20000)) == true
-                if (pushed) Trace.add("relay says something is waiting")
+                val w = Bridge.obj("listen_once", args("ms" to 20000))
+                if (w.getBoolean("pushed")) Trace.add("relay says something is waiting")
                 if (!currentCoroutineContext().isActive || paused) break
-                val r = Bridge.obj("sync")
+                // A one-to-one delivery was already stored on the listener's connection.
+                val r = if (w.isNull("sync")) Bridge.obj("sync") else w.getJSONObject("sync")
                 val news = r.getInt("received") + r.getInt("groups") + r.getInt("message_requests")
                 if (news > 0) Trace.add("read from the relay: $news new")
                 if (news > 0 && !visible) Notifier.news(ctx, news)

@@ -2,8 +2,8 @@
 
 Status: **built in part, 2026-10-26**: the `App` kind with stored and live data, full state for late joiners,
 the library API, CLI commands, and a local API on the desktop with an approval prompt. One to one and small
-groups (ADR 0024), and (2026-10-26, later) a fast path in the desktop listener. **Not built:** the relay-side
-`fast` flag and live data that the relay never queues, the fast path on Android, large groups, a local API on
+groups (ADR 0024), and (2026-10-26, later) a fast path in the desktop listener and in the phone's. **Not
+built:** the relay-side `fast` flag and live data that the relay never queues, large groups, a local API on
 Android. Not reviewed.
 Proposed: 2026-10-25.
 
@@ -101,7 +101,8 @@ the relay therefore learns nothing new (the proposal's metadata cost is not paid
 Measured in the real desktop app (`desktop/drive_apps.mjs`, three runs, local relay, one machine): a live update
 sent by a program through Bob's desktop reached a program waiting on Alice's desktop in **77, 77 and 113 ms**
 (from the send request to the answer of the waiting request), against about 470 ms before. That meets the
-200 ms target. Not measured: a relay across the internet, a busy machine, the phone.
+200 ms target. Not measured: a relay across the internet, a busy machine, the phone (it uses the same path, `listen_once`, but only the
+Android app-channel driver was run).
 
 ### 3. Batching (as proposed)
 
@@ -215,7 +216,8 @@ banner tells them to allow a program only if they just started it.
   cannot tell app data from messages, nor which application or channel.
 - **Ordering.** Spike does not order app traffic. Applications must merge in any order (a CRDT does).
 - **Speed.** Under 120 ms program to program on a local relay with the desktop fast path (above); the phone's
-  listener (a service in Kotlin) does not have the fast path yet, so it still takes the full sync.
+  listener uses the same path (bridge command `listen_once`: a one-to-one delivery is stored and acknowledged
+  on its open connection; anything else, or a failure, falls back to `sync`). Its speed is not measured.
 - **Live data is queued by the relay** for offline devices (then dropped by them as late): it costs relay
   storage it need not.
 - **Large groups** (ADR 0025) are not supported. **Android** has no local API: apps on the phone would link the
