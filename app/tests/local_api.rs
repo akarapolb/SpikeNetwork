@@ -34,11 +34,10 @@ impl Drop for Person {
 }
 
 async fn person(tag: &str, url: &str) -> Person {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    let dir = std::env::temp_dir().join(format!("spike-localapi-{tag}-{n}"));
+    // Tests run in parallel and each makes an "alice": a counter keeps their folders apart.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("spike-localapi-{tag}-{}-{n}", std::process::id()));
     let s = Session::create(
         &dir,
         "local api test passphrase".into(),
