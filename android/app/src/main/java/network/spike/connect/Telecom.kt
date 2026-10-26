@@ -48,17 +48,19 @@ object SpikeTelecom {
         false
     }
 
-    /** Tell the system we are placing a call. Best effort: the call works without it. */
-    fun outgoing(ctx: Context, name: String) {
-        try {
+    /** Tell the system we are placing a call. Best effort: the call works without it. False if it could not be done. */
+    fun outgoing(ctx: Context, name: String): Boolean {
+        return try {
             ensureAccount(ctx)
             val extras = Bundle().apply {
                 putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle(ctx))
                 putString("name", name)
             }
             ctx.getSystemService(TelecomManager::class.java).placeCall(address(name), extras)
+            true
         } catch (e: Exception) {
             Trace.add("telecom: outgoing call not registered (${e.javaClass.simpleName})")
+            false
         }
     }
 }
@@ -79,6 +81,11 @@ class SpikeConnectionService : ConnectionService() {
     override fun onCreateOutgoingConnection(account: PhoneAccountHandle?, request: ConnectionRequest?): Connection {
         val name = request?.extras?.getString("name") ?: "Spike Connect"
         return SpikeConnection(name, false).also { CallManager.attach(it); it.setDialing() }
+    }
+
+    override fun onCreateOutgoingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest?) {
+        Trace.add("telecom: system refused the outgoing call; it goes on without it")
+        CallManager.telecomOutgoingRefused()
     }
 }
 
