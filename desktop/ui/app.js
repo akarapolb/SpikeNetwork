@@ -104,6 +104,7 @@ function listenToBackend() {
   ev.listen("synced", async (e) => { if (!st.ov) return; st.offline = false; for (const n of (e.payload && e.payload.notes) || []) { const t = st.seenNotes.get(n); if (!t || Date.now() - t > 10000) toast(n); st.seenNotes.set(n, Date.now()); } await refresh(); await markOpenRead(); scrollEnd(); });
   ev.listen("banner-open", (e) => { try { openFromBanner(JSON.parse(e.payload)); } catch (_) {} });
   ev.listen("app-connect", (e) => { if (!st.ov) return; st.appWaiting = e.payload || []; render(); refreshApps(); });
+  ev.listen("banner-action", (e) => { try { bannerAction(JSON.parse(e.payload.open), e.payload.action); } catch (_) {} });
   ev.listen("relay-status", (e) => { if (!st.ov) return; const off = !e.payload.online; if (off !== st.offline) { st.offline = off; render(); } });
 }
 
@@ -119,7 +120,7 @@ function armAutoLock() {
 ["pointerdown", "keydown", "wheel", "touchstart"].forEach((t) => document.addEventListener(t, () => { if (!$("app").hidden) armAutoLock(); }, { passive: true }));
 
 /* ---------- notification banners ---------- */
-const BANNER_CHOICES = [["some", "Say that something arrived"], ["who", "Say who it is from"], ["off", "Off"]];
+const BANNER_CHOICES = [["some", "Say that something arrived"], ["who", "Say who it is from"], ["full", "Show who it is from and the message"], ["off", "Off"]];
 function bannerMode() { try { return localStorage.getItem("banners") || "some"; } catch (_) { return "some"; } }
 /* After each refresh: what is new since the last one. The first refresh after unlocking only takes note.
    A banner about one thing remembers where it leads, so a click on it opens that chat, group or screen. */
@@ -141,10 +142,45 @@ function banners() {
   if (invites.length) { notes.push("You were invited to a group"); invites.forEach((id) => where.push({ group: id })); }
   if (now.waiting > was.waiting) { notes.push("An agent is waiting for your approval"); where.push({ section: "agents" }); }
   const same = where.length && where.every((w) => JSON.stringify(w) === JSON.stringify(where[0]));
+  if (bannerMode() === "full" && count) {
+    // Previews: one banner per chat (at most three), with who wrote, what, quick reactions and Reply.
+    previewBanners(where.filter((w) => w.chat || w.group).slice(0, 3));
+    notes.shift();
+    if (notes.length) showBanner(notes.join(". ") + ".", null);
+    return;
+  }
   if (notes.length) showBanner(notes.join(". ") + ".", same ? where[0] : null);
 }
-/* `open` is where a click on the banner leads (null: just bring the window forward). */
-function showBanner(body, open = null) { invoke("notify_banner", { title: "Spike Connect", body, open: open ? JSON.stringify(open) : null }).catch(() => {}); }
+/* The newest message from someone else in each chat, as a banner the person can react to or reply from. */
+async function previewBanners(places) {
+  for (const p of places) {
+    try {
+      const msgs = p.chat ? await invoke("conversation", { name: p.chat }) : await invoke("group_conversation", { id: p.group });
+      const m = [...msgs].reverse().find((x) => !x.out && !x.deleted);
+      if (!m) continue;
+      const g = p.group && st.ov.groups.find((x) => x.id === p.group);
+      const title = p.chat ? p.chat : `${m.from || "Someone"} in ${g ? g.name : "a group"}`;
+      const text = m.body || (m.file ? `Sent a file: ${m.file.name}` : "New message");
+      showBanner(text.length > 200 ? text.slice(0, 199) + "…" : text, { ...p, id: m.id }, title);
+    } catch (_) {}
+  }
+}
+/* `open` is where a click on the banner leads (null: just bring the window forward). A banner about one message
+   (`open.id`, previews only) also offers quick reactions and Reply. */
+function showBanner(body, open = null, title = "Spike Connect") { invoke("notify_banner", { title, body, open: open ? JSON.stringify(open) : null, actions: !!(open && open.id) }).catch(() => {}); }
+/* A button on a preview banner: a reaction is sent from here, Reply opens the chat ready to reply. */
+async function bannerAction(open, action) {
+  if (!st.ov || $("app").hidden || !open.id) return;
+  if (action.startsWith("react:")) {
+    try { await invoke("react", { id: open.id, emoji: action.slice(6) }); await refresh(); } catch (e) { toast(String(e)); }
+    return;
+  }
+  if (action === "reply") {
+    await openFromBanner(open);
+    const m = st.msgs.find((x) => x.id === open.id);
+    if (m) startReply(m, !!open.group);
+  }
+}
 /* A click on a banner: the backend has already brought the window forward. */
 async function openFromBanner(open) {
   if (!st.ov || $("app").hidden || st.linking) return;
@@ -711,7 +747,7 @@ function settingsMain() {
       h("label", { style: "display:flex;flex-direction:column;gap:4px" }, h("b", { style: "font-weight:600" }, "Lock after no use for"), h("div", { class: "field" }, h("select", { "aria-label": "Auto-lock", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { try { localStorage.setItem("autolock", e.target.value); } catch (_) {} armAutoLock(); toast(Number(e.target.value) ? `Locks after ${e.target.selectedOptions[0].text} without use.` : "Auto-lock is off."); } }, AUTOLOCK_CHOICES.map(([v, l]) => h("option", { value: String(v), selected: v === autoLockMinutes() || null }, l)))),
         h("span", { class: "note" }, "Locking wipes your keys from memory. While locked, this computer does not receive messages.")),
       h("label", { style: "display:flex;flex-direction:column;gap:4px;margin-top:6px" }, h("b", { style: "font-weight:600" }, "Notification banners"), h("div", { class: "field" }, h("select", { "aria-label": "Notification banners", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { try { localStorage.setItem("banners", e.target.value); } catch (_) {} toast(e.target.value === "off" ? "No banners. The taskbar still flashes." : "Banners on, while Spike Connect is not the window you are using."); } }, BANNER_CHOICES.map(([v, l]) => h("option", { value: v, selected: v === bannerMode() || null }, l)))),
-        h("span", { class: "note" }, "Shown while Spike Connect is not the window you are using. A banner never shows what a message says.")),
+        h("span", { class: "note" }, "Shown while Spike Connect is not the window you are using. Only \"Show who it is from and the message\" puts a message's text in a banner, with quick reactions and Reply; anyone who can see your screen can read it.")),
       h("span", { class: "note" }, "The window title, and the taskbar or dock, show how many messages and requests are waiting.")),
     updatesCard(),
     h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "an installer with auto-update. This is an unreviewed prototype.")),

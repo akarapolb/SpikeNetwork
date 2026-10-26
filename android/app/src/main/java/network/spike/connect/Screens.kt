@@ -1232,7 +1232,7 @@ fun SettingsTab(m: AppModel) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Alerts while the app is closed", fontWeight = FontWeight.Medium)
-                    Muted("Keeps a small notification showing and listens for messages. Alerts say that something arrived, never what. Needs the app unlocked since the phone last started.", 12.5.sp)
+                    Muted("Keeps a small notification showing and listens for messages. Alerts say that something arrived, never what, unless you turn on message previews below. Needs the app unlocked since the phone last started.", 12.5.sp)
                 }
                 Switch(alerts, { want ->
                     if (!want) {
@@ -1242,6 +1242,17 @@ fun SettingsTab(m: AppModel) {
                     } else {
                         Prefs.setNotifyInBackground(ctx, true); ListenerService.start(ctx); alerts = true
                     }
+                }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+            }
+            var previews by remember { mutableStateOf(Prefs.notificationPreviews(ctx)) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Show messages in notifications", fontWeight = FontWeight.Medium)
+                    Muted("Notifications show who wrote and what, with quick reactions and a reply box. Anyone who can see your unlocked screen can read them; the lock screen still hides them. Off: they only say that something arrived.", 12.5.sp)
+                }
+                Switch(previews, { want ->
+                    Prefs.setNotificationPreviews(ctx, want); previews = want
+                    if (!want) Previews.clear(ctx)
                 }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
             }
         }

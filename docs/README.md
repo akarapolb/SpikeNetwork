@@ -33,6 +33,7 @@ Status legend used across docs: **[Paper]** = taken from the strategy paper; **[
 | [adr/0029-backup-and-recovery.md](adr/0029-backup-and-recovery.md) | Backup file, recovery phrase, recovery contacts and doing nothing compared; what a backup holds and what it must not; how a restored identity rejoins; threat model |
 | [adr/0030-app-channels.md](adr/0030-app-channels.md) | App channels: other applications (first Center Work) send their own data over Spike, stored or live, never shown as chat; full state for late joiners; a local API on the desktop that a program uses after you allow it. Fast path and large groups not built |
 | [adr/0031-replies-and-reactions.md](adr/0031-replies-and-reactions.md) | Replies (a `reply_to` on a text message) and reactions (a `react` kind, one per person, newest wins); how older versions see them; known gaps |
+| [adr/0032-group-calls.md](adr/0032-group-calls.md) | **Proposed:** group calls: a mesh up to 4 people, then our own SFU (`str0m`) with SFrame end-to-end media encryption; keys per call (small groups) or from MLS (large groups); room tokens; phases |
 | [architecture.html](architecture.html) | Architecture diagrams |
 | [multi-device-design.html](multi-device-design.html) | **Proposed** design: message history across multiple devices, fan-out, device linking, and which servers are still needed |
 | [multi-device-demo.html](multi-device-demo.html) | **Interactive simulation** of that design (no real crypto): fan-out, offline catch-up, device linking, edits, relay outage, attacks. Open in a browser |

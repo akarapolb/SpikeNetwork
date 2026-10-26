@@ -135,19 +135,51 @@ fn notify_banner(
     title: String,
     body: String,
     open: Option<String>,
+    actions: Option<bool>,
 ) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
     let mut b = app.notification().builder().title(title).body(body);
     if let Some(open) = open {
         b = b.extra("open", open);
     }
+    if actions == Some(true) {
+        b = b.action_type_id(BANNER_ACTIONS);
+    }
     b.show().map_err(|e| e.to_string())
 }
 
-/// A click on one of our banners: bring the window forward and tell it what the banner was about.
-/// (Windows reports a click only while the banner is on screen, not from the Action Center.)
+/// The buttons on a banner about one message (message previews): quick reactions and Reply.
+const BANNER_ACTIONS: &str = "message";
+
+fn banner_action_types() -> Vec<tauri_plugin_notification::ActionType> {
+    use tauri_plugin_notification::{Action, ActionType};
+    let mut actions: Vec<Action> = ["👍", "❤️", "😂"]
+        .iter()
+        .map(|e| Action::builder(format!("react:{e}"), *e).build())
+        .collect();
+    actions.push(Action::builder("reply", "Reply").build());
+    vec![ActionType::builder(BANNER_ACTIONS).actions(actions).build()]
+}
+
+/// A click on one of our banners: bring the window forward and tell it what the banner was about. A reaction
+/// button is handed to the window without bringing it forward. (Windows reports a click only while the banner is
+/// on screen, not from the Action Center.)
 fn banner_clicked(app: &tauri::AppHandle, performed: &tauri_plugin_notification::ActionPerformed) {
-    if performed.action_id() != "tap" {
+    let action = performed.action_id();
+    let open = performed
+        .notification()
+        .and_then(|n| n.extra().get("open"))
+        .and_then(|v| v.as_str());
+    if action.starts_with("react:") {
+        if let Some(open) = open {
+            let _ = app.emit(
+                "banner-action",
+                serde_json::json!({ "open": open, "action": action }),
+            );
+        }
+        return;
+    }
+    if action != "tap" && action != "reply" {
         return;
     }
     if let Some(w) = app.get_webview_window("main") {
@@ -155,12 +187,15 @@ fn banner_clicked(app: &tauri::AppHandle, performed: &tauri_plugin_notification:
         let _ = w.show();
         let _ = w.set_focus();
     }
-    let open = performed
-        .notification()
-        .and_then(|n| n.extra().get("open"))
-        .and_then(|v| v.as_str());
     if let Some(open) = open {
-        let _ = app.emit("banner-open", open);
+        if action == "reply" {
+            let _ = app.emit(
+                "banner-action",
+                serde_json::json!({ "open": open, "action": action }),
+            );
+        } else {
+            let _ = app.emit("banner-open", open);
+        }
     }
 }
 
@@ -1186,6 +1221,8 @@ pub fn run() {
                 let handle = app.handle().clone();
                 app.notification()
                     .on_action(move |p| banner_clicked(&handle, p))?;
+                app.notification()
+                    .register_action_types(banner_action_types())?;
             }
             Ok(())
         })
