@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -780,19 +781,26 @@ fun CallScreen(u: CallUi) {
     val dark = Color(0xFF0E1418)
     val remote = CallManager.remoteVideo
     val showRemote = u.video && remote != null
-    Box(Modifier.fillMaxSize().background(dark)) {
+    // A soft teal glow behind the call, as on the desktop.
+    val glow = androidx.compose.ui.graphics.Brush.radialGradient(listOf(Color(0xFF17393E), dark), radius = 1400f, center = androidx.compose.ui.geometry.Offset(540f, 500f))
+    Box(Modifier.fillMaxSize().background(glow)) {
         if (showRemote) VideoView(remote!!, mirror = false, Modifier.fillMaxSize())
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             if (showRemote) Spacer(Modifier.height(8.dp)) else {
                 Spacer(Modifier.weight(1f))
-                Box(Modifier.size(110.dp).clip(CircleShape).background(Color(0xFF24313A)), contentAlignment = Alignment.Center) {
-                    Text(u.name.take(2).uppercase(), color = Color(0xFFC3CED7), fontSize = 36.sp, fontWeight = FontWeight.SemiBold)
+                val (tbg, tfg) = C.tint(u.name, dark = true)
+                Box(Modifier.size(176.dp).clip(CircleShape).background(Color(0x0D5CC2C9)), contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(152.dp).clip(CircleShape).background(Color(0x1A5CC2C9)), contentAlignment = Alignment.Center) {
+                        Box(Modifier.size(128.dp).clip(CircleShape).background(tbg), contentAlignment = Alignment.Center) {
+                            Text(u.name.take(2).uppercase(), color = tfg, fontSize = 44.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
                 }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(12.dp))
             }
             Text(
                 when (u.status) { "ringing" -> "${u.name} is calling"; "calling" -> "Calling ${u.name}"; else -> u.name },
-                color = Color(0xFFE6EDF2), fontSize = 24.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
+                color = Color(0xFFE6EDF2), fontSize = 26.sp, fontFamily = Grotesk, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
             )
             val sub = when (u.status) {
                 "ringing" -> if (u.video) "Incoming video call" else "Incoming voice call"
@@ -816,27 +824,30 @@ fun CallScreen(u: CallUi) {
                 color = Color(0xFF9AA8B4), fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp),
             )
             Spacer(Modifier.weight(1f))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.clip(RoundedCornerShape(40.dp)).background(Color(0x0FFFFFFF)).padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
                 if (u.status == "ringing") {
-                    RoundButton("Decline", Color(0xFFC0392B), IcHandset, rotate = true) { CallManager.decline() }
-                    RoundButton("Answer", Color(0xFF1F7A45), IcHandset) { answerGate() }
+                    RoundButton("Decline", Color(0xFFD9443A), IcHandset, rotate = true) { CallManager.decline() }
+                    RoundButton("Answer", Color(0xFF1F9D57), IcHandset) { answerGate() }
                 } else {
-                    RoundButton(if (u.muted) "Unmute microphone" else "Mute microphone", if (u.muted) Color(0xFFE6EDF2) else Color(0xFF24313A), if (u.muted) IcMicOff else IcMic, tint = if (u.muted) dark else Color.White) { CallManager.toggleMute() }
+                    RoundButton(if (u.muted) "Unmute microphone" else "Mute microphone", if (u.muted) Color(0xFFE6EDF2) else Color(0x1FFFFFFF), if (u.muted) IcMicOff else IcMic, tint = if (u.muted) dark else Color.White) { CallManager.toggleMute() }
                     val outs = CallAudio.available
                     val cur = CallAudio.route
                     val nextOut = outs[(outs.indexOf(cur) + 1) % outs.size]
                     val loud = cur != CallAudio.Route.Earpiece
                     RoundButton(
                         if (outs.size < 2) "Sound: ${cur.label}" else "Sound: ${cur.label}. Tap for ${nextOut.label}",
-                        if (loud) Color(0xFFE6EDF2) else Color(0xFF24313A),
+                        if (loud) Color(0xFFE6EDF2) else Color(0x1FFFFFFF),
                         when (cur) { CallAudio.Route.Speaker -> IcSpeaker; CallAudio.Route.Bluetooth -> IcBluetooth; CallAudio.Route.Headset -> IcHeadset; else -> IcEarpiece },
                         tint = if (loud) dark else Color.White,
                     ) { CallManager.cycleAudio() }
                     if (u.video) {
-                        RoundButton(if (u.camOff) "Turn camera on" else "Turn camera off", if (u.camOff) Color(0xFFE6EDF2) else Color(0xFF24313A), if (u.camOff) IcVideoOff else IcVideo, tint = if (u.camOff) dark else Color.White) { CallManager.toggleCamera() }
-                        RoundButton("Switch camera", Color(0xFF24313A), IcFlip) { CallManager.switchCamera() }
+                        RoundButton(if (u.camOff) "Turn camera on" else "Turn camera off", if (u.camOff) Color(0xFFE6EDF2) else Color(0x1FFFFFFF), if (u.camOff) IcVideoOff else IcVideo, tint = if (u.camOff) dark else Color.White) { CallManager.toggleCamera() }
+                        RoundButton("Switch camera", Color(0x1FFFFFFF), IcFlip) { CallManager.switchCamera() }
                     }
-                    RoundButton("Hang up", Color(0xFFC0392B), IcHandset, rotate = true) { CallManager.hangUp() }
+                    RoundButton("Hang up", Color(0xFFD9443A), IcHandset, rotate = true) { CallManager.hangUp() }
                 }
             }
             Spacer(Modifier.height(24.dp))

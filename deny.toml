@@ -18,6 +18,13 @@ ignore = [
     # i.e. the P-256 ciphersuites. Large groups use ciphersuite 1 (DHKEM X25519, ADR 0025 section 2), which never runs
     # P-256 code. Re-check when hpke-rs or p256 move to the newer crypto-bigint.
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 only via p256 via openmls/hpke-rs; we use the X25519 ciphersuite, so no P-256 code runs" },
+    # 2026-10-26: zvariant, zbus_names and zvariant_derive are unmaintained as standalone crates (merged into zbus 6).
+    # They come only from zbus 5, which notify-rust uses on Linux for desktop notification banners
+    # (tauri-plugin-notification, desktop app only). notify-rust 4.18.2, the latest, is still on zbus 5, so there
+    # is no upgrade yet; not in the Windows or Android builds. Re-check when notify-rust moves to zbus 6.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, only via zbus 5 via notify-rust (Linux desktop banners)" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, only via zbus 5 via notify-rust (Linux desktop banners)" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, only via zbus 5 via notify-rust (Linux desktop banners)" },
 ]
 
 [licenses]

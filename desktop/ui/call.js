@@ -259,6 +259,8 @@ async function onCallEvent(ev) {
     const c = st.ov && st.ov.contacts.find((x) => x.name === ev.name);
     cs = { id: ev.call, name: ev.name, video: ev.video, incoming: true, status: "ringing", offer: ev.sdp, verified: !!(c && c.verified) };
     startRing(); drawCall();
+    if (!document.hasFocus() && bannerMode() !== "off")
+      showBanner(bannerMode() === "who" ? `${ev.name} is calling.` : `Incoming ${ev.video ? "video" : "voice"} call.`);
     if (ev.glare) answerCall();
     return;
   }
@@ -353,7 +355,7 @@ function drawCall() {
     ];
   r.replaceChildren(h("div", { class: "callbox", role: "dialog", "aria-label": "Call with " + c.name },
     h("div", { class: "stage" },
-      hasVideo ? remote : [h("span", { class: "big", "aria-hidden": "true" }, ini(c.name)), remote],
+      hasVideo ? remote : [h("span", { class: `big ${tint(c.name)}`, "aria-hidden": "true" }, ini(c.name)), remote],
       h("h2", {}, title), h("p", { class: "sub", role: "status" }, sub),
       c.video && c.local ? self : null,
       h("div", { class: "facts" }, ...facts)),

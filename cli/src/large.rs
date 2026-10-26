@@ -127,6 +127,8 @@ pub enum Event {
     OwnDevices,
     /// Someone told the group they are leaving; an admin removes them on their next sync.
     Left { group: String, who: String },
+    /// Someone reacted to a message (or took their reaction back).
+    Reacted { group: String, who: String },
     /// A mailbox entry that every member must refuse (it broke a rule) or that could not be read.
     Refused {
         group: String,
@@ -1154,18 +1156,53 @@ pub async fn send(
     group: &str,
     text: &str,
 ) -> Result<String> {
-    let base: Target = relay.into();
+    send_text(home, relay.into(), group, Envelope::text(text)?).await
+}
+
+/// A text message that replies to an earlier message of the group (`reply_to`, its id).
+pub async fn send_reply(
+    home: &Home,
+    relay: impl Into<Target>,
+    group: &str,
+    reply_to: &str,
+    text: &str,
+) -> Result<String> {
+    send_text(home, relay.into(), group, Envelope::reply(reply_to, text)?).await
+}
+
+async fn send_text(home: &Home, base: Target, group: &str, mut env: Envelope) -> Result<String> {
     let rec = find(home, group)?;
     if rec.status != Status::Active {
         bail!("you are not in '{}'", rec.name);
     }
-    let mut env = Envelope::text(text)?;
     env.lamport = home.next_lamport()?;
     send_envelope(home, &base, &rec, &env).await?;
     let me = my_owner(home)?;
     let device = load_mls(home)?.dev.device_id();
     store(home, &rec.id, &env, &me, &device, Direction::Out)?;
     Ok(env.id)
+}
+
+/// React to a message of the group (`emoji` empty: take your reaction back).
+pub async fn react(
+    home: &Home,
+    relay: impl Into<Target>,
+    group: &str,
+    target: &str,
+    emoji: &str,
+) -> Result<()> {
+    let base: Target = relay.into();
+    let rec = find(home, group)?;
+    if rec.status != Status::Active {
+        bail!("you are not in '{}'", rec.name);
+    }
+    let mut env = Envelope::react(target, emoji)?;
+    env.lamport = home.next_lamport()?;
+    send_envelope(home, &base, &rec, &env).await?;
+    let me = my_owner(home)?;
+    let device = load_mls(home)?.dev.device_id();
+    crate::apply_reaction(home, &env, &me, &rec.id, &hex::encode(device))?;
+    Ok(())
 }
 
 /// Encrypt one envelope for the group and append it to the mailbox.
@@ -1258,6 +1295,8 @@ fn store(
         changed_at: 0,
         author: Some(author.to_string()),
         shared_by: None,
+        reply_to: env.reply_to.clone(),
+        reactions: Default::default(),
     })
 }
 
@@ -1542,6 +1581,22 @@ async fn sync_group(
                         }
                         if owner != me {
                             events.push(Event::Left {
+                                group: rec.name.clone(),
+                                who: groups::display_name(home, &owner),
+                            });
+                        }
+                        continue;
+                    }
+                    if env.kind == spike_core::envelope::Kind::React {
+                        if crate::apply_reaction(
+                            home,
+                            &env,
+                            &owner,
+                            &rec.id,
+                            &hex::encode(from.device),
+                        )? && owner != me
+                        {
+                            events.push(Event::Reacted {
                                 group: rec.name.clone(),
                                 who: groups::display_name(home, &owner),
                             });

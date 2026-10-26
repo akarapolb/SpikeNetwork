@@ -1,6 +1,14 @@
 package network.spike.connect
 
 import android.content.ClipData
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import kotlinx.coroutines.launch
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -49,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -164,8 +173,8 @@ fun GateScreen(m: AppModel) {
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(C.AvatarBg), contentAlignment = Alignment.Center) {
-                    Ico(Ic.Share, C.AvatarText, 20.dp)
+                Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(C.Accent), contentAlignment = Alignment.Center) {
+                    Ico(Ic.ShieldCheck, C.OnAccent, 20.dp)
                 }
                 Text("Spike Connect", fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             }
@@ -240,12 +249,16 @@ fun TabBar(m: AppModel) {
         for ((tab, p) in tabs) {
             val on = m.tab == tab && m.screen == null
             Column(
-                Modifier.weight(1f).heightIn(min = 52.dp).clickable { m.select(tab) },
+                Modifier.weight(1f).heightIn(min = 56.dp).clip(RoundedCornerShape(16.dp)).clickable { m.select(tab) },
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
             ) {
-                Ico(p.second, if (on) C.Accent else C.Muted)
-                Spacer(Modifier.height(3.dp))
-                Text(p.first, fontSize = 11.5.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) C.Accent else C.Muted)
+                // The selected tab's icon sits in a soft accent pill.
+                Box(
+                    Modifier.size(width = 56.dp, height = 30.dp).clip(RoundedCornerShape(15.dp)).background(if (on) C.AccentSoft else Color.Transparent),
+                    contentAlignment = Alignment.Center,
+                ) { Ico(p.second, if (on) C.AccentSoftText else C.Muted) }
+                Spacer(Modifier.height(4.dp))
+                Text(p.first, fontSize = 12.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) C.Text else C.Muted)
             }
         }
     }
@@ -271,10 +284,10 @@ fun ChatsTab(m: AppModel) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.weight(1f)) { H1("Chats") }
                 Box(
-                    Modifier.size(44.dp).clip(CircleShape).background(C.Surface).border(1.dp, C.Border, CircleShape)
+                    Modifier.size(44.dp).clip(CircleShape).background(C.AccentSoft)
                         .clickable { m.open(Screen.AddContact) }.semantics { contentDescription = "Add a contact" },
                     contentAlignment = Alignment.Center,
-                ) { Ico(Ic.AddPerson) }
+                ) { Ico(Ic.AddPerson, C.AccentSoftText) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip(
@@ -287,8 +300,7 @@ fun ChatsTab(m: AppModel) {
                 ) { m.select(Tab.Settings) }
             }
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(12.dp)).background(C.Surface)
-                    .border(1.dp, C.Border, RoundedCornerShape(12.dp)).padding(horizontal = 12.dp),
+                Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(22.dp)).background(C.Subtle).padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Ico(Ic.Search, C.Muted, 18.dp)
@@ -308,31 +320,30 @@ fun ChatsTab(m: AppModel) {
                 item {
                     Row(
                         Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, bottom = 4.dp).heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(12.dp)).background(C.Surface)
-                            .dashedBorder().clickable { m.open(Screen.Requests) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                            .clip(RoundedCornerShape(14.dp)).background(C.AmberBg)
+                            .clickable { m.open(Screen.Requests) }.padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Ico(Ic.Request, C.AvatarText)
+                        Ico(Ic.Request, C.AmberText)
                         Text(
                             androidx.compose.ui.text.buildAnnotatedString {
                                 pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold))
                                 append("${o.requests} message ${if (o.requests == 1) "request" else "requests"}")
                                 pop()
-                                pushStyle(androidx.compose.ui.text.SpanStyle(color = C.Muted))
                                 append(" from people not in your contacts")
                             },
-                            fontSize = 14.sp, modifier = Modifier.weight(1f),
+                            fontSize = 14.sp, color = C.AmberText, modifier = Modifier.weight(1f),
                         )
-                        Ico(Ic.Chevron, C.AvatarText, 18.dp)
+                        Ico(Ic.Chevron, C.AmberText, 18.dp)
                     }
                 }
             }
             if (items.isEmpty()) {
                 item {
-                    Muted(
+                    EmptyState(
+                        if (query.isBlank()) Ic.Chat else Ic.Search,
                         if (query.isBlank()) "No conversations yet. Add a contact with the button at the top, then say hello."
                         else "Nothing matches “$query”.",
-                        14.sp, Modifier.padding(24.dp),
                     )
                 }
             }
@@ -340,7 +351,7 @@ fun ChatsTab(m: AppModel) {
                 when (r) {
                     is Item.P -> ChatRow(
                         r.c.name, square = false,
-                        tag = if (r.c.verified) null else "Not verified", tagKind = TagKind.Red, verified = r.c.verified,
+                        tag = if (r.c.verified) null else "Not verified", tagKind = TagKind.Amber, verified = r.c.verified,
                         preview = r.c.last ?: "No messages yet", time = listTime(r.c.lastTs), unread = r.c.unread,
                     ) { m.open(Screen.Chat(r.c.name)) }
                     is Item.G -> ChatRow(
@@ -362,22 +373,13 @@ fun ChatsTab(m: AppModel) {
     }
 }
 
-private fun Modifier.dashedBorder(): Modifier = this.drawWithContent {
-    drawContent()
-    val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
-        width = 1.dp.toPx(),
-        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx())),
-    )
-    drawRoundRect(C.BorderStrong, cornerRadius = androidx.compose.ui.geometry.CornerRadius(12.dp.toPx()), style = stroke)
-}
-
 @Composable
 private fun ChatRow(
     title: String, square: Boolean, tag: String?, tagKind: TagKind, verified: Boolean, preview: String,
     time: String, unread: Int, plainTag: Boolean = false, previewAmber: Boolean = false, onClick: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).clip(RoundedCornerShape(14.dp))
+        Modifier.fillMaxWidth().heightIn(min = 68.dp).clip(RoundedCornerShape(16.dp))
             .background(if (unread > 0) C.Surface else Color.Transparent).clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -398,12 +400,12 @@ private fun ChatRow(
             )
         }
         Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
-            Text(time, fontSize = 12.sp, color = if (unread > 0) C.Text else C.Muted, fontWeight = if (unread > 0) FontWeight.SemiBold else FontWeight.Normal)
+            Text(time, fontSize = 12.sp, color = if (unread > 0) C.Accent else C.Muted, fontWeight = if (unread > 0) FontWeight.SemiBold else FontWeight.Normal)
             if (unread > 0) {
                 Box(
-                    Modifier.heightIn(min = 20.dp).widthIn(min = 20.dp).clip(RoundedCornerShape(10.dp)).background(C.AvatarText).padding(horizontal = 6.dp),
+                    Modifier.heightIn(min = 20.dp).widthIn(min = 20.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent).padding(horizontal = 6.dp),
                     contentAlignment = Alignment.Center,
-                ) { Text("$unread", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                ) { Text("$unread", color = C.OnAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
             }
         }
     }
@@ -414,7 +416,7 @@ private fun ChatRow(
 @Composable
 fun ConversationScreen(
     m: AppModel, title: String, sub: String, verified: Boolean, square: Boolean, caption: String,
-    onSend: suspend (String) -> Unit, onInfo: () -> Unit,
+    onSend: suspend (String, String?) -> Unit, onInfo: () -> Unit,
     onCall: ((Boolean) -> Unit)? = null,
     attach: (suspend (String, java.io.File) -> Unit)? = null,
 ) {
@@ -434,8 +436,26 @@ fun ConversationScreen(
         }
     }
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    // Search in this conversation: the matches (oldest first), which one is current, and each message's place in the list.
+    var finding by remember { mutableStateOf(false) }
+    // Replying to a message, and the message whose reactions menu is open (long press).
+    var replyTo by remember { mutableStateOf<Message?>(null) }
+    var menuFor by remember { mutableStateOf<String?>(null) }
+    val who = { x: Message -> if (x.out) "You" else x.from ?: title }
+    var query by remember { mutableStateOf("") }
+    var cur by remember { mutableStateOf(0) }
+    val q = if (finding) query.trim() else ""
+    val hits = if (q.isEmpty()) emptyList() else m.messages.filter { !it.deleted && it.body.contains(q, ignoreCase = true) }.map { it.id }
+    val rowOf = remember(m.messages) {
+        var row = 1
+        buildMap { m.messages.forEachIndexed { i, msg -> if (i == 0 || !sameDay(m.messages[i - 1].ts, msg.ts)) row++; put(msg.id, row++) } }
+    }
     LaunchedEffect(m.messages.size) {
-        if (m.messages.isNotEmpty()) listState.scrollToItem(m.messages.size)
+        if (m.messages.isNotEmpty() && q.isEmpty()) listState.scrollToItem(m.messages.size)
+    }
+    LaunchedEffect(q, cur, hits.size) {
+        hits.getOrNull(cur)?.let { rowOf[it] }?.let { listState.animateScrollToItem(maxOf(0, it - 1)) }
     }
     Page(C.BgChat) {
         Row(
@@ -449,15 +469,47 @@ fun ConversationScreen(
                     Text(title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     if (verified) Ico(Ic.ShieldCheck, C.Green, 16.dp)
                 }
-                Muted(sub, 12.5.sp)
+                Text(sub, color = C.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (onCall != null) {
                 val gate = rememberMicGate { onCall(false) }
                 val vgate = rememberMicGate(camera = true) { onCall(true) }
-                Box(Modifier.size(44.dp).clip(CircleShape).clickable { gate() }.semantics { contentDescription = "Voice call" }, contentAlignment = Alignment.Center) { Ico(IcHandset) }
-                Box(Modifier.size(44.dp).clip(CircleShape).clickable { vgate() }.semantics { contentDescription = "Video call" }, contentAlignment = Alignment.Center) { Ico(IcVideo) }
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { gate() }.semantics { contentDescription = "Voice call" }, contentAlignment = Alignment.Center) { Ico(IcHandset) }
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { vgate() }.semantics { contentDescription = "Video call" }, contentAlignment = Alignment.Center) { Ico(IcVideo) }
             }
-            Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onInfo).semantics { contentDescription = "Details" }, contentAlignment = Alignment.Center) { Ico(Ic.Info) }
+            Box(
+                Modifier.size(40.dp).clip(CircleShape).background(if (finding) C.AccentSoft else Color.Transparent)
+                    .clickable { finding = !finding; if (!finding) query = "" }.semantics { contentDescription = "Search in this conversation" },
+                contentAlignment = Alignment.Center,
+            ) { Ico(Ic.Search, if (finding) C.AccentSoftText else C.Text) }
+            Box(Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onInfo).semantics { contentDescription = "Details" }, contentAlignment = Alignment.Center) { Ico(Ic.Info) }
+        }
+        if (finding) {
+            Row(
+                Modifier.fillMaxWidth().background(C.Surface).padding(start = 14.dp, end = 6.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Row(
+                    Modifier.weight(1f).heightIn(min = 40.dp).clip(RoundedCornerShape(20.dp)).background(C.Subtle).padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Ico(Ic.Search, C.Muted, 18.dp)
+                    BasicTextField(
+                        query, { query = it; cur = maxOf(0, m.messages.count { x -> !x.deleted && x.body.contains(it.trim(), ignoreCase = true) } - 1) },
+                        singleLine = true, cursorBrush = SolidColor(C.Accent),
+                        textStyle = TextStyle(fontFamily = Plex, fontSize = 15.sp, color = C.Text), modifier = Modifier.weight(1f),
+                        decorationBox = { inner -> if (query.isEmpty()) Text("Search in this conversation", color = C.Muted, fontSize = 15.sp); inner() },
+                    )
+                }
+                Muted(if (q.isEmpty()) "" else if (hits.isEmpty()) "No matches" else "${cur + 1} of ${hits.size}", 12.5.sp, Modifier.widthIn(min = 64.dp))
+                val step = { d: Int -> if (hits.isNotEmpty()) cur = (cur + d + hits.size) % hits.size }
+                Box(Modifier.size(36.dp).clip(CircleShape).clickable(enabled = hits.isNotEmpty()) { step(-1) }.semantics { contentDescription = "Older match" }, contentAlignment = Alignment.Center) {
+                    Ico(Ic.Chevron, C.Text, 20.dp, Modifier.rotate(-90f))
+                }
+                Box(Modifier.size(36.dp).clip(CircleShape).clickable(enabled = hits.isNotEmpty()) { step(1) }.semantics { contentDescription = "Newer match" }, contentAlignment = Alignment.Center) {
+                    Ico(Ic.Chevron, C.Text, 20.dp, Modifier.rotate(90f))
+                }
+            }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
         LazyColumn(
@@ -466,17 +518,32 @@ fun ConversationScreen(
         ) {
             item { Spacer(Modifier.height(2.dp)) }
             if (m.messages.isEmpty()) {
-                item { Muted("No messages yet. Say hello.", 14.sp, Modifier.padding(vertical = 24.dp).fillMaxWidth()) }
+                item { EmptyState(Ic.Chat, "No messages yet. Say hello.") }
             }
             m.messages.forEachIndexed { i, msg ->
                 if (i == 0 || !sameDay(m.messages[i - 1].ts, msg.ts)) {
                     item(key = "day-${msg.id}") {
                         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            Text(dayLabel(msg.ts), fontSize = 12.sp, color = C.Muted, modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(C.Surface).padding(horizontal = 10.dp, vertical = 3.dp))
+                            Text(dayLabel(msg.ts), fontSize = 12.sp, fontWeight = FontWeight.Medium, color = C.Muted, modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(C.Surface).padding(horizontal = 10.dp, vertical = 3.dp))
                         }
                     }
                 }
-                item(key = msg.id) { Bubble(msg, onCall) { m.run { saveAndOpen(ctx, msg.id) } } }
+                item(key = msg.id) {
+                    val hit = msg.id in hits
+                    Bubble(
+                        msg, onCall, mark = if (hit) q else null, current = hit && hits.getOrNull(cur) == msg.id,
+                        quoteName = msg.reply?.let { r -> if (r.out) "You" else r.from ?: title },
+                        menu = menuFor == msg.id,
+                        onLongPress = { menuFor = if (menuFor == msg.id) null else msg.id },
+                        onReply = { replyTo = msg; menuFor = null },
+                        onQuote = { id -> rowOf[id]?.let { row -> scope.launch { listState.animateScrollToItem(maxOf(0, row - 1)) } } },
+                        onReact = { e ->
+                            menuFor = null
+                            val mine = msg.reactions.firstOrNull { it.mine }?.emoji
+                            m.run { Bridge.call("react", args("id" to msg.id, "emoji" to if (mine == e) "" else e)); m.refresh() }
+                        },
+                    ) { m.run { saveAndOpen(ctx, msg.id) } }
+                }
             }
             item { Spacer(Modifier.height(2.dp)) }
         }
@@ -485,7 +552,26 @@ fun ConversationScreen(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Box(Modifier.fillMaxWidth().height(0.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            replyTo?.let { r ->
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.Subtle).padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.width(3.dp).height(34.dp).background(C.Accent))
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Text(if (r.out) "Replying to yourself" else "Replying to ${who(r)}", color = C.AccentSoftText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text(r.body.ifEmpty { r.fileName ?: "" }, color = C.Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Box(Modifier.size(40.dp).clip(CircleShape).clickable { replyTo = null }.semantics { contentDescription = "Cancel the reply" }, contentAlignment = Alignment.Center) {
+                        Ico(Ic.Plus, C.Muted, 20.dp, Modifier.rotate(45f))
+                    }
+                }
+            }
+            // One pill holds the attach button, the text and the send button, as on the desktop.
+            Row(
+                Modifier.clip(RoundedCornerShape(26.dp)).background(C.Subtle).padding(4.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 if (attach != null) {
                     Box(
                         Modifier.size(44.dp).clip(CircleShape).clickable { pick.launch("*/*") }.semantics { contentDescription = "Attach a file" },
@@ -493,8 +579,7 @@ fun ConversationScreen(
                     ) { Ico(Ic.Clip, C.Muted) }
                 }
                 Box(
-                    Modifier.weight(1f).heightIn(min = 44.dp).clip(RoundedCornerShape(22.dp)).background(C.Bg)
-                        .border(1.dp, C.BorderStrong, RoundedCornerShape(22.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
+                    Modifier.weight(1f).heightIn(min = 44.dp).padding(start = if (attach != null) 0.dp else 12.dp, top = 10.dp, bottom = 10.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     BasicTextField(
@@ -511,19 +596,37 @@ fun ConversationScreen(
                     Modifier.size(44.dp).clip(CircleShape).background(if (text.isBlank()) C.Accent.copy(alpha = 0.4f) else C.Accent)
                         .clickable(enabled = text.isNotBlank()) {
                             val t = text
+                            val r = replyTo?.id
                             text = ""
-                            m.run { onSend(t); m.refresh() }
+                            replyTo = null
+                            m.run { onSend(t, r); m.refresh() }
                         }.semantics { contentDescription = "Send" },
                     contentAlignment = Alignment.Center,
-                ) { Ico(Ic.Send, Color.White) }
+                ) { Ico(Ic.Send, C.OnAccent, 20.dp) }
             }
-            Muted(caption, 11.5.sp, Modifier.padding(start = 52.dp))
+            Muted(caption, 11.5.sp, Modifier.fillMaxWidth().padding(horizontal = 12.dp))
         }
     }
 }
 
+/** The text with each match of [q] on a yellow highlight, for search in a conversation. */
+private fun marked(text: String, q: String?): androidx.compose.ui.text.AnnotatedString = androidx.compose.ui.text.buildAnnotatedString {
+    append(text)
+    if (q.isNullOrEmpty()) return@buildAnnotatedString
+    var at = text.indexOf(q, ignoreCase = true)
+    while (at >= 0) {
+        addStyle(androidx.compose.ui.text.SpanStyle(background = Color(0xFFFFE58A), color = Color(0xFF13202A)), at, at + q.length)
+        at = text.indexOf(q, at + q.length, ignoreCase = true)
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Unit) {
+private fun Bubble(
+    msg: Message, onCall: ((Boolean) -> Unit)?, mark: String? = null, current: Boolean = false,
+    quoteName: String? = null, menu: Boolean = false, onLongPress: () -> Unit = {}, onReply: () -> Unit = {},
+    onQuote: (String) -> Unit = {}, onReact: (String) -> Unit = {}, onFile: () -> Unit,
+) {
     // A line the call itself left in the conversation offers to call again, the same kind of call.
     val callVideo = msg.body.contains("video call", ignoreCase = true)
     val callBack = if (msg.id.startsWith("call-") && !msg.deleted && onCall != null) rememberMicGate(camera = callVideo) { onCall(callVideo) } else null
@@ -535,11 +638,22 @@ private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Uni
             Text(msg.from + if (msg.fromVerified) "" else " · not verified", fontSize = 12.sp, color = C.Muted, modifier = Modifier.padding(start = 6.dp))
         }
         val shape = if (msg.out) RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp) else RoundedCornerShape(18.dp, 18.dp, 18.dp, 6.dp)
+        msg.reply?.let { r ->
+            Column(
+                Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(10.dp)).background(C.Subtle)
+                    .clickable { onQuote(r.id) }.padding(horizontal = 10.dp, vertical = 5.dp)
+                    .semantics { contentDescription = "Replying to ${quoteName ?: ""}: ${if (r.deleted) "Message deleted" else r.text}" },
+            ) {
+                Text(quoteName ?: "", color = C.AccentSoftText, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
+                Text(if (r.deleted) "Message deleted" else r.text, color = C.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
         Box(
             Modifier.widthIn(max = 300.dp).clip(shape)
-                .background(if (msg.out) C.Accent else C.Surface)
-                .then(if (msg.out) Modifier else Modifier.border(1.dp, C.Border, shape))
-                .padding(horizontal = 13.dp, vertical = 9.dp),
+                .then(if (msg.deleted || msg.id.startsWith("call-")) Modifier else Modifier.combinedClickable(onClick = { if (menu) onLongPress() }, onLongClick = onLongPress))
+                .background(if (msg.out) C.BubbleOut else C.Surface)
+                .then(if (current) Modifier.border(2.dp, C.Accent, shape) else Modifier)
+                .padding(horizontal = 14.dp, vertical = 9.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (msg.fileName != null && !msg.deleted) {
@@ -547,31 +661,68 @@ private fun Bubble(msg: Message, onCall: ((Boolean) -> Unit)?, onFile: () -> Uni
                         Modifier.clickable(onClick = onFile).semantics { contentDescription = "File ${msg.fileName}" },
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Ico(Ic.File, if (msg.out) Color.White else C.AvatarText, 26.dp)
+                        Ico(Ic.File, if (msg.out) C.OnBubbleOut else C.AvatarText, 26.dp)
                         Column {
-                            Text(msg.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (msg.out) Color.White else C.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(sizeText(msg.fileSize) + " · tap to open", fontSize = 12.sp, color = if (msg.out) Color.White.copy(alpha = 0.8f) else C.Muted)
+                            Text(msg.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (msg.out) C.OnBubbleOut else C.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(sizeText(msg.fileSize) + " · tap to open", fontSize = 12.sp, color = if (msg.out) C.OnBubbleOut.copy(alpha = 0.8f) else C.Muted)
                         }
                     }
                 }
                 if (msg.deleted || msg.body.isNotEmpty() || msg.fileName == null) {
                     Text(
-                        if (msg.deleted) "Message deleted" else msg.body, fontSize = 15.sp,
-                        color = if (msg.out) Color.White else C.Text,
+                        if (msg.deleted) androidx.compose.ui.text.AnnotatedString("Message deleted") else marked(msg.body, mark), fontSize = 15.sp,
+                        color = if (msg.out) C.OnBubbleOut else C.Text,
                         fontStyle = if (msg.deleted) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
                     )
                 }
                 if (callBack != null) {
                     Text(
-                        "Call back", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (msg.out) Color.White else C.Accent,
+                        "Call back", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (msg.out) C.OnBubbleOut else C.Accent,
                         modifier = Modifier.clickable { callBack() }.padding(vertical = 2.dp).semantics { contentDescription = "Call back" },
                     )
+                }
+            }
+        }
+        if (menu) {
+            // Long press: quick reactions and Reply, in one row.
+            Row(
+                Modifier.clip(RoundedCornerShape(22.dp)).background(C.Surface).border(1.dp, C.Border, RoundedCornerShape(22.dp)).padding(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                for (e in QUICK_REACTIONS) {
+                    Box(Modifier.size(40.dp).clip(CircleShape).clickable { onReact(e) }.semantics { contentDescription = "React $e" }, contentAlignment = Alignment.Center) {
+                        Text(e, fontSize = 20.sp)
+                    }
+                }
+                Text(
+                    "Reply", color = C.Accent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onReply).padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
+        }
+        if (msg.reactions.isNotEmpty() && !msg.deleted) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                for (r in msg.reactions) {
+                    Row(
+                        Modifier.heightIn(min = 30.dp).clip(RoundedCornerShape(15.dp))
+                            .background(if (r.mine) C.AccentSoft else C.Surface)
+                            .border(1.dp, if (r.mine) C.Accent else C.Border, RoundedCornerShape(15.dp))
+                            .clickable { onReact(r.emoji) }.padding(horizontal = 9.dp)
+                            .semantics { contentDescription = "${r.emoji} ${r.count}${if (r.mine) ", yours" else ""}" },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(r.emoji, fontSize = 15.sp)
+                        if (r.count > 1) Text("${r.count}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.AvatarText)
+                    }
                 }
             }
         }
         Muted(clock(msg.ts) + if (msg.edited) " · edited" else "", 11.5.sp)
     }
 }
+
+/** The six quick reactions, the same as the desktop's. */
+val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
 
 
 // ---- 4 · verify a contact -----------------------------------------------------------------------------
@@ -581,6 +732,9 @@ fun VerifyScreen(m: AppModel, name: String) {
     val o = m.overview ?: return
     val c = o.contacts.firstOrNull { it.name == name } ?: run { m.open(null); return }
     var typed by remember { mutableStateOf("") }
+    var typing by remember { mutableStateOf(false) }
+    var mismatch by remember { mutableStateOf(false) }
+    val first = name.split(" ").first()
     Page {
         TopBar("Verify $name", { m.open(Screen.Chat(name)) })
         Scrolling {
@@ -601,10 +755,33 @@ fun VerifyScreen(m: AppModel, name: String) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Ico(Ic.ShieldCheck, C.Green); Text("You verified $name.", fontWeight = FontWeight.Medium)
                 }
+            } else if (mismatch) {
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(C.RedBg).padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text("Do not trust this conversation yet.", color = C.RedText, fontWeight = FontWeight.SemiBold)
+                    Text("Someone may be in the middle. Ask $first to show you their code in person.", color = C.RedText, fontSize = 14.sp)
+                }
+                OutlineButton("Compare again", Modifier.fillMaxWidth()) { mismatch = false }
             } else {
-                Field("Type the fingerprint $name reads to you", typed, { typed = it }, placeholder = "xxxxx-xxxxx-…")
-                PrimaryButton("Mark $name as verified", enabled = typed.isNotBlank() && !m.busy) {
-                    m.run { Bridge.call("mark_verified", args("name" to name, "fingerprint" to typed.trim())); m.notice = "Verified."; m.refresh() }
+                // As on the desktop: compare out loud, then say whether they match. Typing the code stays as an option.
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlineButton("They don't match", Modifier.weight(1f).heightIn(min = 52.dp)) { mismatch = true }
+                    PrimaryButton("They match", enabled = !m.busy, modifier = Modifier.weight(1f)) {
+                        m.run { Bridge.call("mark_verified", args("name" to name, "fingerprint" to c.fingerprint)); m.notice = "Verified."; m.refresh() }
+                    }
+                }
+                if (!typing) {
+                    Text(
+                        "Type the code instead", color = C.Accent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
+                        modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { typing = true }.padding(vertical = 8.dp),
+                    )
+                } else {
+                    Field("Type the fingerprint $name reads to you", typed, { typed = it }, placeholder = "xxxxx-xxxxx-…")
+                    OutlineButton("Mark $name as verified", Modifier.fillMaxWidth(), enabled = typed.isNotBlank() && !m.busy) {
+                        m.run { Bridge.call("mark_verified", args("name" to name, "fingerprint" to typed.trim())); m.notice = "Verified."; m.refresh() }
+                    }
                 }
             }
         }
@@ -770,7 +947,7 @@ fun RequestsScreen(m: AppModel) {
                             Box(
                                 Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent).clickable { naming = true }.padding(horizontal = 16.dp),
                                 contentAlignment = Alignment.Center,
-                            ) { Text("Accept", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+                            ) { Text("Accept", color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
                         }
                     }
                 }
@@ -795,7 +972,7 @@ fun DevicesTab(m: AppModel) {
                     Column(Modifier.weight(1f)) {
                         Text(if (d.self) "This phone" else "Device ${d.id.take(6)}", fontWeight = FontWeight.SemiBold)
                         Muted(
-                            if (d.self) "Added to your identity · you are here"
+                            if (d.self) "Added to your identity"
                             else if (d.approver) "Main device" else "Linked to your identity",
                             13.sp,
                         )
@@ -831,7 +1008,7 @@ fun AgentsTab(m: AppModel) {
         if (a == null) Muted("Loading…", 14.sp)
         else {
             if (a.requests.isEmpty() && a.grants.isEmpty()) {
-                Muted("No agents yet. Agents are allowed from the computer app for now; their requests appear here for you to approve.", 14.sp)
+                EmptyState(Ic.Sparkle, "No agents yet. Agents are allowed from the computer app for now; their requests appear here for you to approve.")
             }
             for (r in a.requests) {
                 CardBox {
@@ -858,7 +1035,7 @@ fun AgentsTab(m: AppModel) {
                                 Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent)
                                     .clickable { m.run { Bridge.call("decide", args("id" to r.id, "approve" to true)); m.refresh() } }.padding(horizontal = 16.dp),
                                 contentAlignment = Alignment.Center,
-                            ) { Text("Approve", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+                            ) { Text("Approve", color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
                         }
                     }
                 }
@@ -895,9 +1072,19 @@ fun SettingsTab(m: AppModel) {
         if (ok) { Prefs.setNotifyInBackground(ctx, true); ListenerService.start(ctx); alerts = true }
         else m.notice = "Allow notifications for Spike Connect in the phone's settings to get alerts."
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    // Links to each part of a long screen: each section records where it starts, a chip scrolls there.
+    val scroll = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    val at = remember { mutableStateMapOf<String, Int>() }
+    fun Modifier.section(key: String) = onGloballyPositioned { at[key] = it.positionInParent().y.toInt() }
+    Column(Modifier.fillMaxSize().verticalScroll(scroll).statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         H1("Network and privacy", 28.sp)
-        Text("Home relay", fontWeight = FontWeight.SemiBold)
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for ((key, label) in listOf("relay" to "Relay", "backup" to "Backup", "direct" to "Direct", "sees" to "What relays see", "phone" to "This phone", "alerts" to "Unlocking and alerts")) {
+                Chip(label) { scope.launch { scroll.animateScrollTo((at[key] ?: 0) - 8) } }
+            }
+        }
+        Text("Home relay", fontWeight = FontWeight.SemiBold, modifier = Modifier.section("relay"))
         CardBox {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Ico(Ic.Server, C.AvatarText, 26.dp)
@@ -942,13 +1129,13 @@ fun SettingsTab(m: AppModel) {
                             }
                         }.padding(horizontal = 16.dp),
                         contentAlignment = Alignment.Center,
-                    ) { Text("Save", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+                    ) { Text("Save", color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
                 }
             }
         }
-        BackupCard(m)
-        DirectCard(m)
-        Text("What any relay can see", fontWeight = FontWeight.SemiBold)
+        Box(Modifier.section("backup")) { BackupCard(m) }
+        Box(Modifier.section("direct")) { DirectCard(m) }
+        Text("What any relay can see", fontWeight = FontWeight.SemiBold, modifier = Modifier.section("sees"))
         CardBox {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -961,7 +1148,7 @@ fun SettingsTab(m: AppModel) {
                 }
             }
         }
-        Text("This phone", fontWeight = FontWeight.SemiBold)
+        Text("This phone", fontWeight = FontWeight.SemiBold, modifier = Modifier.section("phone"))
         CardBox {
             Text("Your card", fontWeight = FontWeight.Medium)
             Muted("Fingerprint ${o.me.fingerprint}", 12.5.sp)
@@ -979,7 +1166,7 @@ fun SettingsTab(m: AppModel) {
                 Switch(shots, { shots = it; Prefs.setAllowScreenshots(ctx, it); (ctx as? MainActivity)?.refreshScreenPrivacy() }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
             }
         }
-        Text("Unlocking and alerts", fontWeight = FontWeight.SemiBold)
+        Text("Unlocking and alerts", fontWeight = FontWeight.SemiBold, modifier = Modifier.section("alerts"))
         CardBox {
             if (bioAvailable) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1198,7 +1385,7 @@ fun NewGroupScreen(m: AppModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(c.name in picked, { on -> if (on) picked.add(c.name) else picked.remove(c.name) }, colors = CheckboxDefaults.colors(checkedColor = C.Accent))
                         Text(c.name, Modifier.weight(1f))
-                        if (!c.verified) Tag("Not verified", TagKind.Red)
+                        if (!c.verified) Tag("Not verified", TagKind.Amber)
                     }
                 }
             }

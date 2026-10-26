@@ -10,6 +10,12 @@ export const ADB = `${SDK}/platform-tools/adb.exe`;
 export const PKG = "network.spike.connect";
 export const APK = "android/app/build/outputs/apk/debug/app-debug.apk";
 
+// uiautomator writes XML entities, and characters outside the basic plane (most emoji) as numeric ones.
+const xmlText = (s) => s
+  .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+  .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+  .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+
 export function createPhone(D) {
   const adb = (...a) => execFileSync(ADB, a, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   const sh = (cmd) => adb("shell", cmd);
@@ -30,8 +36,8 @@ export function createPhone(D) {
       if (!b) continue;
       const [x1, y1, x2, y2] = b.slice(1).map(Number);
       out.push({
-        text: (a.text || "").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#10;/g, "\n"),
-        desc: a["content-desc"] || "", cls: a.class || "", cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, y1,
+        text: xmlText(a.text || ""),
+        desc: xmlText(a["content-desc"] || ""), cls: a.class || "", cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, y1,
       });
     }
     return out;
@@ -58,7 +64,12 @@ export function createPhone(D) {
     await sleep(500);
   }
   async function tapField(index) {
-    const f = nodes().filter((n) => n.cls.endsWith("EditText")).sort((a, b) => a.y1 - b.y1)[index];
+    // A slow emulator can still be bringing the screen back (after Back closed the keyboard): wait a little.
+    let f;
+    for (let i = 0; i < 20 && !f; i++) {
+      f = nodes().filter((n) => n.cls.endsWith("EditText")).sort((a, b) => a.y1 - b.y1)[index];
+      if (!f) await sleep(500);
+    }
     if (!f) throw new Error(`phone: no text field #${index}`);
     tap(f.cx, f.cy);
     await sleep(400);

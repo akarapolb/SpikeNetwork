@@ -298,6 +298,8 @@ async fn a_delete_that_arrives_first_leaves_a_tombstone_so_the_message_never_app
         changed_at: 0,
         author: None,
         shared_by: None,
+        reply_to: None,
+        reactions: Default::default(),
     };
     assert!(!bob[0].0.messages().unwrap().insert(&late).unwrap());
     assert!(get(&bob[0], &id).deleted);

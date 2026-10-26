@@ -361,6 +361,42 @@ pub async fn delete(home: &Home, relay: impl Into<Target>, msg_id: &str) -> Resu
     deliver(home, relay.into(), &contact, Envelope::delete(&m.id)?).await
 }
 
+/// Send a message to a contact that replies to an earlier message of your conversation with them.
+pub async fn send_reply(
+    home: &Home,
+    relay: impl Into<Target>,
+    name: &str,
+    reply_to: &str,
+    text: &str,
+) -> Result<SendReport> {
+    deliver(home, relay.into(), name, Envelope::reply(reply_to, text)?).await
+}
+
+/// React to a message (yours or theirs) with one emoji, or take your reaction back (`emoji`
+/// empty). In a group, everyone in it sees the reaction.
+pub async fn react(home: &Home, relay: impl Into<Target>, msg_id: &str, emoji: &str) -> Result<()> {
+    let m = home.messages()?.find(msg_id)?;
+    if m.deleted {
+        bail!("that message was deleted");
+    }
+    let base: Target = relay.into();
+    if m.author.is_some() {
+        // A group message: `peer` is the group id; a large group has its own way of sending.
+        if crate::large::find(home, &m.peer).is_ok() {
+            return crate::large::react(home, base, &m.peer, &m.id, emoji).await;
+        }
+        crate::groups::react(home, base, &m.peer, &m.id, emoji).await?;
+        return Ok(());
+    }
+    let contacts = home.load_contacts()?;
+    let c = contacts
+        .iter()
+        .find(|c| c.conversation_key().ok().as_deref() == Some(m.peer.as_str()))
+        .ok_or_else(|| anyhow!("no contact for this conversation any more"))?;
+    deliver(home, base, &c.name.clone(), Envelope::react(&m.id, emoji)?).await?;
+    Ok(())
+}
+
 /// The message with this id (or unique prefix) if you wrote it, and the contact's name.
 fn own_message(home: &Home, msg_id: &str) -> Result<(StoredMessage, String)> {
     let m = home.messages()?.find(msg_id)?;
@@ -535,10 +571,16 @@ async fn deliver_to(
                 changed_at: 0,
                 author: None,
                 shared_by: None,
+                reply_to: env.reply_to.clone(),
+                reactions: Default::default(),
             })?;
         }
         Kind::Edit | Kind::Delete => {
             crate::apply_change(home, &env, true, &peer.owner_hex(), &my_id)?;
+        }
+        Kind::React => {
+            let mine = home.load_device_list()?.owner;
+            crate::apply_reaction(home, &env, &mine, &peer.owner_hex(), &my_id)?;
         }
         // Sync messages change nothing in the sender's own history; group control goes through `groups`.
         Kind::Sync

@@ -1587,3 +1587,72 @@ async fn the_admin_renames_adds_an_admin_and_a_member_leaves_from_the_app() {
     // The only admin cannot leave; with a second one she can.
     alice.s.group_leave(&gid).await.unwrap();
 }
+
+#[tokio::test]
+async fn replies_quote_and_reactions_count_for_both_people() {
+    let url = relay().await;
+    let (alice, bob) = (dev("alice", &url), dev("bob", &url));
+    alice.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    bob.s.add_contact("Alice", &card(&alice)).unwrap();
+    alice.s.send("Bob", "lunch at noon?").await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    let id = bob.s.conversation("Alice", 5).unwrap()[0].id.clone();
+
+    assert!(
+        bob.s
+            .send_reply("Alice", "yes", Some(&"ab".repeat(16)))
+            .await
+            .is_err(),
+        "a reply must point at a message of this conversation"
+    );
+    bob.s.send_reply("Alice", "yes!", Some(&id)).await.unwrap();
+    let r = alice.s.sync(IDLE).await.unwrap();
+    assert_eq!(r.received, 1);
+    let msgs = alice.s.conversation("Bob", 5).unwrap();
+    let reply = msgs.iter().find(|m| m.body == "yes!").unwrap();
+    let q = reply.reply.as_ref().expect("the reply quotes");
+    assert_eq!(
+        (q.id.as_str(), q.out, q.text.as_str()),
+        (id.as_str(), true, "lunch at noon?")
+    );
+
+    bob.s.react(&id, "👍").await.unwrap();
+    alice.s.react(&id, "👍").await.unwrap();
+    assert!(
+        alice.s.react(&id, "two words").await.is_err(),
+        "one emoji only"
+    );
+    let r = alice.s.sync(IDLE).await.unwrap();
+    assert_eq!(r.changed, 1, "the screen is told a message changed");
+    bob.s.sync(IDLE).await.unwrap();
+    for (s, name) in [(&alice.s, "Bob"), (&bob.s, "Alice")] {
+        let m = s
+            .conversation(name, 5)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == id)
+            .unwrap();
+        assert_eq!(m.reactions.len(), 1);
+        assert_eq!(
+            (
+                m.reactions[0].emoji.as_str(),
+                m.reactions[0].count,
+                m.reactions[0].mine
+            ),
+            ("👍", 2, true)
+        );
+    }
+    // Bob takes his back: only Alice's is left, and it is not Bob's.
+    bob.s.react(&id, "").await.unwrap();
+    alice.s.sync(IDLE).await.unwrap();
+    let m = bob
+        .s
+        .conversation("Alice", 5)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == id)
+        .unwrap();
+    assert_eq!((m.reactions[0].count, m.reactions[0].mine), (1, false));
+}

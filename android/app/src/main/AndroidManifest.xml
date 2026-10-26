@@ -30,7 +30,7 @@
         android:usesCleartextTraffic="false"
         android:label="Spike Connect"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/Theme.Spike">
         <activity
             android:name=".MainActivity"
             android:exported="true"

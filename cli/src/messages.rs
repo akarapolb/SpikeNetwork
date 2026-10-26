@@ -59,6 +59,22 @@ pub struct StoredMessage {
     /// (owner key). The author is then only as reliable as they are: nothing can prove it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_by: Option<String>,
+    /// The earlier message this one replies to (its envelope id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    /// Reactions, one per person (owner key, hex). A taken-back reaction stays with an empty
+    /// emoji, so an older reaction arriving late cannot bring it back (`spike_core::merge::reaction_wins`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub reactions: std::collections::BTreeMap<String, Reaction>,
+}
+
+/// One person's reaction to a message.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Reaction {
+    /// The emoji, or empty when it was taken back.
+    pub emoji: String,
+    pub lamport: u64,
+    pub device: String,
 }
 
 fn now_ms() -> u64 {
@@ -381,6 +397,8 @@ mod tests {
             changed_at: 0,
             author: None,
             shared_by: None,
+            reply_to: None,
+            reactions: Default::default(),
             id: id.into(),
             peer: peer.into(),
             direction: d,

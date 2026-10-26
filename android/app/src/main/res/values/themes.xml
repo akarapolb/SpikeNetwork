@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The window behind the app before its first frame: the same background as the screens (Theme.kt C.Bg), so
+     opening the app shows no flash. values-night holds the dark one. -->
+<resources>
+    <style name="Theme.Spike" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/spike_bg</item>
+    </style>
+    <color name="spike_bg">#F4F6F8</color>
+</resources>

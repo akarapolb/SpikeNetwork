@@ -46,11 +46,11 @@ const val AUTO_LOCK_MINUTES = 2
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Draw edge to edge with dark status and navigation icons: the screens are light.
+        // Draw edge to edge; the status and navigation icons follow the phone's light or dark setting, as the screens do.
         val clear = android.graphics.Color.TRANSPARENT
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(clear, clear),
-            navigationBarStyle = SystemBarStyle.light(clear, clear),
+            statusBarStyle = SystemBarStyle.auto(clear, clear),
+            navigationBarStyle = SystemBarStyle.auto(clear, clear),
         )
         applyScreenPrivacy()
         showOverLockIfCall(intent)
@@ -177,9 +177,9 @@ private fun Root() {
                     .background(C.Text).padding(start = 16.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(text, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f, fill = false).padding(vertical = 12.dp))
+                Text(text, color = C.Bg, fontSize = 14.sp, modifier = Modifier.weight(1f, fill = false).padding(vertical = 12.dp))
                 Box(Modifier.clickable { m.notice = null }.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                    Text("OK", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("OK", color = C.Bg, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                 }
             }
         }
@@ -208,7 +208,7 @@ private fun Ready(m: AppModel) {
             ConversationScreen(
                 m, s.name, "End-to-end encrypted · $n ${if (n == 1) "device" else "devices"}", c?.verified == true, false,
                 if (n == 1) "Encrypted for ${s.name}'s device and your own other devices" else "Encrypted separately for each of ${s.name}'s $n devices and your own other devices",
-                { t -> Bridge.call("send", args("name" to s.name, "text" to t)) },
+                { t, replyTo -> Bridge.call("send", args("name" to s.name, "text" to t, "reply_to" to replyTo)) },
                 { m.open(Screen.Verify(s.name)) },
                 { video -> CallManager.call(s.name, c?.verified == true, video) },
                 { fileName, f -> Bridge.call("send_file", args("name" to s.name, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
@@ -222,7 +222,7 @@ private fun Ready(m: AppModel) {
                 "$people ${if (people == 1) "person" else "people"} · ${if (g?.large == true) "large group (MLS)" else "end-to-end encrypted"}",
                 false, true,
                 if (g?.large == true) "One encrypted copy for everyone in the group" else "Encrypted separately for every device of every member",
-                { t -> Bridge.call("group_send", args("id" to s.id, "text" to t)) },
+                { t, replyTo -> Bridge.call("group_send", args("id" to s.id, "text" to t, "reply_to" to replyTo)) },
                 { m.open(Screen.Members(s.id)) },
                 null, // group calls come last (ADR 0028)
                 // Files in large groups are not built yet (the engine refuses them).

@@ -182,7 +182,12 @@ impl Engine {
         match cmd {
             "overview" => val(x.overview()?),
             "conversation" => val(x.conversation(&s(a, "name")?, 200)?),
-            "send" => val(rt.block_on(x.send(&s(a, "name")?, &s(a, "text")?))?),
+            "send" => val(rt.block_on(x.send_reply(
+                &s(a, "name")?,
+                &s(a, "text")?,
+                a.get("reply_to").and_then(Value::as_str),
+            ))?),
+            "react" => val(rt.block_on(x.react(&s(a, "id")?, &s(a, "emoji")?))?),
             "sync" => val(rt.block_on(x.sync(Duration::from_millis(700)))?),
             "mark_read" => val(rt.block_on(x.mark_read(&s(a, "name")?))?),
             "add_contact" => val(x.add_contact(&s(a, "name")?, &s(a, "card")?)?),
@@ -209,7 +214,11 @@ impl Engine {
             "group_create_large" => {
                 val(rt.block_on(x.group_create_large(&s(a, "name")?, &list(a, "members")?))?)
             }
-            "group_send" => val(rt.block_on(x.group_send(&s(a, "id")?, &s(a, "text")?))?),
+            "group_send" => val(rt.block_on(x.group_send_reply(
+                &s(a, "id")?,
+                &s(a, "text")?,
+                a.get("reply_to").and_then(Value::as_str),
+            ))?),
             "group_add" => val(rt.block_on(x.group_add(&s(a, "id")?, &list(a, "names")?))?),
             "group_remove" => val(rt.block_on(x.group_remove(&s(a, "id")?, &s(a, "owner")?))?),
             "group_make_admin" => {

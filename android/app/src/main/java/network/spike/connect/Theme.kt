@@ -22,6 +22,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -44,26 +50,58 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** The prototype's palette (docs/mobile-prototype): colour means status only. */
+/**
+ * The palette, shared with the desktop app (desktop/ui/app.css): refined teal, colour means status,
+ * and people's avatars get a soft tint so they are easier to tell apart. Light and dark follow the phone.
+ */
 object C {
-    val Bg = Color(0xFFF5F7F9)
-    val BgChat = Color(0xFFEEF2F5)
-    val Surface = Color(0xFFFFFFFF)
-    val Border = Color(0xFFD9E0E6)
-    val BorderStrong = Color(0xFFC5CFD8)
-    val Text = Color(0xFF14202B)
-    val Muted = Color(0xFF52606D)
-    val AvatarBg = Color(0xFFE6EBF0)
-    val AvatarText = Color(0xFF3A4753)
-    val Accent = Color(0xFF0B6B73)
-    val Green = Color(0xFF1F7A45)
-    val AmberText = Color(0xFF7A4A00)
-    val AmberDeep = Color(0xFF4A3200)
-    val AmberBg = Color(0xFFFBEED0)
-    val AmberBorder = Color(0xFFE4C98F)
-    val RedText = Color(0xFF6E1F1C)
-    val RedBg = Color(0xFFF8E1E1)
-    val Danger = Color(0xFF8E2B27)
+    /** Set by [SpikeTheme]; a composable that reads a colour recomposes when this changes. */
+    var dark by mutableStateOf(false)
+    private fun p(light: Long, dark: Long) = Color(if (this.dark) dark else light)
+
+    val Bg get() = p(0xFFF4F6F8, 0xFF0E1417)
+    val BgChat get() = p(0xFFEEF2F5, 0xFF111A1E)
+    val Surface get() = p(0xFFFFFFFF, 0xFF162026)
+    /** Filled inputs, chips and the composer. */
+    val Subtle get() = p(0xFFEDF1F4, 0xFF1D2930)
+    val Border get() = p(0xFFE1E6EB, 0xFF26343C)
+    val BorderStrong get() = p(0xFFCBD4DC, 0xFF34454F)
+    val Text get() = p(0xFF13202A, 0xFFE6EDF2)
+    val Muted get() = p(0xFF5B6875, 0xFF95A4AF)
+    val AvatarBg get() = p(0xFFE8EDF1, 0xFF22303A)
+    val AvatarText get() = p(0xFF3A4753, 0xFFC3CED7)
+    val Accent get() = p(0xFF0E7C86, 0xFF5CC2C9)
+    /** Text and icons on a filled accent background. */
+    val OnAccent get() = p(0xFFFFFFFF, 0xFF062A2D)
+    val AccentSoft get() = p(0xFFE0F1F2, 0xFF15353A)
+    val AccentSoftText get() = p(0xFF0A5A61, 0xFFA3E0E4)
+    val BubbleOut get() = p(0xFF0E7C86, 0xFF1F7F87)
+    val OnBubbleOut = Color.White
+    val Green get() = p(0xFF1F7A45, 0xFF6FCF97)
+    val AmberText get() = p(0xFF7A4A00, 0xFFF5DDB0)
+    val AmberDeep get() = p(0xFF4A3200, 0xFFF5DDB0)
+    val AmberBg get() = p(0xFFFBEED0, 0xFF3A2C10)
+    val AmberBorder get() = p(0xFFE4C98F, 0xFF9A7330)
+    val RedText get() = p(0xFF6E1F1C, 0xFFF6C4C1)
+    val RedBg get() = p(0xFFF8E1E1, 0xFF3A1B1A)
+    val Danger get() = p(0xFFA0302B, 0xFFF08A84)
+
+    private val tintsLight = listOf(
+        0xFFDCEBF7 to 0xFF24527A, 0xFFE5E0F5 to 0xFF4B3C85, 0xFFF5E1EA to 0xFF7A2D52,
+        0xFFF6E7D6 to 0xFF7A4A1C, 0xFFDDF0E4 to 0xFF275C3A, 0xFFDDEFF0 to 0xFF1D5C61,
+    )
+    private val tintsDark = listOf(
+        0xFF1E3346 to 0xFFB5D3EE, 0xFF2B2747 to 0xFFCFC5F2, 0xFF3A2330 to 0xFFF0C2D6,
+        0xFF3A2C1D to 0xFFF2D2AE, 0xFF1C3326 to 0xFFBFE6CC, 0xFF183538 to 0xFFA9DEE2,
+    )
+
+    /** A soft background and text colour picked from a name: the same pick as the desktop app's tint(). */
+    fun tint(name: String, dark: Boolean = this.dark): Pair<Color, Color> {
+        var n = 0L
+        name.codePoints().forEach { n = (n * 31 + it) and 0xFFFFFFFFL }
+        val t = (if (dark) tintsDark else tintsLight)[(n % 6).toInt()]
+        return Color(t.first) to Color(t.second)
+    }
 }
 
 val Plex = FontFamily(
@@ -79,10 +117,11 @@ val Grotesk = FontFamily(
 val Mono = FontFamily(Font(R.font.plex_mono_regular, FontWeight.Normal))
 
 @Composable
-fun SpikeTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = lightColorScheme(primary = C.Accent, background = C.Bg, surface = C.Surface, onSurface = C.Text),
-    ) {
+fun SpikeTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
+    C.dark = dark
+    val scheme = if (dark) darkColorScheme(primary = C.Accent, onPrimary = C.OnAccent, background = C.Bg, surface = C.Surface, onSurface = C.Text, onBackground = C.Text)
+    else lightColorScheme(primary = C.Accent, onPrimary = C.OnAccent, background = C.Bg, surface = C.Surface, onSurface = C.Text, onBackground = C.Text)
+    MaterialTheme(colorScheme = scheme) {
         CompositionLocalProvider(
             LocalTextStyle provides TextStyle(fontFamily = Plex, fontSize = 15.sp, color = C.Text),
         ) { content() }
@@ -105,16 +144,31 @@ fun Muted(text: String, size: TextUnit = 13.sp, modifier: Modifier = Modifier) {
     Text(text, color = C.Muted, fontSize = size, modifier = modifier)
 }
 
-/** Initials in a neutral circle (a person) or rounded square (a group, an agent). */
+/** Initials in a softly tinted circle (a person) or a neutral rounded square (a group, an agent). */
 @Composable
 fun Avatar(text: String, size: Dp = 46.dp, square: Boolean = false) {
     val initials = text.split(' ', '-', '_').filter { it.isNotEmpty() }.take(2)
         .joinToString("") { it.take(1).uppercase() }.ifEmpty { "?" }
+    val (bg, fg) = if (square) C.AvatarBg to C.AvatarText else C.tint(text)
     Box(
-        Modifier.size(size).clip(if (square) RoundedCornerShape(14.dp) else CircleShape).background(C.AvatarBg),
+        Modifier.size(size).clip(if (square) RoundedCornerShape(size * 0.3f) else CircleShape).background(bg),
         contentAlignment = Alignment.Center,
     ) {
-        Text(initials, color = C.AvatarText, fontWeight = FontWeight.SemiBold, fontSize = (size.value * 0.33f).sp)
+        Text(initials, color = fg, fontWeight = FontWeight.SemiBold, fontSize = (size.value * 0.36f).sp)
+    }
+}
+
+/** An empty state: a quiet icon above the same sentence as before. */
+@Composable
+fun EmptyState(icon: ImageVector, text: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Box(Modifier.size(64.dp).clip(RoundedCornerShape(22.dp)).background(C.AccentSoft), contentAlignment = Alignment.Center) {
+            Ico(icon, C.AccentSoftText, 28.dp)
+        }
+        Text(text, color = C.Muted, fontSize = 14.5.sp, textAlign = TextAlign.Center)
     }
 }
 
@@ -128,8 +182,8 @@ fun Tag(text: String, kind: TagKind = TagKind.Neutral) {
         TagKind.Neutral -> C.AvatarText to C.AvatarBg
     }
     Text(
-        text, color = fg, fontSize = 11.sp,
-        modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(bg).padding(horizontal = 6.dp, vertical = 1.dp),
+        text, color = fg, fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(bg).padding(horizontal = 8.dp, vertical = 1.dp),
     )
 }
 
@@ -137,8 +191,7 @@ fun Tag(text: String, kind: TagKind = TagKind.Neutral) {
 @Composable
 fun Chip(text: String, dot: Color? = null, icon: ImageVector? = null, onClick: () -> Unit = {}) {
     Row(
-        Modifier.heightIn(min = 32.dp).clip(RoundedCornerShape(999.dp)).background(C.Surface)
-            .border(1.dp, C.Border, RoundedCornerShape(999.dp)).clickable(onClick = onClick)
+        Modifier.heightIn(min = 32.dp).clip(RoundedCornerShape(999.dp)).background(C.Subtle).clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -158,8 +211,8 @@ fun PrimaryButton(
             .clickable(enabled = enabled, onClick = onClick),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
     ) {
-        if (icon != null) Ico(icon, Color.White, 20.dp)
-        Text(text, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        if (icon != null) Ico(icon, C.OnAccent, 20.dp)
+        Text(text, color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
     }
 }
 
@@ -213,13 +266,13 @@ fun Field(
     }
 }
 
-/** A white rounded card with the prototype's 1px border. */
+/** A rounded surface card with a hairline border. */
 @Composable
 fun CardBox(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Column(
-        modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(C.Surface)
-            .border(1.dp, C.Border, RoundedCornerShape(14.dp)).padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(C.Surface)
+            .border(1.dp, C.Border, RoundedCornerShape(18.dp)).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) { content() }
 }
 
@@ -245,7 +298,7 @@ fun TopBar(title: String, onBack: (() -> Unit)?, trailing: @Composable () -> Uni
 @Composable
 fun Bullet(icon: ImageVector, bold: String, rest: String) {
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
-        Ico(icon, C.AvatarText, 24.dp)
+        Ico(icon, C.Accent, 24.dp)
         Text(
             androidx.compose.ui.text.buildAnnotatedString {
                 pushStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.SemiBold))

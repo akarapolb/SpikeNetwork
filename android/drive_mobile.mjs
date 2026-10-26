@@ -34,21 +34,28 @@ try {
   sh(`am start -n ${PKG}/.MainActivity`);
 
   console.log("-- 1 · create identity (the phone's own screens)");
-  check(await waitText("Your identity lives on this phone"), "the phone shows the create-identity screen");
+  check(await waitText("Your identity lives on this phone", 60000), "the phone shows the create-identity screen");
   shot("1-onboarding");
+  // The emulator's keyboard now and then drops or corrects a keystroke, and Back can leave the app when the keyboard
+  // was already going away. Each try clears both fields, types them, checks both hold the whole passphrase (as dots),
+  // and presses Create; when the app answers "The two passphrases differ", it tries again.
   for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) {
+      sh(`am start -n ${PKG}/.MainActivity`);
+      await waitText("Passphrase for this phone");
+      for (const i of [0, 1]) { await tapField(i); sh("input keyevent KEYCODE_MOVE_END " + "67 ".repeat(40)); hideKeyboard(); }
+    }
     await tapField(0); typeText(PHONE_PASS);
     hideKeyboard();
     await tapField(1); typeText(PHONE_PASS);
     hideKeyboard();
-    // Back can leave the app when the keyboard was already going away: the fields are then empty; redo.
-    const filled = nodes().filter((n) => n.cls.endsWith("EditText") && (n.text || "").length > 0).length;
-    if (filled === 2) break;
-    console.log("   (the gate fields were lost; typing them again)");
-    sh(`am start -n ${PKG}/.MainActivity`);
-    await sleep(1500);
+    const lens = nodes().filter((n) => n.cls.endsWith("EditText")).map((n) => (n.text || "").length);
+    if (lens.length !== 2 || lens.some((l) => l !== PHONE_PASS.length)) { console.log(`   (the gate fields hold ${lens.join(", ")} characters; typing them again)`); continue; }
+    await tapText("Create my identity");
+    if (!(await waitText("The two passphrases differ", 3000))) break;
+    console.log("   (the keyboard changed a character; typing them again)");
+    await tapText("OK", true);
   }
-  await tapText("Create my identity");
   // With a fingerprint enrolled the create screen offers fingerprint unlock (on by default): confirm it.
   const offered = await waitText("Turn on fingerprint unlock", 6000);
   if (offered) { shot("1b-bio-at-create"); touch(); }
@@ -98,10 +105,52 @@ try {
   }
   check(seen, "the desktop received the phone's reply");
 
+  console.log("-- search, replies and reactions in a conversation");
+  await tapText("Search in this conversation", true);
+  await tapField(0); typeText("desktop"); hideKeyboard();
+  check(await waitText("1 of 1", 8000), "searching the conversation finds the one match");
+  shot("7b-search");
+  await tapText("Search in this conversation", true); // closes it
+  await sleep(500);
+  const bubble = nodes().find((n) => n.text === "hello from the desktop");
+  sh(`input swipe ${Math.round(bubble.cx)} ${Math.round(bubble.cy)} ${Math.round(bubble.cx)} ${Math.round(bubble.cy)} 800`);
+  check(await waitText("React 👍", 5000) && screenText().includes("Reply"), "a long press offers quick reactions and Reply");
+  shot("7c-long-press");
+  await tapText("Reply", true);
+  check(await waitText("Replying to Alice", 5000), "Reply shows who you are replying to");
+  await tapField(0); typeText("replying to you"); hideKeyboard();
+  await tapText("Send", true);
+  const original = (await desk.invoke("conversation", { name: "Phone" })).find((m) => m.body === "hello from the desktop");
+  let quoted = null;
+  for (let i = 0; i < 40 && !quoted; i++) {
+    quoted = (await desk.invoke("conversation", { name: "Phone" })).find((m) => m.body === "replying to you" && m.reply && m.reply.id === original.id);
+    if (!quoted) await sleep(500);
+  }
+  check(!!quoted, "the desktop gets the reply, quoting its own message");
+  const b2 = nodes().find((n) => n.text === "hello from the desktop");
+  sh(`input swipe ${Math.round(b2.cx)} ${Math.round(b2.cy)} ${Math.round(b2.cx)} ${Math.round(b2.cy)} 800`);
+  await waitText("React 👍", 5000);
+  await tapText("React 👍", true);
+  let reacted = false;
+  for (let i = 0; i < 40 && !reacted; i++) {
+    reacted = (await desk.invoke("conversation", { name: "Phone" })).find((m) => m.id === original.id)?.reactions?.some((r) => r.emoji === "👍" && !r.mine);
+    if (!reacted) await sleep(500);
+  }
+  check(reacted, "the desktop sees the phone's reaction");
+  const mine = (await desk.invoke("conversation", { name: "Phone" })).find((m) => m.body === "hi from the phone");
+  await desk.invoke("react", { id: mine.id, emoji: "❤️" });
+  check(await waitText("❤️ 1", 20000), "the phone shows the desktop's reaction on its message");
+  shot("7d-reply-and-reactions");
+
   console.log("-- 4 · verify (the phone's fingerprint screen)");
   await tapText("Details", true);
   check(await waitText("fingerprint"), "the verify screen shows fingerprints");
   shot("8-verify");
+  check(screenText().includes("They don't match") && screenText().includes("Type the code instead"), "the verify screen offers match buttons and typing the code");
+  await tapText("They match", true);
+  check(await waitText("You verified"), "pressing They match verifies the contact");
+  check(debug("overview").contacts.find((x) => x.name === "Alice")?.verified === true, "the engine has Alice as verified");
+  shot("8b-verified");
   back(); await sleep(500); back(); await sleep(800);
 
   console.log("-- a large group made on the desktop, joined on the phone");
@@ -206,9 +255,13 @@ try {
   console.log("-- alerts while the app is closed (foreground service)");
   await tapText("Settings", true);
   await sleep(600);
-  sh("input swipe 540 1800 540 600 300");
-  await sleep(500);
-  const row = nodes().find((n) => (n.text || "").includes("Alerts while the app is closed"));
+  // Settings is longer than one screen: scroll until the row shows.
+  let row;
+  for (let i = 0; i < 6 && !row; i++) {
+    sh("input swipe 540 1800 540 600 300");
+    await sleep(500);
+    row = nodes().find((n) => (n.text || "").includes("Alerts while the app is closed"));
+  }
   check(!!row, "the settings screen has the alerts switch");
   tap(920, row.cy + 100);
   await sleep(1500);
