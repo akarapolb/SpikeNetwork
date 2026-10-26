@@ -332,11 +332,48 @@ impl Envelope {
         }
         Ok(e)
     }
+
+    /// Whether `b` looks like an envelope of this version whose kind this build does not know: what a
+    /// newer client sends (reactions were new once). Receivers skip it quietly instead of treating it
+    /// as broken. It is not validated beyond that, and it never counts as a message.
+    pub fn is_newer_kind(b: &[u8]) -> bool {
+        #[derive(Deserialize)]
+        struct Probe {
+            v: u8,
+            id: String,
+            kind: String,
+        }
+        serde_json::from_slice::<Probe>(b).is_ok_and(|p| {
+            p.v == VERSION
+                && p.id.len() == 32
+                && serde_json::from_value::<Kind>(serde_json::Value::String(p.kind)).is_err()
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_newer_kind_is_told_apart_from_a_broken_envelope() {
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&Envelope::text("hi").unwrap().to_bytes()).unwrap();
+        assert!(
+            !Envelope::is_newer_kind(&serde_json::to_vec(&v).unwrap()),
+            "a known kind"
+        );
+        v["kind"] = "poll".into();
+        let newer = serde_json::to_vec(&v).unwrap();
+        assert!(Envelope::from_bytes(&newer).is_err());
+        assert!(Envelope::is_newer_kind(&newer));
+        v["v"] = 9.into();
+        assert!(
+            !Envelope::is_newer_kind(&serde_json::to_vec(&v).unwrap()),
+            "another version"
+        );
+        assert!(!Envelope::is_newer_kind(b"not json"));
+    }
 
     #[test]
     fn replies_and_reactions_validate() {

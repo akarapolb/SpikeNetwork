@@ -77,6 +77,21 @@ pub struct Reaction {
     pub device: String,
 }
 
+/// A reaction that arrived before its message (the two travel separately and can cross). It waits,
+/// sealed like the history, and joins the message when that is stored (`MessageStore::insert`).
+#[derive(Serialize, Deserialize)]
+struct EarlyReaction {
+    target: String,
+    /// The conversation the reaction was checked against; the message must turn up in the same one.
+    conv: String,
+    reactor: String,
+    reaction: Reaction,
+}
+
+/// At most this many early reactions wait; past it the oldest go (a message that never comes
+/// must not let them pile up).
+const MAX_EARLY_REACTIONS: i64 = 500;
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -106,6 +121,25 @@ fn aad(id_tag: &[u8], conv_tag: &[u8]) -> String {
     format!("msg:{}:{}", hex::encode(id_tag), hex::encode(conv_tag))
 }
 
+fn early_aad(key_tag: &[u8], id_tag: &[u8]) -> String {
+    format!(
+        "early-reaction:{}:{}",
+        hex::encode(key_tag),
+        hex::encode(id_tag)
+    )
+}
+
+/// Put `who`'s reaction on `m` if it is newer than the one there (`spike_core::merge::reaction_wins`).
+/// Returns whether it changed anything.
+pub(crate) fn fold_reaction(m: &mut StoredMessage, who: &str, r: &Reaction) -> bool {
+    let current = m.reactions.get(who).map(|c| (c.lamport, c.device.clone()));
+    if !spike_core::merge::reaction_wins(current.as_ref(), &(r.lamport, r.device.clone())) {
+        return false;
+    }
+    m.reactions.insert(who.to_string(), r.clone());
+    true
+}
+
 impl<'v> MessageStore<'v> {
     pub(crate) fn open(path: &Path, vault: &'v Vault) -> Result<Self> {
         if !path.exists() {
@@ -128,7 +162,14 @@ impl<'v> MessageStore<'v> {
                  conv_tag BLOB NOT NULL,
                  sealed   BLOB NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS messages_conv ON messages(conv_tag, seq);",
+             CREATE INDEX IF NOT EXISTS messages_conv ON messages(conv_tag, seq);
+             CREATE TABLE IF NOT EXISTS early_reactions (
+                 seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+                 key_tag BLOB NOT NULL UNIQUE,
+                 id_tag  BLOB NOT NULL,
+                 sealed  BLOB NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS early_reactions_id ON early_reactions(id_tag);",
         )?;
         Ok(Self { conn, vault })
     }
@@ -142,19 +183,96 @@ impl<'v> MessageStore<'v> {
 
     /// Store a message. Returns false if a message with this id is already
     /// stored (redelivery, replay of the same envelope, or a second copy).
+    /// Reactions that arrived before it, in the same conversation, join it here.
     pub fn insert(&self, m: &StoredMessage) -> Result<bool> {
         let mut m = m.clone();
         m.changed_at = now_ms();
-        let m = &m;
         let (id_tag, conv_tag) = self.tags(&m.id, &m.peer);
+        let early = self.early_reactions(&id_tag)?;
+        if !m.deleted {
+            for e in &early {
+                if e.target == m.id && e.conv == m.peer {
+                    fold_reaction(&mut m, &e.reactor, &e.reaction);
+                }
+            }
+        }
         let sealed = self
             .vault
-            .seal(&aad(&id_tag, &conv_tag), &serde_json::to_vec(m)?)?;
+            .seal(&aad(&id_tag, &conv_tag), &serde_json::to_vec(&m)?)?;
         let n = self.conn.execute(
             "INSERT OR IGNORE INTO messages (id_tag, conv_tag, sealed) VALUES (?1, ?2, ?3)",
             params![&id_tag[..], &conv_tag[..], sealed],
         )?;
+        if n == 1 && !early.is_empty() {
+            self.conn.execute(
+                "DELETE FROM early_reactions WHERE id_tag = ?1",
+                [&id_tag[..]],
+            )?;
+        }
         Ok(n == 1)
+    }
+
+    /// Keep a reaction to a message that is not here yet (see `EarlyReaction`). Per person and
+    /// message only the newest waits, by the same rule as stored reactions.
+    pub fn park_reaction(
+        &self,
+        target: &str,
+        conv: &str,
+        reactor: &str,
+        r: &Reaction,
+    ) -> Result<()> {
+        let id_tag = self.vault.index_tag("msg-id", target.as_bytes());
+        let key_tag = self
+            .vault
+            .index_tag("early-reaction", format!("{target}\n{reactor}").as_bytes());
+        let waiting = self
+            .early_reactions(&id_tag)?
+            .into_iter()
+            .find(|e| e.target == target && e.reactor == reactor);
+        if let Some(e) = &waiting {
+            let current = (e.reaction.lamport, e.reaction.device.clone());
+            if !spike_core::merge::reaction_wins(Some(&current), &(r.lamport, r.device.clone())) {
+                return Ok(());
+            }
+        }
+        let e = EarlyReaction {
+            target: target.to_string(),
+            conv: conv.to_string(),
+            reactor: reactor.to_string(),
+            reaction: r.clone(),
+        };
+        let sealed = self
+            .vault
+            .seal(&early_aad(&key_tag, &id_tag), &serde_json::to_vec(&e)?)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO early_reactions (key_tag, id_tag, sealed) VALUES (?1, ?2, ?3)",
+            params![&key_tag[..], &id_tag[..], sealed],
+        )?;
+        self.conn.execute(
+            "DELETE FROM early_reactions WHERE seq <= (SELECT MAX(seq) FROM early_reactions) - ?1",
+            [MAX_EARLY_REACTIONS],
+        )?;
+        Ok(())
+    }
+
+    /// The reactions waiting for the message with this id tag. A row that does not open is skipped.
+    fn early_reactions(&self, id_tag: &[u8]) -> Result<Vec<EarlyReaction>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT key_tag, sealed FROM early_reactions WHERE id_tag = ?1")?;
+        let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
+            .query_map([id_tag], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(key_tag, sealed)| {
+                let plain = self
+                    .vault
+                    .open(&early_aad(&key_tag, id_tag), &sealed)
+                    .ok()?;
+                serde_json::from_slice(&plain).ok()
+            })
+            .collect())
     }
 
     pub fn contains(&self, id: &str) -> Result<bool> {
@@ -278,14 +396,13 @@ impl<'v> MessageStore<'v> {
         if cur.peer != r.peer || cur.direction != r.direction || cur.author != r.author {
             return Ok(false); // inconsistent record: not ours to apply
         }
+        let mut changed = false;
         if r.deleted && !cur.deleted {
             cur.deleted = true;
             cur.body.clear();
             cur.attachment = None;
-            self.update(&cur)?;
-            return Ok(true);
-        }
-        if !cur.deleted
+            changed = true;
+        } else if !cur.deleted
             && !r.deleted
             && (r.lamport, r.stamp_device.as_str()) > (cur.lamport, cur.stamp_device.as_str())
         {
@@ -293,10 +410,18 @@ impl<'v> MessageStore<'v> {
             cur.edited = r.edited;
             cur.lamport = r.lamport;
             cur.stamp_device = r.stamp_device.clone();
-            self.update(&cur)?;
-            return Ok(true);
+            changed = true;
         }
-        Ok(false)
+        // Reactions merge one person at a time, newest wins, as when they arrive live.
+        if !cur.deleted {
+            for (who, reaction) in &r.reactions {
+                changed |= fold_reaction(&mut cur, who, reaction);
+            }
+        }
+        if changed {
+            self.update(&cur)?;
+        }
+        Ok(changed)
     }
 
     /// Every stored message, oldest first (used to build history bundles).
@@ -538,6 +663,106 @@ mod tests {
                 .map(|m| m.id.as_str())
                 .collect::<Vec<_>>(),
             ["new"]
+        );
+    }
+
+    fn reaction(emoji: &str, lamport: u64) -> Reaction {
+        Reaction {
+            emoji: emoji.into(),
+            lamport,
+            device: "d1".into(),
+        }
+    }
+
+    #[test]
+    fn a_reaction_that_comes_first_waits_for_its_message() {
+        let d = tmp("early");
+        let v = vault();
+        let s = MessageStore::open(&d.0.join("m.db"), &v).unwrap();
+        // Two changes of mind from Ann arrive out of order, then one from Ben; only the newest of Ann's counts.
+        s.park_reaction("m1", "bob", "ann", &reaction("🎉", 7))
+            .unwrap();
+        s.park_reaction("m1", "bob", "ann", &reaction("👍", 5))
+            .unwrap();
+        s.park_reaction("m1", "bob", "ben", &reaction("❤️", 6))
+            .unwrap();
+        assert!(s
+            .insert(&msg("m1", "bob", 10, "hi", Direction::In))
+            .unwrap());
+        let m = s.get("m1").unwrap().unwrap();
+        assert_eq!(m.reactions["ann"].emoji, "🎉");
+        assert_eq!(m.reactions["ben"].emoji, "❤️");
+        // They were used up: a second copy of the message brings nothing back.
+        let n: i64 = s
+            .raw()
+            .query_row("SELECT COUNT(*) FROM early_reactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn an_early_reaction_never_joins_a_message_in_another_conversation_or_a_deleted_one() {
+        let d = tmp("early-other");
+        let v = vault();
+        let s = MessageStore::open(&d.0.join("m.db"), &v).unwrap();
+        s.park_reaction("m1", "bob", "ann", &reaction("👍", 5))
+            .unwrap();
+        s.insert(&msg("m1", "carol", 10, "hi", Direction::In))
+            .unwrap();
+        assert!(s.get("m1").unwrap().unwrap().reactions.is_empty());
+        s.park_reaction("m2", "bob", "ann", &reaction("👍", 5))
+            .unwrap();
+        let mut gone = msg("m2", "bob", 10, "", Direction::In);
+        gone.deleted = true;
+        s.insert(&gone).unwrap();
+        assert!(s.get("m2").unwrap().unwrap().reactions.is_empty());
+    }
+
+    #[test]
+    fn early_reactions_are_capped() {
+        let d = tmp("early-cap");
+        let v = vault();
+        let s = MessageStore::open(&d.0.join("m.db"), &v).unwrap();
+        for i in 0..MAX_EARLY_REACTIONS + 20 {
+            s.park_reaction(&format!("m{i}"), "bob", "ann", &reaction("👍", 1))
+                .unwrap();
+        }
+        let n: i64 = s
+            .raw()
+            .query_row("SELECT COUNT(*) FROM early_reactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, MAX_EARLY_REACTIONS);
+        // The oldest went, the newest stayed.
+        s.insert(&msg("m0", "bob", 1, "a", Direction::In)).unwrap();
+        assert!(s.get("m0").unwrap().unwrap().reactions.is_empty());
+        let last = format!("m{}", MAX_EARLY_REACTIONS + 19);
+        s.insert(&msg(&last, "bob", 1, "b", Direction::In)).unwrap();
+        assert_eq!(s.get(&last).unwrap().unwrap().reactions.len(), 1);
+    }
+
+    #[test]
+    fn catching_up_from_another_device_merges_reactions_person_by_person() {
+        let d = tmp("merge-react");
+        let v = vault();
+        let s = MessageStore::open(&d.0.join("m.db"), &v).unwrap();
+        let mut here = msg("m1", "bob", 10, "hi", Direction::In);
+        here.reactions.insert("ann".into(), reaction("👍", 9));
+        s.insert(&here).unwrap();
+        let mut there = msg("m1", "bob", 10, "hi", Direction::In);
+        there.reactions.insert("ann".into(), reaction("😢", 3)); // older: loses
+        there.reactions.insert("ben".into(), reaction("❤️", 4)); // new person: joins
+        assert!(s.merge_record(&there).unwrap());
+        let m = s.get("m1").unwrap().unwrap();
+        assert_eq!(
+            (
+                m.reactions["ann"].emoji.as_str(),
+                m.reactions["ben"].emoji.as_str()
+            ),
+            ("👍", "❤️")
+        );
+        assert!(
+            !s.merge_record(&there).unwrap(),
+            "nothing new the second time"
         );
     }
 }
