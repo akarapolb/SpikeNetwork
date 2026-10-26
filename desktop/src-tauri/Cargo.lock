@@ -5336,11 +5336,14 @@ name = "spike-app"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "hex",
+ "httparse",
  "qrcode",
  "rand 0.8.8",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "spike-cli",
  "spike-core",
  "tokio",

@@ -50,6 +50,13 @@ pub enum Kind {
     /// A reaction to message `target`: the body is one emoji, or empty to take the reaction back.
     /// Each person has at most one reaction on a message; the newest replaces the last.
     React,
+    /// Data for another application (ADR 0030): the body is a `app::AppData` as JSON. Never stored
+    /// as a message; one to one or in a small group, like a text.
+    App,
+    /// Ask for the whole state of an application's channel (body: `app::AppChannel`).
+    AppStateRequest,
+    /// The answer: the body names the channel (`app::AppChannel`), the attachment is the snapshot.
+    AppState,
 }
 
 /// Longest reaction accepted, in bytes: one emoji, with room for skin tones and joiners.
@@ -214,6 +221,31 @@ impl Envelope {
         Ok(e)
     }
 
+    /// Data for another application (ADR 0030), addressed like a message.
+    pub fn app(data: &crate::app::AppData) -> Result<Self> {
+        let mut e = Self::text(&serde_json::to_string(data)?)?;
+        e.kind = Kind::App;
+        Ok(e)
+    }
+
+    /// A request for an application channel's whole state.
+    pub fn app_state_request(ch: &crate::app::AppChannel) -> Result<Self> {
+        let mut e = Self::text(&serde_json::to_string(ch)?)?;
+        e.kind = Kind::AppStateRequest;
+        Ok(e)
+    }
+
+    /// A channel's whole state: `snapshot` is the uploaded file holding it.
+    pub fn app_state(
+        ch: &crate::app::AppChannel,
+        snapshot: crate::attachment::Attachment,
+    ) -> Result<Self> {
+        let mut e = Self::text(&serde_json::to_string(ch)?)?;
+        e.kind = Kind::AppState;
+        e.attachment = Some(snapshot);
+        Ok(e)
+    }
+
     /// A delete of message `target`.
     pub fn delete(target: &str) -> Result<Self> {
         let mut e = Self::text("")?;
@@ -267,9 +299,13 @@ impl Envelope {
                 | Kind::LargeLeave
                 | Kind::LargeLists => e.group.is_none() && e.gstate.is_none(),
                 // A group message says which member list it was sent with.
-                Kind::Text | Kind::Edit | Kind::Delete | Kind::React => {
-                    e.group.is_some() == e.gstate.is_some()
-                }
+                Kind::Text
+                | Kind::Edit
+                | Kind::Delete
+                | Kind::React
+                | Kind::App
+                | Kind::AppStateRequest
+                | Kind::AppState => e.group.is_some() == e.gstate.is_some(),
             };
         let target_ok = match e.kind {
             Kind::Text
@@ -283,7 +319,10 @@ impl Envelope {
             | Kind::GroupHistory
             | Kind::LargeWelcome
             | Kind::LargeLeave
-            | Kind::LargeLists => e.target.is_none(),
+            | Kind::LargeLists
+            | Kind::App
+            | Kind::AppStateRequest
+            | Kind::AppState => e.target.is_none(),
             Kind::Edit | Kind::Delete | Kind::React => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
@@ -311,6 +350,16 @@ impl Envelope {
             // The Welcome itself is too big for an envelope: it travels as an attachment.
             Kind::LargeWelcome => e.attachment.is_some() && !e.body.is_empty(),
             Kind::LargeLeave | Kind::LargeLists => e.attachment.is_none() && !e.body.is_empty(),
+            Kind::App => {
+                e.attachment.is_none()
+                    && serde_json::from_str::<crate::app::AppData>(&e.body)
+                        .is_ok_and(|d| d.bytes().is_ok())
+            }
+            Kind::AppStateRequest | Kind::AppState => {
+                e.attachment.is_some() == (e.kind == Kind::AppState)
+                    && serde_json::from_str::<crate::app::AppChannel>(&e.body)
+                        .is_ok_and(|c| c.valid())
+            }
         };
         // Only a text message replies, and it names a message id.
         let reply_ok = e
@@ -401,6 +450,50 @@ mod tests {
         let mut bad = k.clone();
         bad.body = "nice one".into();
         assert!(Envelope::from_bytes(&bad.to_bytes()).is_err());
+    }
+
+    #[test]
+    fn app_envelopes_validate() {
+        use crate::app::{AppChannel, AppData, Mode};
+        let d = AppData::new("work.center", "doc1", Mode::Stored, b"change 1").unwrap();
+        let e = Envelope::app(&d).unwrap();
+        assert_eq!(Envelope::from_bytes(&e.to_bytes()).unwrap(), e);
+        let mut grouped = e.clone();
+        grouped.group = Some("ab".repeat(16));
+        assert!(
+            Envelope::from_bytes(&grouped.to_bytes()).is_err(),
+            "a group app envelope names its member list"
+        );
+        grouped.gstate = Some("cd".repeat(32));
+        assert!(Envelope::from_bytes(&grouped.to_bytes()).is_ok());
+        let mut bad = e.clone();
+        bad.body = r#"{"app":"nodot","channel":"x","mode":"live","data":""}"#.into();
+        assert!(Envelope::from_bytes(&bad.to_bytes()).is_err(), "bad app id");
+        let mut bad = e.clone();
+        bad.body = "plain text".into();
+        assert!(Envelope::from_bytes(&bad.to_bytes()).is_err());
+        let mut bad = e.clone();
+        bad.target = Some("ab".repeat(16));
+        assert!(Envelope::from_bytes(&bad.to_bytes()).is_err());
+        let mut bad = e.clone();
+        bad.intro = Some("spike2:ab".into());
+        assert!(
+            Envelope::from_bytes(&bad.to_bytes()).is_err(),
+            "app data never introduces a stranger"
+        );
+
+        let ch = AppChannel::new("work.center", "doc1").unwrap();
+        let req = Envelope::app_state_request(&ch).unwrap();
+        assert!(Envelope::from_bytes(&req.to_bytes()).is_ok());
+        let (att, _) = crate::attachment::seal_file("state", b"snapshot").unwrap();
+        let st = Envelope::app_state(&ch, att.clone()).unwrap();
+        assert!(Envelope::from_bytes(&st.to_bytes()).is_ok());
+        let mut no_file = st.clone();
+        no_file.attachment = None;
+        assert!(Envelope::from_bytes(&no_file.to_bytes()).is_err());
+        let mut req_file = req.clone();
+        req_file.attachment = Some(att);
+        assert!(Envelope::from_bytes(&req_file.to_bytes()).is_err());
     }
 
     #[test]

@@ -450,11 +450,31 @@ pub async fn send_call(
     signal: &spike_core::call::Signal,
     to: &spike_core::call::Target,
 ) -> Result<SendReport> {
-    deliver_to(home, relay.into(), name, Envelope::call(signal)?, Some(to)).await
+    deliver_to(
+        home,
+        relay.into(),
+        name,
+        Envelope::call(signal)?,
+        Some(to),
+        false,
+    )
+    .await
 }
 
 async fn deliver(home: &Home, base: Target, name: &str, env: Envelope) -> Result<SendReport> {
-    deliver_to(home, base, name, env, None).await
+    deliver_to(home, base, name, env, None, false).await
+}
+
+/// Send app data (ADR 0030) to a contact's devices and our own others. `quick` (live data) skips
+/// the relay housekeeping, as calls do.
+pub(crate) async fn deliver_app(
+    home: &Home,
+    base: Target,
+    name: &str,
+    env: Envelope,
+    quick: bool,
+) -> Result<SendReport> {
+    deliver_to(home, base, name, env, None, quick).await
 }
 
 async fn deliver_to(
@@ -463,6 +483,7 @@ async fn deliver_to(
     name: &str,
     mut env: Envelope,
     only: Option<&spike_core::call::Target>,
+    quick: bool,
 ) -> Result<SendReport> {
     use spike_core::call::Target as CallTarget;
     let mut me = home.load_identity()?;
@@ -470,7 +491,7 @@ async fn deliver_to(
 
     // Our home relay: keep prekeys topped up and both device lists current. With direct
     // connections on this is best effort: two devices whose relay is out of reach can still talk.
-    let notes = if only.is_some() {
+    let notes = if only.is_some() || quick {
         vec![]
     } else {
         match housekeeping(home, &base, &mut me, name).await {
@@ -593,7 +614,10 @@ async fn deliver_to(
         | Kind::GroupHistory
         | Kind::LargeWelcome
         | Kind::LargeLeave
-        | Kind::LargeLists => {}
+        | Kind::LargeLists
+        | Kind::App
+        | Kind::AppStateRequest
+        | Kind::AppState => {}
     }
     Ok(SendReport {
         id: env.id,

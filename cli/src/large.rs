@@ -1591,6 +1591,15 @@ async fn sync_group(
                         }
                         continue;
                     }
+                    if matches!(
+                        env.kind,
+                        spike_core::envelope::Kind::App
+                            | spike_core::envelope::Kind::AppStateRequest
+                            | spike_core::envelope::Kind::AppState
+                    ) {
+                        // App channels do not run in large groups yet (ADR 0030): skip quietly.
+                        continue;
+                    }
                     if env.kind == spike_core::envelope::Kind::React {
                         if crate::apply_reaction(
                             home,

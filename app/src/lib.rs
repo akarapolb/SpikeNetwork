@@ -7,10 +7,12 @@
 //! because `send` and `recv` each load and save the ratchet state and would
 //! corrupt it if they overlapped.
 
+pub mod apps;
 pub mod backup;
 pub mod bridge;
 mod calls;
 mod direct;
+pub mod local_api;
 pub use calls::{CallEventDto, IceServerDto};
 pub use direct::DirectDto;
 
@@ -70,6 +72,8 @@ pub struct Session {
     direct: direct::State,
     /// Calls in progress (ADR 0028).
     calls: Arc<calls::Hub>,
+    /// Live app events and waiters for app events (ADR 0030).
+    apps: Arc<apps::Hub>,
     /// Set while this device waits to be linked: nothing else may read the relay mailbox.
     paused: AtomicBool,
     /// This (new) device is waiting to be linked: its code and, once the
@@ -461,6 +465,7 @@ impl Session {
             net: Arc::new(tokio::sync::Mutex::new(())),
             direct: direct::State::default(),
             calls: Arc::default(),
+            apps: Arc::default(),
             paused: AtomicBool::new(false),
             link_new: Mutex::new(None),
             link_old: Mutex::new(None),
@@ -914,6 +919,7 @@ impl Session {
         };
         ops::recv(&self.home, self.target(), Some(idle), |o| {
             self.calls.on_outcome(&o);
+            self.apps.on_outcome(&o);
             if tally(&mut out, &o) {
                 progress(&out, self.attention().unwrap_or(0));
             }

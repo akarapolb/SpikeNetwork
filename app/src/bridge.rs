@@ -203,6 +203,9 @@ impl Engine {
             "block_request" => val(x.block_request(&s(a, "id")?)?),
             "blocked" => val(x.blocked()?),
             "unblock" => val(x.unblock(&s(a, "owner")?)?),
+            "apps" => val(x.apps()?),
+            "app_register" => val(x.app_register(&s(a, "app")?, &s(a, "name")?)?),
+            "app_remove" => val(x.app_remove(&s(a, "app")?)?),
             "group" => val(x.group(&s(a, "id")?)?),
             "group_conversation" => val(x.group_conversation(&s(a, "id")?, 200)?),
             "group_create" => val(rt.block_on(x.group_create_with(

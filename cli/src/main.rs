@@ -337,6 +337,100 @@ enum Cmd {
         #[command(subcommand)]
         cmd: LargeCmd,
     },
+    /// App channels (ADR 0030): carry another application's data over Spike, never shown as chat.
+    App {
+        #[command(subcommand)]
+        cmd: AppCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppCmd {
+    /// Accept data for an application on this device (id like work.center).
+    Register {
+        app: String,
+        #[arg(long)]
+        name: String,
+    },
+    /// Applications set up here, and ones whose data was dropped because they are not.
+    List,
+    /// Stop accepting data for an application here.
+    Remove { app: String },
+    /// Send bytes on a channel to a contact or a small group.
+    Send {
+        app: String,
+        #[arg(long)]
+        channel: String,
+        /// A contact's name.
+        #[arg(long, conflicts_with = "group")]
+        to: Option<String>,
+        /// A small group's name or id.
+        #[arg(long)]
+        group: Option<String>,
+        /// Only for whoever is connected now; never kept.
+        #[arg(long)]
+        live: bool,
+        /// The bytes, as text.
+        data: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Print waiting events as JSON lines, after the given position (which also acknowledges up to it).
+    Events {
+        app: String,
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+    },
+    /// Ask a small group (or a contact) for a channel's whole state.
+    RequestState {
+        app: String,
+        #[arg(long)]
+        channel: String,
+        #[arg(long, conflicts_with = "group")]
+        to: Option<String>,
+        #[arg(long)]
+        group: Option<String>,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Answer a state request with a file holding the channel's state.
+    SendState {
+        app: String,
+        #[arg(long)]
+        channel: String,
+        #[arg(long, conflicts_with = "group")]
+        to: Option<String>,
+        #[arg(long, requires = "member")]
+        group: Option<String>,
+        /// The member's owner key (from the request event).
+        #[arg(long)]
+        member: Option<String>,
+        file: PathBuf,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Save the state of a `state` event to a file.
+    Snapshot {
+        app: String,
+        seq: u64,
+        out: PathBuf,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+}
+
+fn app_to(
+    to: Option<String>,
+    group: Option<String>,
+    member: Option<String>,
+) -> anyhow::Result<spike_cli::apps::To> {
+    use spike_cli::apps::To;
+    Ok(match (to, group, member) {
+        (Some(name), None, _) => To::Contact(name),
+        (None, Some(group), Some(owner)) => To::Member { group, owner },
+        (None, Some(g), None) => To::Group(g),
+        _ => anyhow::bail!("say where: --to CONTACT or --group GROUP"),
+    })
 }
 
 #[derive(Subcommand)]
@@ -991,6 +1085,113 @@ async fn run() -> Result<()> {
                             .unwrap_or_default();
                         println!("{who}: {}", m.body);
                     }
+                }
+            }
+        }
+        Cmd::App { cmd } => {
+            use spike_cli::apps;
+            match cmd {
+                AppCmd::Register { app, name } => {
+                    apps::register(&home, &app, &name)?;
+                    println!("{app} is set up on this device");
+                }
+                AppCmd::List => {
+                    for a in apps::registered(&home)? {
+                        println!(
+                            "{}  {}  received {}  sent {}",
+                            a.app, a.name, a.received, a.sent
+                        );
+                    }
+                    for d in apps::dropped(&home)? {
+                        println!("(not set up here) {}  {} dropped", d.app, d.count);
+                    }
+                }
+                AppCmd::Remove { app } => {
+                    if !apps::remove(&home, &app)? {
+                        anyhow::bail!("{app} is not set up on this device");
+                    }
+                    println!("{app} removed");
+                }
+                AppCmd::Send {
+                    app,
+                    channel,
+                    to,
+                    group,
+                    live,
+                    data,
+                    relay,
+                } => {
+                    let mode = if live {
+                        spike_core::app::Mode::Live
+                    } else {
+                        spike_core::app::Mode::Stored
+                    };
+                    let r = apps::send(
+                        &home,
+                        target(relay),
+                        &app_to(to, group, None)?,
+                        &app,
+                        &channel,
+                        mode,
+                        data.as_bytes(),
+                    )
+                    .await?;
+                    println!("sent {} to {} device(s)", &r.id[..8], r.delivered);
+                }
+                AppCmd::Events { app, after } => {
+                    for e in apps::take(&home, &app, after, apps::MAX_INBOX)? {
+                        println!("{}", serde_json::to_string(&e)?);
+                    }
+                }
+                AppCmd::RequestState {
+                    app,
+                    channel,
+                    to,
+                    group,
+                    relay,
+                } => {
+                    apps::request_state(
+                        &home,
+                        target(relay),
+                        &app_to(to, group, None)?,
+                        &app,
+                        &channel,
+                    )
+                    .await?;
+                    println!("asked; the answer arrives as a `state` event");
+                }
+                AppCmd::SendState {
+                    app,
+                    channel,
+                    to,
+                    group,
+                    member,
+                    file,
+                    relay,
+                } => {
+                    let bytes = std::fs::read(&file)
+                        .with_context(|| format!("reading {}", file.display()))?;
+                    let r = apps::send_state(
+                        &home,
+                        target(relay),
+                        &app_to(to, group, member)?,
+                        &app,
+                        &channel,
+                        &bytes,
+                    )
+                    .await?;
+                    println!("state sent ({})", &r.id[..8]);
+                }
+                AppCmd::Snapshot {
+                    app,
+                    seq,
+                    out,
+                    relay,
+                } => {
+                    let bytes = apps::snapshot(&home, target(relay), &app, seq).await?;
+                    std::fs::write(&out, &bytes)
+                        .with_context(|| format!("writing {}", out.display()))?;
+                    println!("{} bytes written", bytes.len());
                 }
             }
         }
@@ -1748,6 +1949,7 @@ async fn run() -> Result<()> {
                     println!("[{who} reacted {emoji} to message {}]", &id[..8])
                 }
                 Outcome::Rejected { reason } => eprintln!("ignored a change: {reason}"),
+                Outcome::App(e) => println!("[app {} {:?} on {} from {}]", e.app, e.kind, e.channel, e.from),
                 Outcome::ReadSynced { peer } => println!("[your other device marked {peer} read]"),
                 Outcome::CaughtUp { changed, last } => {
                     println!("[caught up from your other device: {changed} change(s){}]", if last { ", complete" } else { "" });
