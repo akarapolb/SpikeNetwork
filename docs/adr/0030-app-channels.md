@@ -2,9 +2,8 @@
 
 Status: **built in part, 2026-10-26**: the `App` kind with stored and live data, full state for late joiners,
 the library API, CLI commands, and a local API on the desktop with an approval prompt. One to one and small
-groups (ADR 0024), and (2026-10-26, later) a fast path in the desktop listener and in the phone's. **Not
-built:** the relay-side `fast` flag and live data that the relay never queues, large groups, a local API on
-Android. Not reviewed.
+groups (ADR 0024), and (2026-10-26, later) a fast path in the desktop listener and in the phone's. and
+(later still) live data the relay never stores. **Not built:** large groups, a local API on Android. Not reviewed.
 Proposed: 2026-10-25.
 
 ## Problem
@@ -62,9 +61,11 @@ introduction.
   (`LIVE_MAX_AGE_MS`, by the sender's clock) is dropped. A live send skips the relay housekeeping that a
   stored send does first, as calls do.
 
-  *Different from the proposal:* the relay still queues a live envelope for a device that is offline, like
-  any delivery; the receiver then drops it as late. A relay mode that never queues needs a header flag and
-  was not built (see section 2).
+  The relay does not store a live one-to-one envelope: `ClientMsg::Send` has an optional `live` flag (absent
+  means false, so old clients and relays are unaffected). With it the relay hands the blob to the device's
+  open connections and forgets it; a device that is not connected never gets it, and no wake-up push is sent.
+  The acknowledgement of such a delivery carries a non-numeric id, which the relay ignores. The first message
+  to a device starts its session and is always stored. Live data to groups is stored.
 
 **Registration.** An application is registered on a device by its id and a display name
 (`spike_cli::apps::register`). An envelope for an id this device has not registered is acknowledged and
@@ -218,8 +219,9 @@ banner tells them to allow a program only if they just started it.
 - **Speed.** Under 120 ms program to program on a local relay with the desktop fast path (above); the phone's
   listener uses the same path (bridge command `listen_once`: a one-to-one delivery is stored and acknowledged
   on its open connection; anything else, or a failure, falls back to `sync`). Its speed is not measured.
-- **Live data is queued by the relay** for offline devices (then dropped by them as late): it costs relay
-  storage it need not.
+- **Live data reaches only devices connected at that moment.** A device that is offline (or whose listener is
+  between connections) never gets it, which is what live means. It applies to one-to-one sends; live data to a
+  small group is still stored. The first message to a device (it starts the session) is always stored.
 - **Large groups** (ADR 0025) are not supported. **Android** has no local API: apps on the phone would link the
   library in-process; nothing does yet.
 - **One device's inbox.** Each device keeps its own inbox; a program on the desktop does not see what an app

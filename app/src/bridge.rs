@@ -347,7 +347,9 @@ impl Engine {
                     match relay.next_incoming(Some(Duration::from_millis(ms))).await {
                         Ok(Some(spike_cli::client::Incoming::Delivery(d))) if !x.paused() => {
                             let sync = x.listener_receive(&mut relay, &d).await.ok();
-                            Ok::<Value, anyhow::Error>(serde_json::json!({"pushed": true, "sync": sync}))
+                            Ok::<Value, anyhow::Error>(
+                                serde_json::json!({"pushed": true, "sync": sync}),
+                            )
                         }
                         Ok(Some(_)) => Ok(serde_json::json!({"pushed": true, "sync": null})),
                         Ok(None) => Ok(serde_json::json!({"pushed": false, "sync": null})),

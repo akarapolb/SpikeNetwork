@@ -191,6 +191,8 @@ async fn an_allowed_program_sends_and_receives_its_own_data() {
         (r, started.elapsed())
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // The relay keeps no live data, so Alice's device has to be connected to get it: her listener.
+    let mut listener = alice.s.listener_connect().await.unwrap();
     bob.s
         .app_send(
             &To::Contact("alice".into()),
@@ -201,7 +203,14 @@ async fn an_allowed_program_sends_and_receives_its_own_data() {
         )
         .await
         .unwrap();
-    alice.s.sync(Duration::from_millis(300)).await.unwrap();
+    let Some(spike_cli::client::Incoming::Delivery(d)) = listener
+        .next_incoming(Some(Duration::from_secs(5)))
+        .await
+        .unwrap()
+    else {
+        panic!("the listener was not given the live data");
+    };
+    alice.s.listener_receive(&mut listener, &d).await.unwrap();
     let ((code, r), took) = waiter.await.unwrap();
     assert_eq!(code, 200, "{r}");
     assert!(took < Duration::from_secs(10), "woke after {took:?}");

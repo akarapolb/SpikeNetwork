@@ -197,6 +197,20 @@ pub(crate) async fn send_to_device(
     url: &str,
     plaintext: &[u8],
 ) -> Result<bool> {
+    send_to_device_with(pool, home, sessions, card, url, plaintext, false).await
+}
+
+/// `live`: the relay must not store it (live app data). Never for the first message of a new
+/// session, which a device that is offline has to receive.
+async fn send_to_device_with(
+    pool: &mut Pool<'_>,
+    home: &Home,
+    sessions: &mut Sessions,
+    card: &DeviceCard,
+    url: &str,
+    plaintext: &[u8],
+    live: bool,
+) -> Result<bool> {
     let me = pool.me;
     let new = !sessions.has_session(card);
     // Starting a session needs one of the device's prekeys, which only a relay can hand out.
@@ -219,7 +233,12 @@ pub(crate) async fn send_to_device(
             Err(e) => crate::direct::note_fallback(&e),
         }
     }
-    pool.get(url).await?.send(&card.device_id(), &blob).await?;
+    let relay = pool.get(url).await?;
+    if live && !new {
+        relay.send_live(&card.device_id(), &blob).await?;
+    } else {
+        relay.send(&card.device_id(), &blob).await?;
+    }
     Ok(new)
 }
 
@@ -546,6 +565,8 @@ async fn deliver_to(
         env.intro = Some(home.identity_card()?);
     }
     let plaintext = env.to_bytes();
+    // Live app data is not stored by the relay (ADR 0030).
+    let live = quick && env.kind == Kind::App;
 
     let mut pool = Pool {
         base: base.clone(),
@@ -555,7 +576,16 @@ async fn deliver_to(
     let mut devices = Vec::new();
     for (card, relay, own) in targets {
         let url = relay.unwrap_or_else(|| base.url.clone());
-        let r = send_to_device(&mut pool, home, &mut sessions, &card, &url, &plaintext).await;
+        let r = send_to_device_with(
+            &mut pool,
+            home,
+            &mut sessions,
+            &card,
+            &url,
+            &plaintext,
+            live,
+        )
+        .await;
         devices.push(DeviceSend {
             device_id: card.device_id(),
             own,

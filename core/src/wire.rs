@@ -62,10 +62,14 @@ pub enum ClientMsg {
         ed25519: String,
         sig: String,
     },
-    /// Queue `blob` for the device with id `to`.
+    /// Queue `blob` for the device with id `to`. With `live` the relay never stores it: it goes
+    /// to the device's open connections if there are any and is dropped otherwise (ADR 0030,
+    /// live app data, which is worth nothing late).
     Send {
         to: String,
         blob: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        live: bool,
     },
     /// Recipient has durably handled delivery `id`; relay may delete it.
     Ack {

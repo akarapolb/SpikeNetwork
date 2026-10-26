@@ -140,9 +140,19 @@ impl Relay {
 
     /// Queue `blob` for `to`. Returns the relay's id for it.
     pub async fn send(&mut self, to: &str, blob: &[u8]) -> Result<String> {
+        self.send_with(to, blob, false).await
+    }
+
+    /// Like `send`, but the relay does not store it: only a device connected right now gets it.
+    pub async fn send_live(&mut self, to: &str, blob: &[u8]) -> Result<String> {
+        self.send_with(to, blob, true).await
+    }
+
+    async fn send_with(&mut self, to: &str, blob: &[u8], live: bool) -> Result<String> {
         self.write(&ClientMsg::Send {
             to: to.into(),
             blob: hex::encode(blob),
+            live,
         })
         .await?;
         loop {

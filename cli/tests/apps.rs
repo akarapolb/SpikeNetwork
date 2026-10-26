@@ -219,7 +219,27 @@ async fn data_for_an_app_not_set_up_here_is_dropped_and_counted() {
 #[tokio::test]
 async fn live_data_is_never_kept_and_late_live_data_is_dropped() {
     let (url, alice, bob) = two_people().await;
+    use spike_cli::client::{Incoming, Relay};
+    use spike_cli::transport::Target;
     register(&[&alice[0], &bob[0], &bob[1]]);
+    // A first message to a device starts a session and is always kept; get that out of the way.
+    apps::send(
+        &alice[0].0,
+        url.as_str(),
+        &To::Contact("bob".into()),
+        APP,
+        "sheet-1",
+        Mode::Stored,
+        b"hello",
+    )
+    .await
+    .unwrap();
+    recv(&bob[0], &url).await;
+    recv(&bob[1], &url).await;
+    // Bob's first device is connected, as a listener is; his second is not.
+    let target: Target = url.as_str().into();
+    let me = bob[0].0.load_identity().unwrap();
+    let mut relay = Relay::connect(target.clone(), &me).await.unwrap();
     apps::send(
         &alice[0].0,
         url.as_str(),
@@ -231,14 +251,31 @@ async fn live_data_is_never_kept_and_late_live_data_is_dropped() {
     )
     .await
     .unwrap();
-    let got = app_events(&recv(&bob[0], &url).await);
+    let Some(Incoming::Delivery(d)) = relay
+        .next_incoming(Some(Duration::from_secs(5)))
+        .await
+        .unwrap()
+    else {
+        panic!("a connected device did not get the live data");
+    };
+    let mut got = vec![];
+    ops::handle_delivery(&bob[0].0, &target, &mut relay, &d, |o| got.push(o))
+        .await
+        .unwrap();
+    let got = app_events(&got);
     assert_eq!(got.len(), 1);
-    assert_eq!((got[0].seq, got[0].mode), (0, Some(Mode::Live)));
+    assert_eq!(got[0].mode, Some(Mode::Live));
     assert_eq!(bytes_of(&got[0]), b"cursor B12");
-    assert!(
-        apps::take(&bob[0].0, APP, 0, 100).unwrap().is_empty(),
-        "never written down"
+    assert_eq!(
+        apps::take(&bob[0].0, APP, 0, 100).unwrap().len(),
+        1,
+        "only the stored one is written down"
     );
+    drop(relay);
+
+    // The relay did not keep it for the device that was not connected.
+    let none = recv(&bob[1], &url).await;
+    assert!(app_events(&none).is_empty(), "{none:?}");
 
     // One that arrives a minute late was about a moment that passed.
     let mut env =
@@ -248,10 +285,7 @@ async fn live_data_is_never_kept_and_late_live_data_is_dropped() {
         .await
         .unwrap();
     let got = recv(&bob[1], &url).await;
-    // Bob's second device gets both; the first live one is fresh, the late one is dropped.
-    let evs = app_events(&got);
-    assert_eq!(evs.len(), 1, "{got:?}");
-    assert_eq!(bytes_of(&evs[0]), b"cursor B12");
+    assert!(app_events(&got).is_empty(), "{got:?}");
     assert!(got.iter().any(|o| matches!(o, Outcome::Ignored)));
 }
 
