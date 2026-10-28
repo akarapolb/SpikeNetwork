@@ -989,7 +989,7 @@ impl Session {
                     match e {
                         large::Event::Message { .. } => out.received += 1,
                         large::Event::Reacted { .. } => out.changed += 1,
-                        large::Event::App(a) => self.apps.on_outcome(&spike_cli::Outcome::App(a)),
+                        large::Event::App(a) => self.apps.on_outcome(&spike_cli::Outcome::App(*a)),
                         large::Event::Changed { .. } | large::Event::OwnDevices => out.groups += 1,
                         large::Event::Left { group, who } => {
                             out.groups += 1;

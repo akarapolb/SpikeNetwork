@@ -28,7 +28,8 @@ fn every_openmls_crate_is_pinned_exactly() {
 
 #[test]
 fn the_lock_file_holds_the_reviewed_version() {
-    let lock = read("../Cargo.lock");
+    // a Windows checkout may have turned the line endings into CRLF
+    let lock = read("../Cargo.lock").replace("\r\n", "\n");
     let at = lock
         .find("name = \"openmls\"\n")
         .expect("openmls in the lock file");

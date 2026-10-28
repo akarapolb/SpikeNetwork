@@ -861,7 +861,7 @@ async fn app_data_and_state_travel_through_a_large_group_and_never_show_as_chat(
     let got: Vec<_> = ev
         .iter()
         .filter_map(|e| match e {
-            Event::App(a) => Some(a.clone()),
+            Event::App(a) => Some((**a).clone()),
             _ => None,
         })
         .collect();
@@ -895,7 +895,7 @@ async fn app_data_and_state_travel_through_a_large_group_and_never_show_as_chat(
     let ask = ev
         .iter()
         .find_map(|e| match e {
-            Event::App(a) if a.kind == EventKind::StateRequest => Some(a.clone()),
+            Event::App(a) if a.kind == EventKind::StateRequest => Some((**a).clone()),
             _ => None,
         })
         .expect("Bob sees the request");
@@ -907,7 +907,7 @@ async fn app_data_and_state_travel_through_a_large_group_and_never_show_as_chat(
     let st = ev
         .iter()
         .find_map(|e| match e {
-            Event::App(a) if a.kind == EventKind::State => Some(a.clone()),
+            Event::App(a) if a.kind == EventKind::State => Some((**a).clone()),
             _ => None,
         })
         .expect("Carol gets the state she asked for");

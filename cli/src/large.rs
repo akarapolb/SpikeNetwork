@@ -130,7 +130,7 @@ pub enum Event {
     /// Someone reacted to a message (or took their reaction back).
     Reacted { group: String, who: String },
     /// Data, a state request or a state for an application (ADR 0030).
-    App(crate::apps::AppEvent),
+    App(Box<crate::apps::AppEvent>),
     /// A mailbox entry that every member must refuse (it broke a rule) or that could not be read.
     Refused {
         group: String,
@@ -1638,7 +1638,7 @@ async fn sync_group(
                                 own,
                             },
                         )? {
-                            events.push(Event::App(a));
+                            events.push(Event::App(Box::new(a)));
                         }
                         continue;
                     }
