@@ -1,0 +1,57 @@
+# Spike relay + coturn for deployment through Port (no Caddy: Port's edge terminates TLS).
+# Set in Port:  DOMAIN=relay.kloudstone.com   PUBLIC_IP=203.150.175.23   TURN_SECRET=<openssl rand -hex 32>
+# Route the relay.kloudstone.com domain to the `relay` service (port 8787).
+# coturn needs PORT_ALLOW_HOST_NETWORK=coturn on the Port instance (already set).
+# Open on the VM / security group: 3478 udp+tcp, 49160-49200 udp.
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      SPIKE_RELAY_TURN_SECRET: ${TURN_SECRET:?set TURN_SECRET}
+    command:
+      - --listen=0.0.0.0:8787
+      - --insecure-no-tls              # Port's edge terminates TLS
+      - --db=/data/relay.db
+      - --trusted-proxy=172.16.0.0/12  # edge reaches the relay via the Docker gateway, so each client keeps its own rate limit
+      - --auth-audience=${DOMAIN:?set DOMAIN}
+      - --turn-url=turn:${DOMAIN}:3478?transport=udp
+      - --turn-url=turn:${DOMAIN}:3478?transport=tcp
+    volumes:
+      - relay-data:/data
+    expose:
+      - "8787"
+
+  # Forwards encrypted call packets when two devices cannot reach each other directly. It cannot hear or see a call.
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --realm=${DOMAIN}
+      - --listening-port=3478
+      - --external-ip=${PUBLIC_IP}
+      - --min-port=49160
+      - --max-port=49200
+      - --fingerprint
+      - --no-tls
+      - --no-dtls
+      - --no-cli
+      - --no-multicast-peers
+      - --user-quota=4
+      - --total-quota=200
+      - --max-bps=3000000
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+
+volumes:
+  relay-data:
