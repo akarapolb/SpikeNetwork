@@ -7,6 +7,7 @@
 
 pub mod action;
 pub mod agent;
+pub mod app;
 pub mod attachment;
 pub mod backup;
 pub mod call;

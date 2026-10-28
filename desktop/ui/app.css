@@ -262,6 +262,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 
 .err-banner { background: var(--bad-soft); color: var(--bad-ink); padding: 8px 20px; font-size: 13.5px; display: flex; gap: 10px; align-items: center; }
+/* A program asks to use Spike (ADR 0030): stays until the person answers. */
+.ask-banner { background: var(--warn-soft); color: var(--warn-ink); padding: 10px 20px; font-size: 13.5px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+.ask-banner .note { color: inherit; opacity: .85; }
 .empty { color: var(--muted); text-align: center; padding: 48px 24px; display: flex; flex-direction: column; align-items: center; gap: 12px; margin: auto; max-width: 380px; }
 .empty p { margin: 0; }
 .empty .emptyic { width: 64px; height: 64px; border-radius: 22px; background: var(--accent-soft); color: var(--accent-soft-ink); display: grid; place-items: center; }

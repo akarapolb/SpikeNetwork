@@ -533,6 +533,39 @@ async fn send_env(home: &Home, base: &Target, group: &str, mut env: Envelope) ->
     Ok(report)
 }
 
+/// Send app data, a state request or a state (ADR 0030) to a small group you are in: to every
+/// member and your own other devices, or to one member only (`member`, an owner key) without copies.
+pub async fn send_app(
+    home: &Home,
+    base: &Target,
+    group: &str,
+    member: Option<&str>,
+    mut env: Envelope,
+) -> Result<GroupSend> {
+    if find(home, group).is_err() && crate::large::find(home, group).is_ok() {
+        bail!("apps cannot use large groups yet");
+    }
+    let Some(member) = member else {
+        return send_env(home, base, group, env).await;
+    };
+    let rec = find(home, group)?;
+    if rec.status != Status::Joined {
+        bail!("you are not in this group (see `spike group list`)");
+    }
+    let cur = rec.chain()?.current().clone();
+    let me = my_owner(home)?;
+    if !cur.is_member(&me) || !cur.is_member(member) || member == me {
+        bail!("that person is not another member of this group");
+    }
+    env.group = Some(cur.group.clone());
+    env.gstate = Some(cur.hash());
+    let report = fan_out(home, base, &[member.to_string()], &mut env, false).await?;
+    if report.reached == 0 {
+        bail!("could not reach {}", display_name(home, member));
+    }
+    Ok(report)
+}
+
 /// Edit or delete your own message in a group (called from `ops::edit` / `ops::delete`).
 pub async fn send_change(
     home: &Home,
@@ -1358,7 +1391,13 @@ pub fn on_envelope(home: &Home, sender: Sender<'_>, env: &Envelope) -> Result<Ou
                 added,
             })
         }
-        Kind::Text | Kind::Edit | Kind::Delete | Kind::React => {
+        Kind::Text
+        | Kind::Edit
+        | Kind::Delete
+        | Kind::React
+        | Kind::App
+        | Kind::AppStateRequest
+        | Kind::AppState => {
             let Some(mut rec) = rec else {
                 return Ok(Outcome::Ignored);
             };
@@ -1368,6 +1407,18 @@ pub fn on_envelope(home: &Home, sender: Sender<'_>, env: &Envelope) -> Result<Ou
             let chain = rec.chain()?;
             let name = chain.current().name.clone();
             if sender.own {
+                if crate::apps::is_app_kind(env.kind) {
+                    return crate::apps::on_envelope(
+                        home,
+                        env,
+                        crate::apps::From {
+                            owner: &me,
+                            name: "you".into(),
+                            device: sender.device,
+                            own: true,
+                        },
+                    );
+                }
                 // A copy of something we sent from another device.
                 if env.kind == Kind::Text {
                     let fresh = store_message(home, &gid, env, &me, sender.device, Direction::Out)?;
@@ -1477,6 +1528,18 @@ fn accept_message(
     out_of_date: bool,
 ) -> Result<Outcome> {
     let who = display_name(home, author);
+    if crate::apps::is_app_kind(env.kind) {
+        return crate::apps::on_envelope(
+            home,
+            env,
+            crate::apps::From {
+                owner: author,
+                name: who,
+                device,
+                own: false,
+            },
+        );
+    }
     if env.kind == Kind::React {
         let done = crate::apply_reaction(home, env, author, gid, device)?;
         return Ok(crate::reaction_outcome(done, who, env));

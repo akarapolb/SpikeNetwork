@@ -7,10 +7,12 @@
 //! because `send` and `recv` each load and save the ratchet state and would
 //! corrupt it if they overlapped.
 
+pub mod apps;
 pub mod backup;
 pub mod bridge;
 mod calls;
 mod direct;
+pub mod local_api;
 pub use calls::{CallEventDto, IceServerDto};
 pub use direct::DirectDto;
 
@@ -70,6 +72,8 @@ pub struct Session {
     direct: direct::State,
     /// Calls in progress (ADR 0028).
     calls: Arc<calls::Hub>,
+    /// Live app events and waiters for app events (ADR 0030).
+    apps: Arc<apps::Hub>,
     /// Set while this device waits to be linked: nothing else may read the relay mailbox.
     paused: AtomicBool,
     /// This (new) device is waiting to be linked: its code and, once the
@@ -461,6 +465,7 @@ impl Session {
             net: Arc::new(tokio::sync::Mutex::new(())),
             direct: direct::State::default(),
             calls: Arc::default(),
+            apps: Arc::default(),
             paused: AtomicBool::new(false),
             link_new: Mutex::new(None),
             link_old: Mutex::new(None),
@@ -582,6 +587,33 @@ impl Session {
         let target = self.target();
         let _net = self.net.lock().await;
         Relay::connect(target, &me).await
+    }
+
+    /// Handle a delivery the listener received, on the listener's own open connection (ADR 0030,
+    /// the fast path): store it, acknowledge it and tell the app crate's waiters, without the
+    /// reconnect and full sync a normal wake costs. `Err` means the listener should fall back to a
+    /// sync, which will be offered the same delivery again.
+    pub async fn listener_receive(
+        &self,
+        relay: &mut Relay,
+        d: &spike_cli::client::Delivery,
+    ) -> Result<SyncDto> {
+        let _net = self.net.lock().await;
+        let mut out = SyncDto {
+            received: 0,
+            agent_requests: 0,
+            message_requests: 0,
+            groups: 0,
+            changed: 0,
+            notes: vec![],
+        };
+        ops::handle_delivery(&self.home, &self.target(), relay, d, |o| {
+            self.calls.on_outcome(&o);
+            self.apps.on_outcome(&o);
+            tally(&mut out, &o);
+        })
+        .await?;
+        Ok(out)
     }
 
     /// True while something (linking) needs the relay mailbox to itself.
@@ -914,6 +946,7 @@ impl Session {
         };
         ops::recv(&self.home, self.target(), Some(idle), |o| {
             self.calls.on_outcome(&o);
+            self.apps.on_outcome(&o);
             if tally(&mut out, &o) {
                 progress(&out, self.attention().unwrap_or(0));
             }
@@ -945,7 +978,9 @@ impl Session {
                 if events.iter().any(|e| {
                     !matches!(
                         e,
-                        large::Event::Message { .. } | large::Event::Reacted { .. }
+                        large::Event::Message { .. }
+                            | large::Event::Reacted { .. }
+                            | large::Event::App(_)
                     )
                 }) {
                     self.subs.notify_one();
@@ -954,6 +989,7 @@ impl Session {
                     match e {
                         large::Event::Message { .. } => out.received += 1,
                         large::Event::Reacted { .. } => out.changed += 1,
+                        large::Event::App(a) => self.apps.on_outcome(&spike_cli::Outcome::App(a)),
                         large::Event::Changed { .. } | large::Event::OwnDevices => out.groups += 1,
                         large::Event::Left { group, who } => {
                             out.groups += 1;

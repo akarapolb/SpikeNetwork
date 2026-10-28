@@ -197,6 +197,20 @@ pub(crate) async fn send_to_device(
     url: &str,
     plaintext: &[u8],
 ) -> Result<bool> {
+    send_to_device_with(pool, home, sessions, card, url, plaintext, false).await
+}
+
+/// `live`: the relay must not store it (live app data). Never for the first message of a new
+/// session, which a device that is offline has to receive.
+async fn send_to_device_with(
+    pool: &mut Pool<'_>,
+    home: &Home,
+    sessions: &mut Sessions,
+    card: &DeviceCard,
+    url: &str,
+    plaintext: &[u8],
+    live: bool,
+) -> Result<bool> {
     let me = pool.me;
     let new = !sessions.has_session(card);
     // Starting a session needs one of the device's prekeys, which only a relay can hand out.
@@ -219,7 +233,12 @@ pub(crate) async fn send_to_device(
             Err(e) => crate::direct::note_fallback(&e),
         }
     }
-    pool.get(url).await?.send(&card.device_id(), &blob).await?;
+    let relay = pool.get(url).await?;
+    if live && !new {
+        relay.send_live(&card.device_id(), &blob).await?;
+    } else {
+        relay.send(&card.device_id(), &blob).await?;
+    }
     Ok(new)
 }
 
@@ -450,11 +469,31 @@ pub async fn send_call(
     signal: &spike_core::call::Signal,
     to: &spike_core::call::Target,
 ) -> Result<SendReport> {
-    deliver_to(home, relay.into(), name, Envelope::call(signal)?, Some(to)).await
+    deliver_to(
+        home,
+        relay.into(),
+        name,
+        Envelope::call(signal)?,
+        Some(to),
+        false,
+    )
+    .await
 }
 
 async fn deliver(home: &Home, base: Target, name: &str, env: Envelope) -> Result<SendReport> {
-    deliver_to(home, base, name, env, None).await
+    deliver_to(home, base, name, env, None, false).await
+}
+
+/// Send app data (ADR 0030) to a contact's devices and our own others. `quick` (live data) skips
+/// the relay housekeeping, as calls do.
+pub(crate) async fn deliver_app(
+    home: &Home,
+    base: Target,
+    name: &str,
+    env: Envelope,
+    quick: bool,
+) -> Result<SendReport> {
+    deliver_to(home, base, name, env, None, quick).await
 }
 
 async fn deliver_to(
@@ -463,6 +502,7 @@ async fn deliver_to(
     name: &str,
     mut env: Envelope,
     only: Option<&spike_core::call::Target>,
+    quick: bool,
 ) -> Result<SendReport> {
     use spike_core::call::Target as CallTarget;
     let mut me = home.load_identity()?;
@@ -470,7 +510,7 @@ async fn deliver_to(
 
     // Our home relay: keep prekeys topped up and both device lists current. With direct
     // connections on this is best effort: two devices whose relay is out of reach can still talk.
-    let notes = if only.is_some() {
+    let notes = if only.is_some() || quick {
         vec![]
     } else {
         match housekeeping(home, &base, &mut me, name).await {
@@ -525,6 +565,8 @@ async fn deliver_to(
         env.intro = Some(home.identity_card()?);
     }
     let plaintext = env.to_bytes();
+    // Live app data is not stored by the relay (ADR 0030).
+    let live = quick && env.kind == Kind::App;
 
     let mut pool = Pool {
         base: base.clone(),
@@ -534,7 +576,16 @@ async fn deliver_to(
     let mut devices = Vec::new();
     for (card, relay, own) in targets {
         let url = relay.unwrap_or_else(|| base.url.clone());
-        let r = send_to_device(&mut pool, home, &mut sessions, &card, &url, &plaintext).await;
+        let r = send_to_device_with(
+            &mut pool,
+            home,
+            &mut sessions,
+            &card,
+            &url,
+            &plaintext,
+            live,
+        )
+        .await;
         devices.push(DeviceSend {
             device_id: card.device_id(),
             own,
@@ -593,7 +644,10 @@ async fn deliver_to(
         | Kind::GroupHistory
         | Kind::LargeWelcome
         | Kind::LargeLeave
-        | Kind::LargeLists => {}
+        | Kind::LargeLists
+        | Kind::App
+        | Kind::AppStateRequest
+        | Kind::AppState => {}
     }
     Ok(SendReport {
         id: env.id,
@@ -641,6 +695,25 @@ pub async fn recv(
         home.set_last_sync(started)?;
     }
     Ok(())
+}
+
+/// Handle one delivery on the connection it arrived on, without disconnecting: open and store it,
+/// acknowledge it, then do what is owed because of it. This is what lets a listener hand app data
+/// (ADR 0030) to an application in milliseconds instead of dropping the connection for a full sync.
+/// The caller holds the lock that serialises sends and syncs, and must fall back to a sync if this
+/// fails (an unacknowledged delivery is simply offered again).
+pub async fn handle_delivery(
+    home: &Home,
+    base: &Target,
+    relay: &mut Relay,
+    d: &crate::client::Delivery,
+    mut on: impl FnMut(Outcome),
+) -> Result<()> {
+    let mut me = home.load_identity()?;
+    let mut sessions = home.load_sessions()?;
+    let outcome = classify(home, base, &mut me, &mut sessions, Some(relay), &d.blob).await?;
+    relay.ack(&d.id).await?;
+    follow_up(home, base, &mut me, &mut sessions, outcome, &mut on).await
 }
 
 /// A blob that has been opened and stored, and what is still owed because of it.

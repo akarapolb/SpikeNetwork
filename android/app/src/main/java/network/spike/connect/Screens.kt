@@ -1080,7 +1080,7 @@ fun SettingsTab(m: AppModel) {
     Column(Modifier.fillMaxSize().verticalScroll(scroll).statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         H1("Network and privacy", 28.sp)
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            for ((key, label) in listOf("relay" to "Relay", "backup" to "Backup", "direct" to "Direct", "sees" to "What relays see", "phone" to "This phone", "alerts" to "Unlocking and alerts")) {
+            for ((key, label) in listOf("relay" to "Relay", "backup" to "Backup", "direct" to "Direct", "apps" to "Apps", "sees" to "What relays see", "phone" to "This phone", "alerts" to "Unlocking and alerts")) {
                 Chip(label) { scope.launch { scroll.animateScrollTo((at[key] ?: 0) - 8) } }
             }
         }
@@ -1135,6 +1135,7 @@ fun SettingsTab(m: AppModel) {
         }
         Box(Modifier.section("backup")) { BackupCard(m) }
         Box(Modifier.section("direct")) { DirectCard(m) }
+        Box(Modifier.section("apps")) { AppsCard(m) }
         Text("What any relay can see", fontWeight = FontWeight.SemiBold, modifier = Modifier.section("sees"))
         CardBox {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -1416,6 +1417,54 @@ fun NewGroupScreen(m: AppModel) {
 // ---- direct connections (ADR 0027) ----------------------------------------------------------------------------
 
 /** Send and receive directly with a contact's device on the same network, without the relay. */
+/** App channels (ADR 0030): apps that send their own data through Spike, and data dropped for apps not set up here. */
+@Composable
+fun AppsCard(m: AppModel) {
+    var a by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    var removing by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(m.overview) { try { a = Bridge.obj("apps") } catch (_: Exception) {} }
+    val st = a ?: return
+    val apps = st.getJSONArray("apps").let { l -> (0 until l.length()).map { l.getJSONObject(it) } }
+    val dropped = st.getJSONArray("dropped").let { l -> (0 until l.length()).map { l.getJSONObject(it) } }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Apps", fontWeight = FontWeight.SemiBold)
+        CardBox {
+            Muted("Other apps can send their own data through Spike, encrypted like your messages, without it showing up as chat. An app only gets data meant for it.", 12.5.sp)
+            if (apps.isEmpty()) Text("No apps are set up on this phone.", fontSize = 14.sp)
+            for (x in apps) {
+                val id = x.getString("app")
+                val name = x.getString("name")
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text(name, fontWeight = FontWeight.Medium)
+                        Text(id, fontFamily = Mono, fontSize = 12.sp, color = C.Muted)
+                        Muted("Received ${x.getLong("received")} · sent ${x.getLong("sent")}", 12.5.sp)
+                    }
+                    if (removing != id) OutlineButton("Remove", small = true, danger = true) { removing = id }
+                }
+                if (removing == id) {
+                    Muted("Remove $name? Its data stops arriving on this phone and anything waiting for it is deleted.", 12.5.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlineButton("Keep", small = true) { removing = null }
+                        OutlineButton("Remove $name", small = true, danger = true) {
+                            m.run {
+                                Bridge.call("app_remove", args("app" to id))
+                                a = Bridge.obj("apps")
+                                removing = null
+                                m.notice = "$name removed."
+                            }
+                        }
+                    }
+                }
+            }
+            if (dropped.isNotEmpty()) {
+                Muted("Dropped: data arrived for apps that are not set up on this phone: " + dropped.joinToString(", ") { "${it.getString("app")} (${it.getLong("count")})" } + ".", 12.5.sp)
+            }
+            Muted("Programs on a computer connect through the desktop app.", 12.5.sp)
+        }
+    }
+}
+
 @Composable
 fun DirectCard(m: AppModel) {
     var d by remember { mutableStateOf<org.json.JSONObject?>(null) }

@@ -22,13 +22,22 @@ fn relay() -> String {
     rx.recv().unwrap()
 }
 
-fn rand_id() -> u32 {
+/// Unique per test folder: tests run in parallel, and Windows' clock is too coarse to tell two
+/// folders made at once apart, so a counter keeps them from sharing (and corrupting) one vault.
+fn rand_id() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .subsec_nanos()
-        ^ std::process::id()
+        .subsec_nanos();
+    format!(
+        "{}-{}-{}",
+        std::process::id(),
+        nanos,
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 struct Phone {

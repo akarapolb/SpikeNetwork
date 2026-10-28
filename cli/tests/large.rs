@@ -829,3 +829,90 @@ async fn large_group_replies_and_reactions_reach_everyone() {
         );
     }
 }
+
+#[tokio::test]
+async fn app_data_and_state_travel_through_a_large_group_and_never_show_as_chat() {
+    use spike_cli::apps::{self, EventKind, To};
+    use spike_core::app::Mode;
+    const APP: &str = "work.center";
+    let (url, alice, bob, carol) = org().await;
+    for d in [&alice, &bob, &carol] {
+        large::sync(&d.0, url.as_str()).await.unwrap();
+    }
+    // Bob and Carol set the application up; Alice has not.
+    for d in [&bob, &carol] {
+        apps::register(&d.0, APP, "Center Work").unwrap();
+    }
+    let to = To::Group("Org".into());
+    apps::send(
+        &bob.0,
+        url.as_str(),
+        &to,
+        APP,
+        "sheet-1",
+        Mode::Stored,
+        b"A1=1",
+    )
+    .await
+    .unwrap();
+
+    // Carol, who is not Bob's contact, gets it from the group, as data for the app.
+    let ev = large::sync(&carol.0, url.as_str()).await.unwrap();
+    let got: Vec<_> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::App(a) => Some(a.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(got.len(), 1, "{ev:?}");
+    assert_eq!(
+        (got[0].kind, got[0].channel.as_str()),
+        (EventKind::Data, "sheet-1")
+    );
+    assert!(said(&ev).is_empty(), "app data is not chat");
+    let kept = apps::take(&carol.0, APP, 0, 10).unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_ne!(kept[0].from, "alice");
+
+    // Alice never set it up: dropped and counted, nothing shown.
+    let ev = large::sync(&alice.0, url.as_str()).await.unwrap();
+    assert!(!ev.iter().any(|e| matches!(e, Event::App(_))), "{ev:?}");
+    assert_eq!(apps::dropped(&alice.0).unwrap().len(), 1);
+
+    // A state nobody asked for is refused; one that was asked for is taken.
+    apps::send_state(&bob.0, url.as_str(), &to, APP, "sheet-1", b"whole sheet")
+        .await
+        .unwrap();
+    let ev = large::sync(&carol.0, url.as_str()).await.unwrap();
+    assert!(!ev
+        .iter()
+        .any(|e| matches!(e, Event::App(a) if a.kind == EventKind::State)));
+    apps::request_state(&carol.0, url.as_str(), &to, APP, "sheet-1")
+        .await
+        .unwrap();
+    let ev = large::sync(&bob.0, url.as_str()).await.unwrap();
+    let ask = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::App(a) if a.kind == EventKind::StateRequest => Some(a.clone()),
+            _ => None,
+        })
+        .expect("Bob sees the request");
+    assert_eq!(ask.group.as_deref().map(|g| !g.is_empty()), Some(true));
+    apps::send_state(&bob.0, url.as_str(), &to, APP, "sheet-1", b"whole sheet")
+        .await
+        .unwrap();
+    let ev = large::sync(&carol.0, url.as_str()).await.unwrap();
+    let st = ev
+        .iter()
+        .find_map(|e| match e {
+            Event::App(a) if a.kind == EventKind::State => Some(a.clone()),
+            _ => None,
+        })
+        .expect("Carol gets the state she asked for");
+    let bytes = apps::snapshot(&carol.0, url.as_str(), APP, st.seq)
+        .await
+        .unwrap();
+    assert_eq!(bytes, b"whole sheet");
+}

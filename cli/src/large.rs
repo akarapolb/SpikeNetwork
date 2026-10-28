@@ -129,6 +129,8 @@ pub enum Event {
     Left { group: String, who: String },
     /// Someone reacted to a message (or took their reaction back).
     Reacted { group: String, who: String },
+    /// Data, a state request or a state for an application (ADR 0030).
+    App(crate::apps::AppEvent),
     /// A mailbox entry that every member must refuse (it broke a rule) or that could not be read.
     Refused {
         group: String,
@@ -1183,6 +1185,24 @@ async fn send_text(home: &Home, base: Target, group: &str, mut env: Envelope) ->
     Ok(env.id)
 }
 
+/// Send an application's envelope (ADR 0030) to a large group. The mailbox is a log, so live data is
+/// kept like the rest (readers drop it if it is late). Returns the envelope id and how many other
+/// members the group has.
+pub(crate) async fn send_app(
+    home: &Home,
+    base: &Target,
+    group: &str,
+    mut env: Envelope,
+) -> Result<(String, usize)> {
+    let rec = find(home, group)?;
+    if rec.status != Status::Active {
+        bail!("you are not in '{}'", rec.name);
+    }
+    env.lamport = home.next_lamport()?;
+    send_envelope(home, base, &rec, &env).await?;
+    Ok((env.id, rec.members.saturating_sub(1)))
+}
+
 /// React to a message of the group (`emoji` empty: take your reaction back).
 pub async fn react(
     home: &Home,
@@ -1588,6 +1608,37 @@ async fn sync_group(
                                 group: rec.name.clone(),
                                 who: groups::display_name(home, &owner),
                             });
+                        }
+                        continue;
+                    }
+                    if matches!(
+                        env.kind,
+                        spike_core::envelope::Kind::App
+                            | spike_core::envelope::Kind::AppStateRequest
+                            | spike_core::envelope::Kind::AppState
+                    ) {
+                        // For an application (ADR 0030), judged like a one-to-one one; the group
+                        // is the conversation. Our own other devices are "you".
+                        let mut env = env;
+                        env.group = Some(rec.id.clone());
+                        let own = owner == me;
+                        let name = if own {
+                            "you".to_string()
+                        } else {
+                            groups::display_name(home, &owner)
+                        };
+                        let device = hex::encode(from.device);
+                        if let crate::Outcome::App(a) = crate::apps::on_envelope(
+                            home,
+                            &env,
+                            crate::apps::From {
+                                owner: &owner,
+                                name,
+                                device: &device,
+                                own,
+                            },
+                        )? {
+                            events.push(Event::App(a));
                         }
                         continue;
                     }
