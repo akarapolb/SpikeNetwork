@@ -18,7 +18,8 @@ Spike's client logic (sessions, groups, large groups, app channels, device lists
 2. `client::Relay`, which owns a `tokio_tungstenite` socket (`transport::Ws`) and uses `tokio::time`.
 3. The SQLite chat history (`messages.rs`), which the receive path writes to in many places (early reactions and
    deleted-message markers need it).
-4. The system clock, called directly (`SystemTime::now()`, `Instant`) in seven places outside `Relay`.
+4. The system clock, called directly in 19 places (7 `SystemTime::now()`, 9 `Instant`, 3 `tokio::time`), including
+   `spike-core`'s envelope stamping.
 5. `process`, `Outcome` and the `apply_*` functions, which live in `cli/src/lib.rs`; every module to be moved
    imports them.
 
@@ -97,11 +98,17 @@ pub trait Clock {
 
 - `Relay<S: Socket, C: Clock>`: deadlines (`next_delivery(idle)`, `next_incoming`, keepalive) become
   `select(recv, sleep)`.
-- **Time reaches beyond `Relay`.** `SystemTime::now()` and `Instant` are called directly in seven places, and `ops.rs` calls
-  `tokio::time::timeout` directly (an eighth); in a browser the first panics on the first envelope and the
-  second does not build. Each goes through `Clock` (wall time for envelope timestamps and the
-  30 s live-data limit of ADR 0030, a monotonic reading for deadlines). A test lists them by search so none is
-  missed, and `wasm32` CI catches a new one.
+- **Time reaches beyond `Relay`, and into `spike-core`.** The call-site list (`docs/adr/0033-call-sites.md`,
+  step 1) counts **19** direct time calls: 7 wall-clock (`SystemTime::now()`), 9 monotonic (`Instant`) and 3
+  `tokio::time` (including the timeout in `ops.rs`). In a browser `SystemTime::now()` compiles but **panics when
+  it runs** ("time not implemented on this platform"), and `tokio::time` does not build, so the `wasm32` CI job
+  (which only compiles) cannot catch them. The first is `core/src/envelope.rs:118`, which stamps every envelope,
+  so **`Clock` must be injected into `spike-core` too**, not only into the client crate: envelope creation and
+  any other wall-clock use in `core` take a `now_ms` argument (or a `&dyn Clock`) from the caller. Each call goes
+  through `Clock` (wall time for envelope timestamps and the 30 s live-data limit of ADR 0030, a monotonic
+  reading for deadlines). Step 1 added a wasm test that runs under `wasm-bindgen-test-runner`; its envelope test
+  currently fails with that panic and is marked `ignore`, and the `ignore` is removed when `Clock` reaches `core`
+  (step 3), which is the proof the work is done.
 - `transport::Target` holds a file path (a CA file). The path moves out of the shared type: the shared crate takes
   a `Target` of address and TLS mode, and the native dial reads the file.
 - Native: `Socket` wraps `tokio_tungstenite` (TLS and the loopback rule stay in the native crate); `Clock` wraps
@@ -218,7 +225,7 @@ shared `app` crate (which uses many) keep their old paths.
    the `lib.rs` items the moved modules import. The result fixes the `History` operation list and the move list
    in this ADR.
 2. Introduce `Store` (async) and make `Home` generic over it, including attachments and `create`/`unlock`; native `Store` is the current code.
-3. Introduce `Socket`, `Connector` and `Clock`; make `Relay` generic; route the direct time calls (seven, and the `tokio::time::timeout` in `ops.rs`) through `Clock`; change the 17 `Relay::connect` call sites.
+3. Introduce `Socket`, `Connector` and `Clock`; make `Relay` generic; route the 19 direct time calls through `Clock`, including those in `spike-core` (remove the `ignore` on the wasm envelope test); change the 17 `Relay::connect` call sites.
 4. Introduce `History`; native implementation is the current store.
 5. Create `spike-client`; move the modules and the `lib.rs` items; `spike-cli` depends on it, re-exports, and
    keeps the type aliases.
