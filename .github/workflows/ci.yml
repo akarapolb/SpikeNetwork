@@ -40,7 +40,7 @@ jobs:
 
   # spike-core must keep building for the browser (ADR 0033): a new file, socket or system-clock use that does
   # not compile for wasm32 is caught here the moment it appears. The test run is small on purpose (ADR 0033): one
-  test that runs, one known to fail until `Clock` is injected (it is `ignore`d, with the reason).
+  # test that runs, one known to fail until `Clock` is injected (it is `ignore`d, with the reason).
   wasm-core:
     name: spike-core for wasm32
     runs-on: ubuntu-24.04
