@@ -1,7 +1,7 @@
 # ADR 0033: One client crate over storage, transport and time traits (so Spike can run in a browser)
 
-Status: **Proposed. For your review; not built.** 2026-10-29, revised the same day after a review of the first
-draft. Not reviewed by the owner.
+Status: **Accepted** (2026-10-29, by the owner), after revisions the same day following a review. Not built: the
+order of work below is the plan.
 
 Written for Center Work (an office suite on app channels, ADR 0030), whose web version needs the Spike network
 without the desktop app. This is stage 1 of a larger plan. Two things are separate ADRs still to be written:
