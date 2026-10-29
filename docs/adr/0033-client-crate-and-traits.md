@@ -79,8 +79,11 @@ The receive path writes to the SQLite store in many places, so "no history in th
 store gets a trait with the operations the moved code uses (append, mark deleted, record a reaction or an
 early reaction, read markers, query by peer). The native implementation is the current SQLite store, unchanged.
 The browser implementation can be minimal (in memory, or IndexedDB for the last N messages); Center Work does
-not show chat, but the receive logic still has to record and order what it sees. The exact operation list is
-taken from the call sites in step 1 of the order of work, and goes in this ADR before it is accepted.
+not show chat, but the receive logic still has to record and order what it sees. The operation list, from the
+call sites ([0033-call-sites.md](0033-call-sites.md), section 7), is nine operations: `insert`, `get`, `update`,
+`find`, `conversation`, `all`, `changed_since`, `merge_record` and `park_reaction`. The message types
+(`StoredMessage`, `Direction`, `Reaction`) and `fold_reaction` have no SQL and move with the modules; only
+`MessageStore` stays native. `prune_older_than` is used only by the command line.
 
 ### 3. `Socket` and `Clock`: frames and time, everywhere
 
@@ -214,7 +217,8 @@ shared `app` crate (which uses many) keep their old paths.
 
 ## Order of work (each step keeps every existing test green)
 
-1. Add a `wasm32` CI build of `spike-core` now (with the `getrandom` browser features), so a new time or file call is caught the moment it appears. Then list the call sites: every use of `Home` file access, SQLite, `SystemTime`/`Instant`, `Target` paths, and
+1. **Done 2026-10-29:** the `wasm32` CI build of `spike-core` (job `wasm-core`) and the call-site list in
+   [0033-call-sites.md](0033-call-sites.md). Add a `wasm32` CI build of `spike-core` now (with the `getrandom` browser features), so a new time or file call is caught the moment it appears. Then list the call sites: every use of `Home` file access, SQLite, `SystemTime`/`Instant`, `Target` paths, and
    the `lib.rs` items the moved modules import. The result fixes the `History` operation list and the move list
    in this ADR.
 2. Introduce `Store` (async) and make `Home` generic over it, including attachments and `create`/`unlock`; native `Store` is the current code.
