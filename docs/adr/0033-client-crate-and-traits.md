@@ -1,112 +1,166 @@
-# ADR 0033: One client crate over storage and transport traits (so Spike can run in a browser)
+# ADR 0033: One client crate over storage, transport and time traits (so Spike can run in a browser)
 
-Status: **Proposed. For your review; not built.** 2026-10-29. Not reviewed.
+Status: **Proposed. For your review; not built.** 2026-10-29, revised the same day after a review of the first
+draft. Not reviewed by the owner.
 
 Written for Center Work (an office suite on app channels, ADR 0030), whose web version needs the Spike network
-without the desktop app. Stage 1 of a larger plan; the browser identity and invitation model (stage 2) is a
-separate ADR still to be written. Numbers below that name Center Work's own notes are in its repository
+without the desktop app. This is stage 1 of a larger plan. Two things are separate ADRs still to be written:
+the browser identity and invitation model (no device linking to an account at first), and attachments, backup
+and large groups in the browser. Center Work's own notes are in its repository
 (`docs/spike-browser-client-proposal.md`).
 
 ## Problem
 
-Spike's client logic (sessions, groups, large groups, app channels, device lists, device linking) lives in the
-`spike-cli` crate, next to the command line, and is written against two concrete native things:
+Spike's client logic (sessions, groups, large groups, app channels, device lists, device linking) lives in
+`spike-cli`, next to the command line, and is written against native things:
 
 1. `state::Home`, a directory of sealed files (`std::fs`, `PathBuf`, atomic write and `fsync`).
-2. `client::Relay`, which owns a `tokio_tungstenite` socket (`transport::Ws`) and uses `tokio::time` for
-   timeouts and keepalive.
+2. `client::Relay`, which owns a `tokio_tungstenite` socket (`transport::Ws`) and uses `tokio::time`.
+3. The SQLite chat history (`messages.rs`), which the receive path writes to in many places (early reactions and
+   deleted-message markers need it).
+4. The system clock, called directly (`SystemTime::now()`, `Instant`) in seven places outside `Relay`.
+5. `process`, `Outcome` and the `apply_*` functions, which live in `cli/src/lib.rs`; every module to be moved
+   imports them.
 
-So the same logic cannot run in a browser (no files, no `tokio`, no TCP), and Center Work, the first
-application on app channels (ADR 0030), cannot use the network from a web page without the desktop app.
+So the same logic cannot run in a browser, and Center Work cannot reach the network from a web page without the
+desktop app (the local API of ADR 0030 refuses browsers by design).
 
-`spike-core` already builds for `wasm32-unknown-unknown` (checked 2026-10-29; it needed the `getrandom` crates'
-browser features). The relay does not refuse a page's WebSocket (it never reads `Origin`).
+Checked on 2026-10-29: `spike-core` builds for `wasm32-unknown-unknown` once the `getrandom` crates get their
+browser features (`js` for 0.2, `wasm_js` for 0.4). `spike-mls` fails as it is, and builds after two feature
+changes (`openmls` needs its `js` feature, and `getrandom` its browser features); `spike-core` and `spike-mls`
+then build in about 2 minutes. **Nothing was run in wasm yet**, and the advisories file must be read again after
+that change. The relay does not read `Origin` in its WebSocket handshake.
 
 ## Decision
 
 Move the client logic into a new crate, `spike-client`, that builds for native and for `wasm32`, and make it
-depend on two small traits instead of on files and `tokio`. `spike-cli`, the desktop app and the Android
-library become users of it. No wire format, envelope, relay or cryptographic change.
+depend on four small traits (`Store`, `History`, `Socket`, `Clock`) instead of files, SQLite, `tokio` and the
+system clock. `spike-cli`, the desktop app and the Android library use it. No wire format, envelope, relay
+protocol or cryptographic change.
 
-### 1. `Store`: sealed named blobs
+### 1. `Store`: sealed named blobs, async
 
-`Home` already sits on a very small base: `read_opt(name)`, `read(name)`, `write(name, bytes)`, and the
-sealing is done by `Vault` in `spike-core` (portable). Everything else in `Home` (identity, sessions, contacts,
-`load_json` / `save_json`, attachments, read markers, lamport counter) is built from those three.
+`Home` is built on three functions, `read_opt`, `read` and `write`; sealing is done by `Vault` in `spike-core`
+(portable). Everything else in `Home` is built from them.
 
 ```rust
 pub trait Store {
-    /// The bytes last written under `name`, or None. Names are the existing file names ("contacts.enc", "att:<tag>"...).
-    fn get(&self, name: &str) -> Result<Option<Vec<u8>>>;
-    /// Replace `name` atomically: a reader sees the old bytes or the new, never half.
-    fn put(&self, name: &str, bytes: &[u8]) -> Result<()>;
-    fn delete(&self, name: &str) -> Result<()>;
+    async fn get(&self, name: &str) -> Result<Option<Vec<u8>>>;
+    /// Atomic: a reader sees the old bytes or the new, never half.
+    async fn put(&self, name: &str, bytes: &[u8]) -> Result<()>;
+    async fn delete(&self, name: &str) -> Result<()>;
 }
 ```
 
-- `Home` becomes `Home<S: Store>` (or holds a `Box<dyn Store>`); its methods keep their names, so callers in
-  `groups.rs`, `large.rs`, `apps.rs`, `link.rs`, `ops.rs` change by a type parameter, not by logic.
-- Native `Store`: the current directory, with `write_private` (temp file, `fsync`, rename, `0600`). Same files on disk, so existing vaults open unchanged.
-- Browser `Store`: IndexedDB, one object store, a transaction per `put` (atomic by construction). The browser
-  `Store` is `async` underneath; see section 3.
-- Chat history (`messages.rs`, SQLite) is **not** part of this crate's first cut: the browser keeps no chat history, and the native apps keep their store behind the existing interface.
+- **The trait is async.** A browser's IndexedDB cannot be read synchronously, and the alternatives are worse:
+  a write-behind cache (synchronous in memory, flushed later) can lose the latest ratchet state on a crash or a
+  closed tab, which is a correctness and security problem for session state, not a performance one. The cost is
+  that `Home`'s methods and their callers become `async`; most callers already are (`groups.rs` 24 async
+  functions, `large.rs` 31, `ops.rs` 41). The synchronous ones in `state.rs` and `groups::list/find/...` need
+  attention one by one.
+- Native `Store`: the current directory with `write_private` (temp file, `fsync`, rename, `0600`), run on the
+  blocking pool where needed. Same files on disk, so existing vaults open unchanged.
+- Browser `Store`: IndexedDB, one object store, one transaction per `put`.
+- `Home<S: Store>`; `spike-cli` and the `app` crate keep a type alias `Home = Home<FileStore>` (and
+  `Relay = Relay<WsSocket, TokioClock>`), because `app/src/calls.rs` and `app/src/lib.rs` use them as bare paths.
 
-### 2. `Socket` and `Clock`: frames and time
+### 2. `History`: the chat store, behind a trait
 
-`Relay` only does four things with its socket: write a frame (`write`), read a frame (`read_raw`), ping/pong for
-keepalive, and wait with a deadline (`timeout_at`).
+The receive path writes to the SQLite store in many places, so "no history in the browser" does not hold. The
+store gets a trait with the operations the moved code uses (append, mark deleted, record a reaction or an
+early reaction, read markers, query by peer). The native implementation is the current SQLite store, unchanged.
+The browser implementation can be minimal (in memory, or IndexedDB for the last N messages); Center Work does
+not show chat, but the receive logic still has to record and order what it sees. The exact operation list is
+taken from the call sites in step 1 of the order of work, and goes in this ADR before it is accepted.
+
+### 3. `Socket` and `Clock`: frames and time, everywhere
 
 ```rust
 pub trait Socket {
-    async fn send(&mut self, frame: Vec<u8>) -> Result<()>;   // text or binary frame, as today
-    async fn recv(&mut self) -> Result<Option<Vec<u8>>>;       // None when the relay closed
+    async fn send(&mut self, frame: Vec<u8>) -> Result<()>;
+    async fn recv(&mut self) -> Result<Option<Vec<u8>>>;   // None when the relay closed
 }
 pub trait Clock {
     fn now_ms(&self) -> u64;
-    async fn sleep(&self, ms: u64);                              // used to build deadlines
+    async fn sleep(&self, ms: u64);
 }
 ```
 
-- `Relay<S: Socket, C: Clock>`. Deadlines (`next_delivery(idle)`, `next_incoming`, keepalive) become
-  `select(recv, sleep)` over these two; no direct `tokio::time`.
-- Native: `Socket` wraps `tokio_tungstenite` (TLS and the loopback rule from `transport.rs` stay there); `Clock` wraps `tokio::time`.
-- Browser: `Socket` wraps `web_sys::WebSocket` (`wss://` only except loopback); `Clock` wraps `setTimeout`.
-- Authentication, the wire messages (`ClientMsg` / `ServerMsg`) and everything the relay sees are unchanged.
+- `Relay<S: Socket, C: Clock>`: deadlines (`next_delivery(idle)`, `next_incoming`, keepalive) become
+  `select(recv, sleep)`.
+- **Time reaches beyond `Relay`.** `SystemTime::now()` and `Instant` are called directly in seven places; in a
+  browser they panic on the first envelope. Each goes through `Clock` (wall time for envelope timestamps and the
+  30 s live-data limit of ADR 0030, a monotonic reading for deadlines). A test lists them by search so none is
+  missed, and `wasm32` CI catches a new one.
+- `transport::Target` holds a file path (a CA file). The path moves out of the shared type: the shared crate takes
+  a `Target` of address and TLS mode, and the native dial reads the file.
+- Native: `Socket` wraps `tokio_tungstenite` (TLS and the loopback rule stay in the native crate); `Clock` wraps
+  `tokio::time` and the system clock. Browser: `web_sys::WebSocket` (`wss://` only except loopback) and
+  `setTimeout`, `Date.now`, `performance.now`.
 
-### 3. Async without a runtime
+### 4. Futures stay `Send` where the native app needs it
 
-The logic is `async fn` already (`groups.rs` 24, `large.rs` 31, `ops.rs` 41) but only waits on `Relay`. It
-should depend on `futures` only. `tokio` stays in the native `Socket`/`Clock`; the browser drives futures with
-`wasm-bindgen-futures`. Futures must not need `Send` on wasm, so the traits are written without `Send` bounds and
-native code that needs them wraps or boxes at its edge.
+The native app spawns these futures, so they must stay `Send`; dropping the bound (as the first draft did) would
+break it. The traits are written so that `Send` is required by default, and the browser implementations satisfy
+it by running on a single thread behind a handle (a message to the page's thread), so no `!Send` browser type
+(`web_sys::WebSocket`, IndexedDB handles) appears in a signature of the shared crate. If this proves too costly in
+one place, a `cfg(target_arch = "wasm32")` alias for the bound is the fallback, decided there and listed here.
 
-### 4. What moves and what stays
+### 5. What moves and what stays
 
 | Moves into `spike-client` | Stays in `spike-cli` |
 |---|---|
-| `groups`, `large`, `apps`, `link`, `direct`, `ops`, `requests`, `sync`, `agent`, `client` (over traits), `state` (over `Store`) | `main.rs` (commands, `rpassword`, `clap`), `transport.rs` native dial and TLS, `messages.rs` (SQLite history), `verifier.rs` file watcher parts, `backup.rs` file export |
-| `mls` large-group glue (`large.rs`), once `spike-mls` builds for wasm (stage 4) | `spike-mls` itself is unchanged until stage 4 |
+| `process`, `Outcome`, `apply_*` (from `lib.rs`), `groups`, `large`, `apps`, `link`, `direct`, `ops`, `requests`, `sync`, `agent`, `client` (over traits), `state` (over `Store`) | `main.rs` (commands, `rpassword`, `clap`), the native `Store`, `Socket`, `Clock` and TLS dial (`transport.rs`), the SQLite `History`, `verifier.rs` file parts, `backup.rs` file export |
+| `large.rs` glue, once `spike-mls` builds for wasm (stage 4) | `spike-mls` gets the two feature changes above |
 
-`spike-cli` re-exports the moved modules so `desktop` (Tauri), `app` and `android` keep compiling without
-edits in the first step.
+`spike-cli` re-exports every moved module so `desktop` (Tauri; it uses one item), `mobile/` (needs nothing) and the
+shared `app` crate (which uses many) keep their old paths.
+
+## Browser security (needed before a browser client ships; details in the browser identity ADR)
+
+- **The vault in IndexedDB is readable by any script on the page's origin.** A browser vault is only as safe as
+  the page's own code and the content security policy; the identity ADR sets what can be protected (a
+  passphrase-derived key, a non-extractable key, no third-party scripts on that origin).
+- **Two tabs can fork the ratchet.** Two tabs of one browser device writing session state at once can use one
+  message key twice or diverge. The browser device needs a lock (Web Locks) or a single shared worker that owns
+  the vault; the second tab asks the first. This is a requirement of the browser build, not an option.
+- **The relay allows 4 live connections per device and accepts any `Origin`.** An optional origin allowlist in the
+  relay (off by default) would let an operator limit which sites may connect; it is a relay change and gets its
+  own decision.
+- **Key derivation.** Argon2 at 64 MiB is heavy in a browser; the parameters, and running it in a worker, are
+  decided in the identity ADR.
+- **Documents.** ADR 0030 and the security documents say there is no browser client; they are updated when this
+  is accepted.
 
 ## Order of work (each step keeps every existing test green)
 
-1. Introduce `Store` and make `Home` generic over it; native `Store` is the current code. Tests unchanged.
-2. Introduce `Socket` and `Clock`; `Relay` generic over them; native implementations. Tests unchanged.
-3. Create `spike-client`; move the modules; `spike-cli` depends on it and re-exports.
-4. Add a `wasm32` CI build of `spike-client` and `spike-core` (with the `getrandom` features).
-5. (Stage 2 of the proposal) browser `Store` and `Socket`, the wasm API, the browser tests.
+1. List the call sites: every use of `Home` file access, SQLite, `SystemTime`/`Instant`, `Target` paths, and
+   the `lib.rs` items the moved modules import. The result fixes the `History` operation list and the move list
+   in this ADR.
+2. Introduce `Store` (async) and make `Home` generic over it; native `Store` is the current code.
+3. Introduce `Socket` and `Clock`; make `Relay` generic; route the seven direct time calls through `Clock`.
+4. Introduce `History`; native implementation is the current store.
+5. Create `spike-client`; move the modules and the `lib.rs` items; `spike-cli` depends on it, re-exports, and
+   keeps the type aliases.
+6. Add a `wasm32` CI build of `spike-core`, `spike-client` and (after the feature changes) `spike-mls`.
+7. Stage 2 of the plan: browser `Store`, `Socket`, `Clock`, `History`, the single-writer lock, the wasm API and
+   the browser tests.
 
 ## Consequences
 
-- Positive: one client for desktop, Android and web; the browser build needs no change to the relay or the wire protocol; Center Work's `Link` can use it directly.
-- Cost: a refactor of code every client runs. Generic parameters spread through signatures; `dyn` could be used at a few boundaries to limit that.
-- Risk: moving `fsync`-and-rename storage behind a trait must not weaken atomicity or the `0600` permissions; the native `Store` keeps `write_private` as it is and the existing vault tests (tamper, truncation, copied-from-another-vault) run against it.
-- Risk: keepalive and timeout behaviour is subtle (ADR 0020 measured the listener fast path). The relay and listener tests, and the desktop and Android driver scripts, must pass unchanged before merge.
-- Not covered here: the browser identity and invitation model (separate ADR), attachments in the browser, MLS in the browser, key protection in IndexedDB.
+- Positive: one client for desktop, Android and web; no relay or wire change; Center Work's `Link` uses it
+  directly.
+- Cost: larger than first thought. Making storage async touches many functions; four traits spread generic
+  parameters through signatures (type aliases limit this at the edges); `dyn` can be used at a few boundaries.
+- Risk: atomicity and `0600` permissions must not weaken; the native `Store` keeps `write_private` as it is and
+  the existing vault tests (tamper, truncation, copied from another vault) run against it.
+- Risk: keepalive and timeout behaviour is subtle (ADR 0020 measured the listener fast path); relay and listener
+  tests, and the desktop and Android drive scripts, must pass unchanged before merge.
+- Risk: the `openmls` feature change must be checked against the advisories file (ADR 0025 pins it exactly).
+- Not covered here: the browser identity and invitation model, attachments, backup, and MLS in the browser.
 
 ## Tests that must pass before each step merges
 
 `cargo test` for core, cli, relay, mls and app; `cli/tests/apps.rs`; `app/tests/local_api.rs`;
-`node desktop/drive_apps.mjs`; `ANDROID_SERIAL=… node android/drive_apps.mjs`; the large-group demo and fuzz targets for `mls`.
+`node desktop/drive_apps.mjs`; `ANDROID_SERIAL=… node android/drive_apps.mjs`; the large-group demo and the fuzz
+targets for `mls`; and from step 6 the `wasm32` builds.
