@@ -100,17 +100,34 @@ pub trait Clock {
 
 ### 4. Futures stay `Send` where the native app needs it
 
-The native app spawns these futures, so they must stay `Send`; dropping the bound (as the first draft did) would
-break it. The traits are written so that `Send` is required by default, and the browser implementations satisfy
-it by running on a single thread behind a handle (a message to the page's thread), so no `!Send` browser type
-(`web_sys::WebSocket`, IndexedDB handles) appears in a signature of the shared crate. If this proves too costly in
-one place, a `cfg(target_arch = "wasm32")` alias for the bound is the fallback, decided there and listed here.
+The native app spawns these futures, so they must stay `Send` there; a browser's `web_sys::WebSocket` and
+IndexedDB handles are not `Send`. A plain `async fn` in a trait promises neither. The mechanism is a marker
+trait and explicit return types:
+
+```rust
+#[cfg(not(target_arch = "wasm32"))] pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))] impl<T: Send> MaybeSend for T {}
+#[cfg(target_arch = "wasm32")]      pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]      impl<T> MaybeSend for T {}
+
+pub trait Store {
+    fn get(&self, name: &str) -> impl Future<Output = Result<Option<Vec<u8>>>> + MaybeSend;
+    // put, delete, and the Socket, Clock and History methods are written the same way
+}
+```
+
+On native `MaybeSend` is `Send`, so spawning works and a non-`Send` future is a compile error there. On `wasm32`
+it is empty, so the browser types need no wrapper and no thread hop. Shared code that holds a future across an
+`.await` must be written to the stricter (native) rule, which the native build enforces; the `wasm32` build cannot
+loosen it. (`trait_variant::make` was considered; it generates a second trait and makes generic shared code
+name two, so it is not used.) Step 3 of the order of work proves the mechanism on `Socket` and `Clock` before
+it is applied to the rest.
 
 ### 5. What moves and what stays
 
 | Moves into `spike-client` | Stays in `spike-cli` |
 |---|---|
-| `process`, `Outcome`, `apply_*` (from `lib.rs`), `groups`, `large`, `apps`, `link`, `direct`, `ops`, `requests`, `sync`, `agent`, `client` (over traits), `state` (over `Store`) | `main.rs` (commands, `rpassword`, `clap`), the native `Store`, `Socket`, `Clock` and TLS dial (`transport.rs`), the SQLite `History`, `verifier.rs` file parts, `backup.rs` file export |
+| `process`, `Outcome`, `apply_*` (from `lib.rs`), `groups`, `large`, `apps`, `link`, `ops`, `requests`, `sync`, `agent`, `client` (over traits), `state` (over `Store`) | `direct.rs` (it uses TCP and UDP sockets and a hostname lookup directly; a page can do neither, so direct connections stay native and, if the browser ever needs them, sit behind their own trait later), `main.rs` (commands, `rpassword`, `clap`), the native `Store`, `Socket`, `Clock` and TLS dial (`transport.rs`), the SQLite `History`, `verifier.rs` file parts, `backup.rs` file export |
 | `large.rs` glue, once `spike-mls` builds for wasm (stage 4) | `spike-mls` gets the two feature changes above |
 
 `spike-cli` re-exports every moved module so `desktop` (Tauri; it uses one item), `mobile/` (needs nothing) and the
@@ -134,7 +151,7 @@ shared `app` crate (which uses many) keep their old paths.
 
 ## Order of work (each step keeps every existing test green)
 
-1. List the call sites: every use of `Home` file access, SQLite, `SystemTime`/`Instant`, `Target` paths, and
+1. Add a `wasm32` CI build of `spike-core` now (with the `getrandom` browser features), so a new time or file call is caught the moment it appears. Then list the call sites: every use of `Home` file access, SQLite, `SystemTime`/`Instant`, `Target` paths, and
    the `lib.rs` items the moved modules import. The result fixes the `History` operation list and the move list
    in this ADR.
 2. Introduce `Store` (async) and make `Home` generic over it; native `Store` is the current code.
@@ -142,7 +159,7 @@ shared `app` crate (which uses many) keep their old paths.
 4. Introduce `History`; native implementation is the current store.
 5. Create `spike-client`; move the modules and the `lib.rs` items; `spike-cli` depends on it, re-exports, and
    keeps the type aliases.
-6. Add a `wasm32` CI build of `spike-core`, `spike-client` and (after the feature changes) `spike-mls`.
+6. Add the `wasm32` CI build of `spike-client` and (after the feature changes) `spike-mls`. (The `spike-core` build is added in step 1, below, not here.)
 7. Stage 2 of the plan: browser `Store`, `Socket`, `Clock`, `History`, the single-writer lock, the wasm API and
    the browser tests.
 
@@ -156,6 +173,7 @@ shared `app` crate (which uses many) keep their old paths.
   the existing vault tests (tamper, truncation, copied from another vault) run against it.
 - Risk: keepalive and timeout behaviour is subtle (ADR 0020 measured the listener fast path); relay and listener
   tests, and the desktop and Android drive scripts, must pass unchanged before merge.
+- Risk: `spike-mls` was only **compiled** for wasm, never run in it. The browser plan depends on large groups working there, so stage 4 starts with a running test (two wasm members, one commit, one message), and if it fails the browser stays on one-to-one and small groups.
 - Risk: the `openmls` feature change must be checked against the advisories file (ADR 0025 pins it exactly).
 - Not covered here: the browser identity and invitation model, attachments, backup, and MLS in the browser.
 
