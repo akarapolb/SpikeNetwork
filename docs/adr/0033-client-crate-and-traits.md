@@ -123,8 +123,8 @@ pub trait Connector {
 `Relay::connect` becomes `Relay::connect(&connector, target, &identity)` (or the connector is held by a small
 `Net { connector, clock }` value passed where `Relay` is made today). Native: `dial` plus TLS and the loopback
 rule. Browser: `new WebSocket(url)`. `Relay<S, C>` and the type aliases carry the choice, so the call sites in
-`ops`, `link`, `groups` and `large` change by one argument, not by logic. This changes the design (from four traits
-become five: `Store`, `History`, `Socket`, `Connector`, `Clock`) and the signature list in step 3.
+`ops`, `link`, `groups` and `large` change by one argument, not by logic. This changes the design (the traits
+grow to five: `Store`, `History`, `Socket`, `Connector`, `Clock`) and the signature list in step 3.
 
 ### 3b. Attachments and opening a vault go through `Store`
 
