@@ -22,6 +22,15 @@ Spike's client logic (sessions, groups, large groups, app channels, device lists
 5. `process`, `Outcome` and the `apply_*` functions, which live in `cli/src/lib.rs`; every module to be moved
    imports them.
 
+6. **Opening a connection.** The moved modules call `Relay::connect` about 17 times (`ops.rs` 10, `link.rs` 5,
+   `groups.rs` 1, `large.rs` 1); inside, it calls `dial(&target)` in `transport.rs`, which is native.
+7. **Attachments bypass `Home`'s three primitives.** `state.rs` `save_attachment`, `load_attachment` and
+   `delete_attachment` read and write `attachments/<tag>.enc` with `fs` directly, and the moved modules call
+   them (`groups.rs` 868, 1870; `link.rs` 161, 272).
+8. **Opening a vault.** `Home::create` and `Home::unlock` take a `PathBuf` and read a header file.
+9. **`tokio` features.** `cli` enables `net`, `rt-multi-thread` and `time`, and `ops.rs` (about line 750) uses
+   `tokio::time::timeout` directly. `net` and the multi-thread runtime do not build for wasm.
+
 So the same logic cannot run in a browser, and Center Work cannot reach the network from a web page without the
 desktop app (the local API of ADR 0030 refuses browsers by design).
 
@@ -34,7 +43,7 @@ that change. The relay does not read `Origin` in its WebSocket handshake.
 ## Decision
 
 Move the client logic into a new crate, `spike-client`, that builds for native and for `wasm32`, and make it
-depend on four small traits (`Store`, `History`, `Socket`, `Clock`) instead of files, SQLite, `tokio` and the
+depend on five small traits (`Store`, `History`, `Socket`, `Connector`, `Clock`) instead of files, SQLite, `tokio` and the
 system clock. `spike-cli`, the desktop app and the Android library use it. No wire format, envelope, relay
 protocol or cryptographic change.
 
@@ -88,8 +97,9 @@ pub trait Clock {
 
 - `Relay<S: Socket, C: Clock>`: deadlines (`next_delivery(idle)`, `next_incoming`, keepalive) become
   `select(recv, sleep)`.
-- **Time reaches beyond `Relay`.** `SystemTime::now()` and `Instant` are called directly in seven places; in a
-  browser they panic on the first envelope. Each goes through `Clock` (wall time for envelope timestamps and the
+- **Time reaches beyond `Relay`.** `SystemTime::now()` and `Instant` are called directly in seven places, and `ops.rs` calls
+  `tokio::time::timeout` directly (an eighth); in a browser the first panics on the first envelope and the
+  second does not build. Each goes through `Clock` (wall time for envelope timestamps and the
   30 s live-data limit of ADR 0030, a monotonic reading for deadlines). A test lists them by search so none is
   missed, and `wasm32` CI catches a new one.
 - `transport::Target` holds a file path (a CA file). The path moves out of the shared type: the shared crate takes
@@ -97,6 +107,35 @@ pub trait Clock {
 - Native: `Socket` wraps `tokio_tungstenite` (TLS and the loopback rule stay in the native crate); `Clock` wraps
   `tokio::time` and the system clock. Browser: `web_sys::WebSocket` (`wss://` only except loopback) and
   `setTimeout`, `Date.now`, `performance.now`.
+
+### 3a. `Connector`: opening a connection
+
+`Socket` covers sending and receiving, not opening. The moved modules open connections about 17 times, so shared
+code cannot name `dial`. A third trait opens them:
+
+```rust
+pub trait Connector {
+    type Socket: Socket;
+    fn connect(&self, target: &Target) -> impl Future<Output = Result<Self::Socket>> + MaybeSend;
+}
+```
+
+`Relay::connect` becomes `Relay::connect(&connector, target, &identity)` (or the connector is held by a small
+`Net { connector, clock }` value passed where `Relay` is made today). Native: `dial` plus TLS and the loopback
+rule. Browser: `new WebSocket(url)`. `Relay<S, C>` and the type aliases carry the choice, so the call sites in
+`ops`, `link`, `groups` and `large` change by one argument, not by logic. This changes the design (from four traits
+become five: `Store`, `History`, `Socket`, `Connector`, `Clock`) and the signature list in step 3.
+
+### 3b. Attachments and opening a vault go through `Store`
+
+- `save_attachment`, `load_attachment` and `delete_attachment` use `Store::put/get/delete` with a path-like name
+  such as `attachments/<tag>.enc`, sealed as now. The native `Store` maps that name to the same file, so existing
+  vaults are unchanged. (Attachments in the browser are a separate ADR; the shared code still needs these calls
+  to exist and to work over `Store`.)
+- `Home::create(dir, ...)` and `Home::unlock(dir, passphrase)` take a `Store` instead of a directory, and read
+  the vault header through it (`get("vault.hdr")` or the existing name). The native constructor is a thin
+  wrapper: `Home::unlock_dir(path, passphrase)` builds the file `Store` and calls `unlock`. `Home::exists(dir)`
+  becomes `Store::get(header).is_some()`.
 
 ### 4. Futures stay `Send` where the native app needs it
 
@@ -123,6 +162,12 @@ future that holds `&S` across an `.await` is not `Send` on native. Shared code t
 loosen it. (`trait_variant::make` was considered; it generates a second trait and makes generic shared code
 name two, so it is not used.) Step 3 of the order of work proves the mechanism on `Socket` and `Clock` before
 it is applied to the rest.
+
+### 4a. No `tokio` in the shared crate
+
+`spike-client` depends on `futures` and the traits only. It does not enable `tokio` features at all. The native
+crate keeps `net`, `rt-multi-thread` and `time`. The timeout in `ops.rs` becomes `select(op, clock.sleep(..))`.
+A CI check fails the build if `tokio` appears in `spike-client`'s dependency tree.
 
 ### 5. What moves and what stays
 
@@ -172,8 +217,8 @@ shared `app` crate (which uses many) keep their old paths.
 1. Add a `wasm32` CI build of `spike-core` now (with the `getrandom` browser features), so a new time or file call is caught the moment it appears. Then list the call sites: every use of `Home` file access, SQLite, `SystemTime`/`Instant`, `Target` paths, and
    the `lib.rs` items the moved modules import. The result fixes the `History` operation list and the move list
    in this ADR.
-2. Introduce `Store` (async) and make `Home` generic over it; native `Store` is the current code.
-3. Introduce `Socket` and `Clock`; make `Relay` generic; route the seven direct time calls through `Clock`.
+2. Introduce `Store` (async) and make `Home` generic over it, including attachments and `create`/`unlock`; native `Store` is the current code.
+3. Introduce `Socket`, `Connector` and `Clock`; make `Relay` generic; route the direct time calls (seven, and the `tokio::time::timeout` in `ops.rs`) through `Clock`; change the 17 `Relay::connect` call sites.
 4. Introduce `History`; native implementation is the current store.
 5. Create `spike-client`; move the modules and the `lib.rs` items; `spike-cli` depends on it, re-exports, and
    keeps the type aliases.
@@ -185,7 +230,7 @@ shared `app` crate (which uses many) keep their old paths.
 
 - Positive: one client for desktop, Android and web; no relay or wire change; Center Work's `Link` uses it
   directly.
-- Cost: larger than first thought. Making storage async touches many functions; four traits spread generic
+- Cost: larger than first thought. Making storage async touches many functions; five traits and the `DirectPath` hook spread generic
   parameters through signatures (type aliases limit this at the edges); `dyn` can be used at a few boundaries.
 - Risk: atomicity and `0600` permissions must not weaken; the native `Store` keeps `write_private` as it is and
   the existing vault tests (tamper, truncation, copied from another vault) run against it.
