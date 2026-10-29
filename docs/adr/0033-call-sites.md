@@ -144,4 +144,8 @@ So the re-exports in step 5 keep them compiling (count of mentions in `app`, `de
 `.github/workflows/ci.yml` has a new job `wasm-core`: `cargo build -p spike-core --target
 wasm32-unknown-unknown`. For it to build, `core/Cargo.toml` gets a target-only section that turns on the
 `getrandom` browser features (`js` for 0.2, `wasm_js` for 0.4); no other target is affected. It is compile-only:
-see the `SystemTime` caution in section 1. Run locally on 2026-10-29, it builds (2 min 24 s cold).
+it also runs `core/tests/wasm_envelope.rs` in node through `wasm-bindgen-test-runner` (installed at the version of
+`wasm-bindgen` in `Cargo.lock`, 0.2.129). One test runs (the browser's random source works). The second, an
+envelope being made, is `ignore`d because it panics today at `SystemTime::now()`; run with `-- --include-ignored` to see
+it. Remove the `ignore` when `Clock` reaches `core` (step 3). Headless Chrome was not tried; node is enough for panics
+of this kind, but not for IndexedDB or WebSocket, which stage 2 needs. See the `SystemTime` caution in section 1. Run locally on 2026-10-29, it builds (2 min 24 s cold).
