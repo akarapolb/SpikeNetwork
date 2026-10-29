@@ -117,7 +117,8 @@ pub trait Store {
 ```
 
 On native `MaybeSend` is `Send`, so spawning works and a non-`Send` future is a compile error there. On `wasm32`
-it is empty, so the browser types need no wrapper and no thread hop. Shared code that holds a future across an
+it is empty, so the browser types need no wrapper and no thread hop. Generic shared code also requires `S: Sync` (and `Send` where it moves a value across a task), otherwise a
+future that holds `&S` across an `.await` is not `Send` on native. Shared code that holds a future across an
 `.await` must be written to the stricter (native) rule, which the native build enforces; the `wasm32` build cannot
 loosen it. (`trait_variant::make` was considered; it generates a second trait and makes generic shared code
 name two, so it is not used.) Step 3 of the order of work proves the mechanism on `Socket` and `Clock` before
@@ -129,6 +130,23 @@ it is applied to the rest.
 |---|---|
 | `process`, `Outcome`, `apply_*` (from `lib.rs`), `groups`, `large`, `apps`, `link`, `ops`, `requests`, `sync`, `agent`, `client` (over traits), `state` (over `Store`) | `direct.rs` (it uses TCP and UDP sockets and a hostname lookup directly; a page can do neither, so direct connections stay native and, if the browser ever needs them, sit behind their own trait later), `main.rs` (commands, `rpassword`, `clap`), the native `Store`, `Socket`, `Clock` and TLS dial (`transport.rs`), the SQLite `History`, `verifier.rs` file parts, `backup.rs` file export |
 | `large.rs` glue, once `spike-mls` builds for wasm (stage 4) | `spike-mls` gets the two feature changes above |
+
+**`ops` and `direct`.** `ops.rs` moves but calls `crate::direct` (at `ops.rs` 230-233 and 518): it checks
+`direct::enabled`, tries `try_send`, and falls back to the relay. With `direct` staying native, `ops` could not
+compile in `spike-client`. A small hook solves it:
+
+```rust
+pub trait DirectPath {
+    fn enabled(&self) -> bool;
+    fn try_send(&self, to: &str, blob: &[u8]) -> impl Future<Output = Result<bool>> + MaybeSend;  // true if sent
+}
+```
+
+`ops` takes `Option<&dyn DirectPath>`-style access (an optional argument, or a type parameter with a no-op
+default). Native passes the real one, built on `direct.rs`; the browser passes none, so every send goes through
+the relay, which is what happens today when `direct::enabled` is false. Step 5 of the order of work does this
+before the move, so `ops` has no import of `direct` when it moves. Any other module found importing a native-only
+module in step 1 gets the same treatment.
 
 `spike-cli` re-exports every moved module so `desktop` (Tauri; it uses one item), `mobile/` (needs nothing) and the
 shared `app` crate (which uses many) keep their old paths.
