@@ -16,7 +16,6 @@ use spike_core::owner::{DeviceEntry, DeviceList, OwnerKey};
 use spike_core::vault::KdfParams;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
 
 pub use container::{backup_kdf, created_at, generate_key, MIN_PASSPHRASE_CHARS};
@@ -63,10 +62,7 @@ pub struct Status {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    spike_core::clock::now_ms()
 }
 
 pub fn status(home: &Home) -> Result<Status> {

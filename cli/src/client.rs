@@ -1,16 +1,18 @@
 //! Minimal relay client: authenticate, send, receive, ack.
 //! See [`crate::transport`] for how the connection is made (wss, or ws to loopback).
 
-use crate::transport::{dial, Target, Ws};
+use crate::socket::{Connector, Socket, TokioClock, WsConnector, WsSocket};
+use crate::transport::Target;
 use anyhow::{anyhow, bail, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::future::{select, Either};
+use futures_util::pin_mut;
+use spike_core::clock::Clock;
 use spike_core::identity::{Identity, SignedPrekey};
 use spike_core::mailbox::{self, MailboxKey};
 use spike_core::owner::DeviceList;
 use spike_core::wire::{ClientMsg, GroupKind, ServerMsg, WireEntry, WireSeal};
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
-use tokio_tungstenite::tungstenite::Message;
+use std::time::Duration;
 
 /// Credentials for the relay operator's TURN server (ADR 0028).
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
@@ -71,8 +73,11 @@ fn group_entry(e: WireEntry) -> Result<GroupEntry> {
     })
 }
 
-pub struct Relay {
-    ws: Ws,
+/// A connection to a relay. `Relay` on its own is the native one (`tokio-tungstenite` and `tokio` timers);
+/// [`Relay::connect_with`] makes one over any [`Socket`] and [`Clock`] (ADR 0033, step 3).
+pub struct Relay<S: Socket = WsSocket, C: Clock + Clone = TokioClock> {
+    ws: S,
+    clock: C,
     pending: VecDeque<Delivery>,
     pub device_id: String,
     /// How many of our prekeys the relay held when we connected (updated on publish).
@@ -83,9 +88,10 @@ pub struct Relay {
     keepalive: Duration,
     /// How long an answer to a ping may take before the connection counts as lost.
     pong_wait: Duration,
-    next_ping: Instant,
+    /// Monotonic milliseconds (`Clock::mono_ms`).
+    next_ping: u64,
     /// Set after a ping went out; cleared by anything the relay sends.
-    pong_due: Option<Instant>,
+    pong_due: Option<u64>,
     /// Group entries pushed while this connection was waiting for something else.
     group_pending: VecDeque<(String, GroupEntry, bool)>,
 }
@@ -94,20 +100,38 @@ pub struct Relay {
 const KEEPALIVE: Duration = Duration::from_secs(25);
 const PONG_WAIT: Duration = Duration::from_secs(15);
 
+fn ms(d: Duration) -> u64 {
+    d.as_millis().min(u64::MAX as u128) as u64
+}
+
 impl Relay {
+    /// Connect natively: `wss://` (or `ws://` to loopback), `tokio` timers.
     pub async fn connect(target: impl Into<Target>, me: &Identity) -> Result<Self> {
+        Self::connect_with(&WsConnector, TokioClock, target, me).await
+    }
+}
+
+impl<S: Socket, C: Clock + Clone> Relay<S, C> {
+    /// Connect through `connector` and keep time with `clock`.
+    pub async fn connect_with<N: Connector<Socket = S>>(
+        connector: &N,
+        clock: C,
+        target: impl Into<Target>,
+        me: &Identity,
+    ) -> Result<Self> {
         let target = target.into();
         let audience = target.audience();
-        let ws = dial(&target).await?;
+        let ws = connector.connect(&target).await?;
         let mut r = Self {
             ws,
+            next_ping: clock.mono_ms() + ms(KEEPALIVE),
+            clock,
             pending: VecDeque::new(),
             device_id: String::new(),
             prekeys: 0,
             fallback_age_secs: None,
             keepalive: KEEPALIVE,
             pong_wait: PONG_WAIT,
-            next_ping: Instant::now() + KEEPALIVE,
             pong_due: None,
             group_pending: VecDeque::new(),
         };
@@ -173,18 +197,22 @@ impl Relay {
     pub fn set_keepalive(&mut self, interval: Duration, pong_wait: Duration) {
         self.keepalive = interval;
         self.pong_wait = pong_wait;
-        self.next_ping = Instant::now() + interval;
+        self.next_ping = self.clock.mono_ms() + ms(interval);
         self.pong_due = None;
     }
 
     /// Round-trip time to the relay: send a ping and wait for the pong. Deliveries that
     /// arrive meanwhile are kept for `next_delivery`.
     pub async fn ping(&mut self) -> Result<Duration> {
-        let t = Instant::now();
+        let t = self.clock.mono_ms();
         self.write(&ClientMsg::Ping).await?;
         loop {
             match self.read().await? {
-                ServerMsg::Pong => return Ok(t.elapsed()),
+                ServerMsg::Pong => {
+                    return Ok(Duration::from_millis(
+                        self.clock.mono_ms().saturating_sub(t),
+                    ))
+                }
                 ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
                     id,
                     blob: hex::decode(blob)?,
@@ -201,7 +229,7 @@ impl Relay {
     /// caller can reconnect (a router may have dropped the connection without telling us).
     /// Group entries pushed meanwhile are kept for [`next_group_entry`](Self::next_group_entry).
     pub async fn next_delivery(&mut self, idle: Option<Duration>) -> Result<Option<Delivery>> {
-        let deadline = idle.map(|d| Instant::now() + d);
+        let deadline = idle.map(|d| self.clock.mono_ms() + ms(d));
         loop {
             match self.incoming_until(deadline, false).await? {
                 None => return Ok(None),
@@ -215,13 +243,13 @@ impl Relay {
     /// group mailboxes this connection subscribed to. For a listener that only needs to know
     /// that *something* arrived.
     pub async fn next_incoming(&mut self, idle: Option<Duration>) -> Result<Option<Incoming>> {
-        let deadline = idle.map(|d| Instant::now() + d);
+        let deadline = idle.map(|d| self.clock.mono_ms() + ms(d));
         self.incoming_until(deadline, true).await
     }
 
     async fn incoming_until(
         &mut self,
-        deadline: Option<Instant>,
+        deadline: Option<u64>,
         with_groups: bool,
     ) -> Result<Option<Incoming>> {
         loop {
@@ -241,15 +269,15 @@ impl Relay {
             if let Some(d) = deadline {
                 wake = wake.min(d);
             }
-            let msg = match tokio::time::timeout_at(wake.into(), self.read_raw()).await {
-                Ok(m) => {
+            let msg = match self.read_raw_until(wake).await {
+                Some(m) => {
                     // The relay is alive: anything it sends counts as an answer.
                     self.pong_due = None;
-                    self.next_ping = Instant::now() + self.keepalive;
+                    self.next_ping = self.clock.mono_ms() + ms(self.keepalive);
                     m?
                 }
-                Err(_) => {
-                    let now = Instant::now();
+                None => {
+                    let now = self.clock.mono_ms();
                     if self.pong_due.is_some_and(|due| now >= due) {
                         bail!("lost the connection to the relay (no answer to a ping)");
                     }
@@ -260,8 +288,8 @@ impl Relay {
                         self.write(&ClientMsg::Ping).await?;
                         // The deadline runs from the first ping nobody has answered: a later
                         // ping must not push it back.
-                        self.pong_due.get_or_insert(now + self.pong_wait);
-                        self.next_ping = now + self.keepalive;
+                        self.pong_due.get_or_insert(now + ms(self.pong_wait));
+                        self.next_ping = now + ms(self.keepalive);
                     }
                     continue;
                 }
@@ -497,14 +525,14 @@ impl Relay {
         &mut self,
         idle: Duration,
     ) -> Result<Option<(String, GroupEntry, bool)>> {
-        let deadline = Instant::now() + idle;
+        let deadline = self.clock.mono_ms() + ms(idle);
         loop {
             if let Some(e) = self.group_pending.pop_front() {
                 return Ok(Some(e));
             }
-            match tokio::time::timeout_at(deadline.into(), self.read_raw()).await {
-                Err(_) => return Ok(None),
-                Ok(m) => match m? {
+            match self.read_raw_until(deadline).await {
+                None => return Ok(None),
+                Some(m) => match m? {
                     ServerMsg::GroupEntry {
                         mailbox,
                         entry,
@@ -757,25 +785,30 @@ impl Relay {
     }
 
     async fn write(&mut self, m: &ClientMsg) -> Result<()> {
-        self.ws
-            .send(Message::Text(serde_json::to_string(m)?.into()))
-            .await?;
-        Ok(())
+        self.ws.send(serde_json::to_string(m)?).await
     }
 
     /// The next message from the relay, whatever it is.
     async fn read_raw(&mut self) -> Result<ServerMsg> {
-        loop {
-            match self
-                .ws
-                .next()
-                .await
-                .ok_or_else(|| anyhow!("relay closed the connection"))??
-            {
-                Message::Text(t) => return Ok(serde_json::from_str(&t)?),
-                Message::Close(_) => bail!("relay closed the connection"),
-                _ => {}
-            }
+        let text = self
+            .ws
+            .recv()
+            .await?
+            .ok_or_else(|| anyhow!("relay closed the connection"))?;
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// [`read_raw`](Self::read_raw), but give up (`None`) when the monotonic clock reaches `until_ms`.
+    async fn read_raw_until(&mut self, until_ms: u64) -> Option<Result<ServerMsg>> {
+        let wait = until_ms.saturating_sub(self.clock.mono_ms());
+        let clock = self.clock.clone();
+        let sleep = clock.sleep(wait);
+        let read = self.read_raw();
+        pin_mut!(sleep);
+        pin_mut!(read);
+        match select(read, sleep).await {
+            Either::Left((m, _)) => Some(m),
+            Either::Right(_) => None,
         }
     }
 

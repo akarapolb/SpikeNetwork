@@ -11,6 +11,7 @@ pub mod app;
 pub mod attachment;
 pub mod backup;
 pub mod call;
+pub mod clock;
 pub mod direct;
 pub mod envelope;
 pub mod group;

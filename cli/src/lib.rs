@@ -11,6 +11,7 @@ pub mod link;
 pub mod messages;
 pub mod ops;
 pub mod requests;
+pub mod socket;
 pub mod state;
 pub mod store;
 pub mod sync;

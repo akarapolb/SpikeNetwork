@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use spike_core::link::{is_link_frame, Assembler, LinkOffer, LinkSession, NewDevice};
 use spike_core::owner::{DeviceEntry, DeviceList, OwnerKey};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 /// How much history the new device receives. Text only: attachments do not exist yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,7 +248,7 @@ pub async fn finish(
         .publish_device_list(&list)
         .await?;
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+    let now = spike_core::clock::now_ms();
     let messages: Vec<StoredMessage> = match history {
         History::None => Vec::new(),
         History::All => home.messages()?.all()?,

@@ -16,12 +16,16 @@ fn random_bytes_come_from_the_browser() {
     assert_ne!(a, b);
 }
 
-/// Known to fail today: `Envelope::text` reads `SystemTime::now()` (core/src/envelope.rs), which panics on
-/// wasm32-unknown-unknown. Step 3 of ADR 0033 routes it through `Clock`; remove the `ignore` then.
-/// Run it meanwhile with `-- --include-ignored` to see the panic.
+/// An envelope is stamped with the wall clock. `SystemTime::now()` panics on wasm32-unknown-unknown; the stamp
+/// now comes from `spike_core::clock::now_ms()`, which reads the page's `Date.now()` there (ADR 0033, step 3).
 #[wasm_bindgen_test]
-#[ignore = "SystemTime::now() panics in wasm until Clock is injected (ADR 0033 step 3)"]
 fn an_envelope_can_be_made_in_the_browser() {
+    let before = spike_core::clock::now_ms();
     let e = Envelope::text("hello from wasm").expect("an envelope");
     assert_eq!(e.body, "hello from wasm");
+    assert!(
+        e.ts >= before && before > 1_700_000_000_000,
+        "{} {before}",
+        e.ts
+    );
 }

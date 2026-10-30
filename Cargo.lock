@@ -2980,6 +2980,7 @@ dependencies = [
  "hex",
  "hkdf 0.13.0",
  "hmac 0.13.0",
+ "js-sys",
  "rand 0.8.8",
  "serde",
  "serde_json",

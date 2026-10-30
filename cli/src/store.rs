@@ -11,25 +11,9 @@ use anyhow::Result;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 
-/// `Send` on native, nothing on `wasm32` (see the module comment).
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaybeSend: Send {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Send> MaybeSend for T {}
-#[cfg(target_arch = "wasm32")]
-pub trait MaybeSend {}
-#[cfg(target_arch = "wasm32")]
-impl<T> MaybeSend for T {}
-
-/// `Sync` on native, nothing on `wasm32`.
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaybeSync: Sync {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Sync> MaybeSync for T {}
-#[cfg(target_arch = "wasm32")]
-pub trait MaybeSync {}
-#[cfg(target_arch = "wasm32")]
-impl<T> MaybeSync for T {}
+// `Send` on native, nothing on `wasm32` (see the module comment). Defined in `spike_core::clock`, where the
+// `Clock` trait needs them too.
+pub use spike_core::clock::{MaybeSend, MaybeSync};
 
 /// Named blobs. Names are plain relative paths such as `contacts.enc` or `attachments/<tag>.enc`; what is stored
 /// is already sealed (or, for the vault header, not secret), so a store needs no key.

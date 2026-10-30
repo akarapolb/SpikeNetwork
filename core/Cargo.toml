@@ -26,6 +26,8 @@ hkdf = "0.13"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+# the page's clock (core::clock::now_ms)
+js-sys = "0.3"
 
 # Tests that run inside wasm (node), see core/tests/wasm_envelope.rs.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
