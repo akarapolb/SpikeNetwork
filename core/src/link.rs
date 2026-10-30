@@ -238,7 +238,7 @@ impl LinkSession {
             OsRng.fill_bytes(&mut nonce);
             let ct = cipher
                 .encrypt(
-                    XNonce::from_slice(&nonce),
+                    &XNonce::from(nonce),
                     Payload {
                         msg: c,
                         aad: &header,
@@ -277,7 +277,7 @@ impl<'s> Assembler<'s> {
         let total = u32::from_be_bytes(frame[9..13].try_into().unwrap());
         let plain = XChaCha20Poly1305::new((&self.session.key).into())
             .decrypt(
-                XNonce::from_slice(&frame[13..37]),
+                &XNonce::try_from(&frame[13..37]).map_err(|_| Error::Malformed)?,
                 Payload {
                     msg: &frame[37..],
                     aad: &frame[..13],

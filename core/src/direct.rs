@@ -49,7 +49,7 @@ fn expand(hk: &Hkdf<Sha256>, info: &[u8]) -> [u8; 32] {
 fn nonce(n: u64) -> XNonce {
     let mut b = [0u8; 24];
     b[16..].copy_from_slice(&n.to_be_bytes());
-    *XNonce::from_slice(&b)
+    XNonce::from(b)
 }
 
 fn seal_once(key: &[u8; 32], plain: &[u8]) -> Vec<u8> {

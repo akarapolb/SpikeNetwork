@@ -91,7 +91,7 @@ impl Attachment {
         }
         self.cipher()?
             .decrypt(
-                XNonce::from_slice(&sealed[..24]),
+                &XNonce::try_from(&sealed[..24]).map_err(|_| Error::Malformed)?,
                 Payload {
                     msg: &sealed[24..],
                     aad: &aad(&self.blob, idx, self.chunks),
@@ -141,7 +141,7 @@ pub fn seal_file(name: &str, plain: &[u8]) -> Result<(Attachment, Vec<Vec<u8>>)>
         OsRng.fill_bytes(&mut nonce);
         let ct = cipher
             .encrypt(
-                XNonce::from_slice(&nonce),
+                &XNonce::from(nonce),
                 Payload {
                     msg: p,
                     aad: &aad(&att.blob, i as u32, att.chunks),
