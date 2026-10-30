@@ -20,3 +20,13 @@ rand = "0.8"
 hmac = "0.12"
 sha1 = "0.10"
 hkdf = "0.12"
+
+# spike-core also builds for the browser (ADR 0033). getrandom needs to be told to use the page's crypto there;
+# these two lines change nothing for any other target.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
+# Tests that run inside wasm (node), see core/tests/wasm_envelope.rs.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

@@ -38,6 +38,28 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
 
+  # spike-core must keep building for the browser (ADR 0033): a new file, socket or system-clock use that does
+  # not compile for wasm32 is caught here the moment it appears. The test run is small on purpose (ADR 0033): one
+  # test that runs, one known to fail until `Clock` is injected (it is `ignore`d, with the reason).
+  wasm-core:
+    name: spike-core for wasm32
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo build -p spike-core --target wasm32-unknown-unknown
+      # Run the wasm tests in node. The runner must be the same version as the wasm-bindgen in Cargo.lock.
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+        with:
+          tool: wasm-bindgen-cli@0.2.129
+      - run: cargo test -p spike-core --target wasm32-unknown-unknown --test wasm_envelope
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+
   # The real binaries end to end: two devices, a TLS relay that is killed mid-run.
   demo:
     name: demo script
