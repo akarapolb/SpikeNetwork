@@ -19,7 +19,6 @@ use spike_core::app::{self, AppChannel, AppData, Mode};
 use spike_core::attachment::Attachment;
 use spike_core::envelope::{Envelope, Kind};
 use std::collections::VecDeque;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const APPS: &str = "apps.json";
 const INBOX: &str = "app-inbox.json";
@@ -43,10 +42,7 @@ fn locked() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    spike_core::clock::now_ms()
 }
 
 /// An application this device accepts data for.

@@ -7,7 +7,6 @@
 use crate::{Error, Result};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const VERSION: u8 = 1;
 /// Largest text body accepted, in bytes (the session layer caps the whole envelope).
@@ -115,10 +114,7 @@ impl Envelope {
         }
         let mut id = [0u8; 16];
         OsRng.fill_bytes(&mut id);
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let ts = crate::clock::now_ms();
         Ok(Self {
             v: VERSION,
             id: hex::encode(id),

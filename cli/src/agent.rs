@@ -49,10 +49,7 @@ fn committed_24h(all: &[Inbound], agent: &str, now: u64, skip: Option<&str>) -> 
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    spike_core::clock::now_ms()
 }
 
 // ------------------------------------------------------------ principal side

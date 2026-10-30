@@ -9,7 +9,7 @@
 use crate::messages::{Direction, StoredMessage};
 use crate::state::{Added, OwnUpdate};
 use crate::sync::{self, SyncMsg};
-use crate::{client::Relay, process, state::Home, transport::Target, Outcome};
+use crate::{client::Relay, process, socket::TokioClock, state::Home, transport::Target, Outcome};
 use anyhow::{anyhow, bail, Context, Result};
 use spike_core::attachment::{seal_file, Attachment};
 use spike_core::envelope::{Envelope, Kind};
@@ -747,9 +747,8 @@ async fn classify(
     let mut relay = relay;
     if matches!(outcome, Outcome::UnknownSender { .. }) {
         if relay.is_none() {
-            tmp = tokio::time::timeout(Duration::from_secs(3), Relay::connect(base.clone(), me))
+            tmp = crate::socket::timeout(&TokioClock, 3_000, Relay::connect(base.clone(), me))
                 .await
-                .ok()
                 .and_then(Result::ok);
             relay = tmp.as_mut();
         }
@@ -872,10 +871,7 @@ pub async fn finish_direct(
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    spike_core::clock::now_ms()
 }
 
 /// How far before our last successful sync a catch-up request reaches back, to
