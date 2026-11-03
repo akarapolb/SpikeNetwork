@@ -41,7 +41,6 @@ services:
       - --max-port=49200
       - --fingerprint
       - --no-tls
-      - --no-dtls
       - --no-cli
       - --no-multicast-peers
       - --user-quota=4
