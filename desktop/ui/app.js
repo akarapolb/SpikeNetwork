@@ -482,7 +482,7 @@ function threadItems(inGroup) {
     items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") + (hit ? " hit" : "") + (hit && m.id === current ? " current" : ""), "data-id": m.id },
       quoteOf(m),
       inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag waiting", style: "margin-left:6px" }, "Not verified")) : null,
-      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, hit ? marked(m.body) : m.body) : null),
+      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, hit ? marked(m.body) : mentioned(m.body)) : null),
       imageThumb(m),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       reactionsOf(m),
@@ -490,6 +490,66 @@ function threadItems(inGroup) {
   }
   return items;
 }
+/* "@" mentions: typing @ in a composer offers the people in the chat (in a group, its members); picking one inserts "@Name".
+   The mention is plain text in the message, so everyone sees it and nothing is sent beyond the message itself. */
+function mentionBox(ta, people) {
+  const list = h("div", { class: "mentions", role: "listbox", "aria-label": "Mention someone", hidden: true });
+  let items = [], at = -1, active = 0;
+  const close = () => { list.hidden = true; list.replaceChildren(); items = []; at = -1; };
+  const pick = (name) => {
+    const caret = ta.selectionStart;
+    ta.value = ta.value.slice(0, at) + "@" + name + " " + ta.value.slice(caret);
+    const pos = at + name.length + 2;
+    ta.setSelectionRange(pos, pos); close(); ta.focus();
+  };
+  const show = () => {
+    list.replaceChildren(...items.map((n, i) => h("button", { class: "mention" + (i === active ? " on" : ""), type: "button", role: "option", "aria-selected": String(i === active), onmousedown: (e) => { e.preventDefault(); pick(n); } }, n)));
+    list.hidden = !items.length;
+  };
+  ta.addEventListener("input", () => {
+    const before = ta.value.slice(0, ta.selectionStart);
+    const m = /(^|\s)@([^\n@]{0,30})$/.exec(before);
+    if (!m) return close();
+    at = before.length - m[2].length - 1;
+    const q = m[2].toLowerCase();
+    items = people().filter((n) => n.toLowerCase().includes(q)).slice(0, 6);
+    active = 0; show();
+  });
+  ta.addEventListener("blur", close);
+  return {
+    list,
+    /** Handles a key while the list is open. Returns true when the key was used, so Enter does not send. */
+    key(e) {
+      if (list.hidden || !items.length) return false;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); active = (active + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length; show(); return true; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(items[active]); return true; }
+      if (e.key === "Escape") { e.preventDefault(); close(); return true; }
+      return false;
+    },
+  };
+}
+/** Names that can be mentioned in the open chat or group, for highlighting "@Name" in messages. */
+function mentionNames() {
+  const names = st.ov ? st.ov.contacts.map((c) => c.name) : [];
+  if (st.group && st.gdetail) names.push(...st.gdetail.members.map((m) => m.name));
+  return [...new Set(names)].filter(Boolean);
+}
+/** Message text with each known "@Name" shown as a highlighted mention. */
+function mentioned(text) {
+  const names = mentionNames().sort((a, b) => b.length - a.length);
+  if (!names.length || !text.includes("@")) return text;
+  const alt = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const re = new RegExp("@(" + alt + ")(?![\\p{L}\\p{N}])", "gu");
+  const out = []; let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push(h("span", { class: "mention-tag" }, m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
 function chatMain() {
   if (st.group) return groupMain();
   const c = st.ov.contacts.find((x) => x.name === st.chat);
@@ -499,7 +559,8 @@ function chatMain() {
     h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
   const items = threadItems(false);
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
-  const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: `Message ${c.name}`, rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
+  const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: `Message ${c.name}`, rows: "1", onkeydown: (e) => { if (mention.key(e)) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
+  const mention = mentionBox(ta, () => st.ov.contacts.map((x) => x.name));
   async function send() {
     const text = ta.value; if (!text.trim()) return; ta.disabled = true;
     try { const n = await invoke("send", { name: c.name, text, replyTo: st.replyTo ? st.replyTo.id : null }); ta.value = ""; st.replyTo = null; if (!n) toast("Saved, but no device could be reached yet. It will be delivered when they connect."); await refresh(); scrollEnd(); }
@@ -507,7 +568,7 @@ function chatMain() {
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
   return [head, findBar(), h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
-    h("div", { class: "composer" }, replyStrip(), h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
+    h("div", { class: "composer" }, mention.list, replyStrip(), h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
 }
 
 /* ---------- verify + add ---------- */
@@ -1046,7 +1107,8 @@ function groupMain() {
   const refusedNote = !left && d.large && d.refused ? h("div", { class: "sysline", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
     h("span", { style: "flex:1" }, `${plural(d.refused, "change was", "changes were")} refused because ${d.refused === 1 ? "it" : "they"} broke the group's rules, and skipped. Latest: ${d.refused_why || "unknown"}.`)) : null;
   const items = threadItems(true);
-  const ta = h("textarea", { "aria-label": "Message to " + d.name, placeholder: `Message ${d.name}`, rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
+  const ta = h("textarea", { "aria-label": "Message to " + d.name, placeholder: `Message ${d.name}`, rows: "1", onkeydown: (e) => { if (mention.key(e)) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
+  const mention = mentionBox(ta, () => d.members.filter((m) => !m.you).map((m) => m.name));
   async function send() {
     const text = ta.value; if (!text.trim()) return; ta.disabled = true;
     try {
@@ -1058,7 +1120,7 @@ function groupMain() {
   }
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendGroupFile(d.id, f, ta.value); } });
   const composer = left ? h("div", { class: "composer" }, h("span", { class: "note" }, d.large ? "You are not in this group. Your history stays on this computer; an admin can invite you again." : "You are not in this group. Your history stays on this computer; nobody can add you back without your OK."))
-    : h("div", { class: "composer" }, replyStrip(), h("div", { class: "bar" }, d.large ? null : h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), d.large ? null : picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
+    : h("div", { class: "composer" }, mention.list, replyStrip(), h("div", { class: "bar" }, d.large ? null : h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), d.large ? null : picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
       h("span", { class: "note" }, d.large ? `One encrypted copy for all ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}. Files are not available in large groups yet.` : `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
   return [head, findBar(), warn, refusedNote, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState("No messages yet.")), composer].filter(Boolean);
 }
