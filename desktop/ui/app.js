@@ -244,6 +244,12 @@ function render() {
   $("list").replaceChildren(...items);
   $("shell").classList.toggle("nolist", !items.length);
   const main = st.screen ? SCREENS[st.screen]() : S.main();
+  // A redraw of the same screen (a button that changes its text, a poll) keeps the scroll position;
+  // moving to another screen starts at the top.
+  const viewKey = `${st.section}|${st.screen || ""}|${st.chat || ""}|${st.group || ""}`;
+  const oldScroll = $("main").querySelector(".scroll");
+  const keepTop = oldScroll && st.viewKey === viewKey ? oldScroll.scrollTop : null;
+  st.viewKey = viewKey;
   const banners = [];
   if (st.ov.me.removed) banners.push(h("div", { class: "err-banner", role: "alert" }, h("b", {}, "This device was removed from your identity."), " It keeps what it already has but receives nothing new. Create a new identity here, or link it again from your main device."));
   if (st.offline) banners.push(h("div", { class: "err-banner", role: "status" }, "Cannot reach the relay at ", h("b", {}, st.ov.relay), ". Messages are kept and sent when it is back. Check Settings."));
@@ -251,6 +257,7 @@ function render() {
   if (st.updateReady) banners.push(updateBanner(st.updateReady));
   // A screen may leave a slot empty (no search bar, no warning): replaceChildren would print it as "null".
   $("main").replaceChildren(...banners, ...main.filter(Boolean));
+  if (keepTop != null) { const s = $("main").querySelector(".scroll"); if (s) s.scrollTop = keepTop; }
   // A redraw (typing, or a message arriving) keeps the search box focused with the cursor at the end.
   if (keep) { const i = document.querySelector(`[data-keep="${keep}"]`); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
   // Searching in a conversation: bring the current match into view once, when it changes.
