@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Spike Connect",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "identifier": "network.spike.connect",
   "build": {
     "frontendDist": "../ui"
@@ -39,6 +39,17 @@
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERGOTM3OUVDNkI4N0NBMkIKUldRcnlvZHI3SG1UM3lqSFNIWmQyU0JHSmFBZ0pMRERCTTd1c1o3WmlmNnEvYnV6eWh5OEdxWHoK",
+      "endpoints": [
+        "https://github.com/akarapolb/SpikeNetwork/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

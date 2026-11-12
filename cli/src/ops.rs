@@ -469,13 +469,16 @@ pub async fn send_call(
     signal: &spike_core::call::Signal,
     to: &spike_core::call::Target,
 ) -> Result<SendReport> {
+    // `quick`: a call signal skips the relay housekeeping (prekeys, device lists, contact refresh). Those
+    // extra connections displace the listener's connection on the relay, which made the relay link drop
+    // and come back during every call (ADR 0028: calls are quick, as live app data is).
     deliver_to(
         home,
         relay.into(),
         name,
         Envelope::call(signal)?,
         Some(to),
-        false,
+        true,
     )
     .await
 }

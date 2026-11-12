@@ -101,10 +101,13 @@ function stop() { st.seen = null; clearInterval(st.polling); st.polling = null; 
 function listenToBackend() {
   const ev = window.__TAURI__ && window.__TAURI__.event;
   if (!ev) return;
+  // A verified update may already be waiting from before this window opened.
+  invoke("update_status").then((s) => { st.updateAuto = s.auto; st.updateReady = s.ready; render(); }).catch(() => {});
   ev.listen("synced", async (e) => { if (!st.ov) return; st.offline = false; for (const n of (e.payload && e.payload.notes) || []) { const t = st.seenNotes.get(n); if (!t || Date.now() - t > 10000) toast(n); st.seenNotes.set(n, Date.now()); } await refresh(); await markOpenRead(); scrollEnd(); });
   ev.listen("banner-open", (e) => { try { openFromBanner(JSON.parse(e.payload)); } catch (_) {} });
   ev.listen("app-connect", (e) => { if (!st.ov) return; st.appWaiting = e.payload || []; render(); refreshApps(); });
   ev.listen("banner-action", (e) => { try { bannerAction(JSON.parse(e.payload.open), e.payload.action); } catch (_) {} });
+  ev.listen("update-ready", (e) => { st.updateReady = e.payload; render(); });
   ev.listen("relay-status", (e) => { if (!st.ov) return; const off = !e.payload.online; if (off !== st.offline) { st.offline = off; render(); } });
 }
 
@@ -245,6 +248,7 @@ function render() {
   if (st.ov.me.removed) banners.push(h("div", { class: "err-banner", role: "alert" }, h("b", {}, "This device was removed from your identity."), " It keeps what it already has but receives nothing new. Create a new identity here, or link it again from your main device."));
   if (st.offline) banners.push(h("div", { class: "err-banner", role: "status" }, "Cannot reach the relay at ", h("b", {}, st.ov.relay), ". Messages are kept and sent when it is back. Check Settings."));
   for (const w of st.appWaiting || []) banners.push(appAskBanner(w));
+  if (st.updateReady) banners.push(updateBanner(st.updateReady));
   // A screen may leave a slot empty (no search bar, no warning): replaceChildren would print it as "null".
   $("main").replaceChildren(...banners, ...main.filter(Boolean));
   // A redraw (typing, or a message arriving) keeps the search box focused with the cursor at the end.
@@ -455,7 +459,8 @@ function chatMain() {
   const c = st.ov.contacts.find((x) => x.name === st.chat);
   if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), startState()];
   const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name), h("span", { class: c.agent ? "verified" : null }, c.agent ? [icon("shield"), "Agent"] : `End-to-end encrypted · ${c.devices} device${c.devices > 1 ? "s" : ""}`)),
-    findButton(), callButtons(c), h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
+    findButton(), callButtons(c), h("button", { class: "btn quiet", type: "button", onclick: () => { st.contactFor = c.name; st.contactForm = null; st.screen = "contact"; render(); } }, "Details"),
+    h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
   const items = threadItems(false);
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
   const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: `Message ${c.name}`, rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
@@ -492,8 +497,13 @@ function cardQr(card) {
 function copyCardButton() {
   return h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(st.ov.me.card); toast("Card copied. Send it to your contact."); } catch (_) { toast("Select the card text in Settings and copy it."); } } }, "Copy card");
 }
+/* What a new contact is first sent, so they can accept the request without pasting your card (ADR 0021). */
+const INTRO_TEXT = "Hi, I've added you as a contact on Spike. Accept my request so we can talk.";
 function addScreen() {
-  const name = h("input", { "aria-label": "Name", placeholder: "Name, e.g. Bob Chen" }), card = h("textarea", { class: "cardbox", "aria-label": "Identity card", placeholder: "Paste their identity card (starts with spike2:)" });
+  // The draft lives in state, not in the inputs: a redraw (a poll, a message arriving) must not lose what was typed.
+  const d = st.addDraft || (st.addDraft = { name: "", card: "" });
+  const name = h("input", { "aria-label": "Name", placeholder: "Name, e.g. Bob Chen", value: d.name, "data-keep": "addName", oninput: (e) => { d.name = e.target.value; } });
+  const card = h("textarea", { class: "cardbox", "aria-label": "Identity card", placeholder: "Paste their identity card (starts with spike2:)", "data-keep": "addCard", oninput: (e) => { d.card = e.target.value; } }, d.card);
   // Two steps side by side: their card in, your card out. Swapping cards is the whole of adding someone.
   return [header("Add a contact", () => { st.screen = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page" },
     h("p", { class: "lead" }, "There is no phone-number or email lookup. You swap cards directly, so no server learns who knows whom."),
@@ -501,12 +511,61 @@ function addScreen() {
       h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "1 · Add their card"),
         h("label", { style: "font-weight:600" }, "Name"), h("div", { class: "field" }, name),
         h("label", { style: "font-weight:600" }, "Their identity card"), card,
-        h("button", { class: "btn primary big", type: "button", onclick: async () => { try { st.addMsg = await invoke("add_contact", { name: name.value, card: card.value }); const n = name.value.trim(); await refresh(); st.screen = null; st.section = "chats"; await openChat(n); toast(st.addMsg); } catch (e) { toast(String(e)); } } }, "Add contact"),
+        h("button", { class: "btn primary big", type: "button", onclick: addContactFromScreen }, "Add contact"),
         h("p", { class: "note", style: "margin:0" }, "They arrive as not verified until you compare safety numbers.")),
       h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "2 · Give them yours"),
         h("span", { class: "note" }, "A phone scans this code. On a computer, copy your card and send it to them."),
         cardQr(st.ov.me.card),
         copyCardButton()))))];
+}
+async function addContactFromScreen() {
+  const d = st.addDraft || { name: "", card: "" };
+  const n = d.name.trim();
+  try {
+    const isNew = !st.ov.contacts.some((c) => c.name === n);
+    const msg = await invoke("add_contact", { name: d.name, card: d.card });
+    st.addDraft = null;
+    await refresh();
+    st.screen = null; st.section = "chats";
+    await openChat(n);
+    toast(msg);
+    // The other person must accept a request from us before they can talk to us; introducing ourselves
+    // now means they see that request straight away, with our card, and need no card of their own.
+    if (isNew) { try { await invoke("send", { name: n, text: INTRO_TEXT, replyTo: null }); await refresh(); } catch (_) {} }
+  } catch (e) { toast(String(e)); }
+}
+
+/* Contact details: rename, and replace the identity card when the person's devices changed (ADR 0008). */
+function contactScreen() {
+  const c = st.ov.contacts.find((x) => x.name === st.contactFor);
+  if (!c) { st.screen = null; return [header("Contact", () => { st.screen = null; render(); })]; }
+  const f = st.contactForm && st.contactForm.for === c.name ? st.contactForm : (st.contactForm = { for: c.name, name: c.name, card: "" });
+  const nameIn = h("input", { "aria-label": "Contact name", value: f.name, "data-keep": "contactName", oninput: (e) => { f.name = e.target.value; } });
+  const cardIn = h("textarea", { class: "cardbox", "aria-label": "New identity card", placeholder: "Only if they added or removed a device: paste their new card (starts with spike2:)", "data-keep": "contactCard", oninput: (e) => { f.card = e.target.value; } }, f.card);
+  const saveName = async () => {
+    const n = f.name.trim();
+    if (!n || n === c.name) { toast("Type a new name first."); return; }
+    try { await invoke("rename_contact", { old: c.name, name: n }); st.contactFor = n; st.chat = n; st.contactForm = null; await refresh(); toast(`Renamed to ${n}.`); }
+    catch (e) { toast(String(e)); }
+  };
+  const saveCard = async () => {
+    if (!f.card.trim()) { toast("Paste their new card first."); return; }
+    try { const msg = await invoke("add_contact", { name: c.name, card: f.card }); f.card = ""; await refresh(); toast(msg); }
+    catch (e) { toast(String(e)); }
+  };
+  return [header("Contact", () => { st.screen = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page" },
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Name"),
+      h("div", { class: "field" }, nameIn),
+      h("button", { class: "btn primary", type: "button", onclick: saveName }, "Save name")),
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Identity"),
+      h("span", { class: "note" }, c.verified ? "Verified: you compared the safety number." : "Not verified yet: compare the safety number over a call or in person."),
+      h("span", { class: "mono", style: "font-size:14px;overflow-wrap:anywhere" }, c.fingerprint),
+      h("span", { class: "note" }, `${c.devices} device${c.devices === 1 ? "" : "s"}`),
+      h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => { st.verifyFor = c.name; st.verifyDone = null; st.screen = "verify"; render(); } }, c.verified ? "Safety number" : "Verify")),
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Update their card"),
+      h("span", { class: "note" }, "Their identity stays the same: this only adds devices they added. A different identity is refused."),
+      cardIn,
+      h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: saveCard }, "Update card")))) ];
 }
 
 /* ---------- agents ---------- */
@@ -834,12 +893,26 @@ function restoreGate() {
 }
 
 /* ---------- updates: only when asked (docs/desktop-release.md) ---------- */
+/* A verified update waits for a restart. Installing restarts the app, so it waits for the person, and never during a call. */
+function updateBanner(r) {
+  const restart = async () => {
+    if (cs) { toast("Finish the call first. The update installs when you restart."); return; }
+    try { toast("Installing the update…"); await invoke("update_install"); }
+    catch (e) { toast(String(e)); }
+  };
+  return h("div", { class: "status soft", role: "status" }, h("span", {}, h("b", {}, `Spike Connect ${r.version} is ready.`), " Restart to finish updating. Your messages and identity are kept."),
+    h("button", { class: "btn primary", type: "button", onclick: restart }, "Restart to update"));
+}
 function updatesCard() {
   const u = st.update;
   const check = async () => { st.update = { busy: "Checking…" }; render(); try { st.update = await invoke("update_check"); } catch (e) { st.update = { error: String(e) }; } render(); };
-  const install = async () => { st.update = { ...st.update, busy: "Downloading and verifying…" }; render(); try { await invoke("update_install"); } catch (e) { st.update = { error: String(e) }; render(); } };
+  const install = async () => { if (cs) { toast("Finish the call first."); return; } st.update = { ...st.update, busy: "Downloading and verifying…" }; render(); try { await invoke("update_install"); } catch (e) { st.update = { error: String(e) }; render(); } };
+  const auto = h("input", { type: "checkbox", id: "update-auto", "aria-describedby": "update-auto-note" });
+  auto.checked = st.updateAuto !== false;
+  auto.addEventListener("change", async () => { try { await invoke("update_set_auto", { on: auto.checked }); st.updateAuto = auto.checked; toast(auto.checked ? "Spike will check for updates in the background." : "Automatic update checks are off."); } catch (e) { auto.checked = !auto.checked; toast(String(e)); } });
   return h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Updates"),
-    h("span", { class: "note" }, "Spike never looks for updates by itself, because a check tells the update server that this computer runs Spike. Check when you choose."),
+    h("label", { style: "display:flex;gap:10px;align-items:flex-start" }, auto, h("span", {}, h("b", { style: "font-weight:600" }, "Check for updates automatically"),
+      h("span", { class: "note", id: "update-auto-note", style: "display:block" }, "Spike checks at start-up and every six hours, and downloads a verified update. It installs only when you choose Restart to update. A check tells the update host (GitHub) this computer's address and that it runs Spike."))),
     u && u.error ? h("div", { class: "status bad", role: "alert" }, h("span", {}, u.error)) : null,
     u && u.supported === false ? h("div", { class: "status soft" }, h("span", {}, "This build cannot update itself. Install a newer version from where you got this one.")) : null,
     u && u.available ? h("div", { class: "status soft" }, h("b", {}, "Version " + u.available + " is available."), u.notes ? h("span", {}, u.notes) : null) : null,
@@ -1075,7 +1148,7 @@ function newGroupScreen() {
 }
 
 const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { main: agentsMain }, devices: { main: devicesMain }, settings: { main: settingsMain } };
-const SCREENS = { group: groupScreen, newgroup: newGroupScreen, requests: requestsScreen, verify: verifyScreen, add: addScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
+const SCREENS = { group: groupScreen, newgroup: newGroupScreen, requests: requestsScreen, verify: verifyScreen, add: addScreen, contact: contactScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
 
 document.addEventListener("keydown", (e) => {
   if (!(MAC ? e.metaKey : e.ctrlKey) || e.altKey || $("app").hidden) return;

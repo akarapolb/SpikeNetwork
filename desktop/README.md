@@ -28,13 +28,13 @@ State lives in the platform app-data directory (`network.spike.connect`). To run
 ## Two computers
 See `../docs/deploy-relay.md` to run a relay another computer can reach. In the app: **Settings → Home relay** (your relay's `wss://` address) and, for a self-signed certificate, **Trust for a relay you run yourself → Choose certificate file**. **Test connection** says whether it works and why not. Plain `ws://` to another computer is refused unless you allow it in Settings, with a warning.
 
-## Installer
+## Installer and updates
 `cargo install tauri-cli --version "^2" --locked` once (about 10 minutes), then:
 ```sh
 cd desktop/src-tauri
 cargo tauri build --bundles nsis
 ```
-The installer lands in `target/release/bundle/nsis/` (per-user, no administrator rights). It is **unsigned**: Windows SmartScreen will warn, and by default there is no auto-update. Signing, an opt-in updater (a Settings button, never automatic) and Linux and macOS builds are scaffolded in `.github/workflows/release.yml`; what you must supply is in `../docs/desktop-release.md`.
+The installer lands in `target/release/bundle/nsis/` (per-user, no administrator rights). Release builds need the update signing key (`TAURI_SIGNING_PRIVATE_KEY`, see `../docs/desktop-release.md`); add `--config tauri.updater.conf.json` to the command above, or CI does it. Releases are made by pushing a `v<version>` tag: `.github/workflows/release.yml` builds, signs and publishes the Windows and Linux packages and `latest.json`, which installed copies read to update themselves in the background. The installer is still unsigned by Windows (SmartScreen warns) until a code-signing certificate is added.
 
 ## Built
 Create and unlock an identity; chats; send and receive; add contacts by pasted card; verify; relay setting; **instant delivery** (a background listener with keepalive; ADR 0020), **message requests** (strangers who introduce themselves wait for your decision; ADR 0021) and a block list, **edit and delete** your own messages, **removing a device**, **relay trust** (custom certificate, test button, opt-in plain `ws://`), **idle auto-lock** and **attention** (window title count, taskbar flash), **attachments** (attach button, files up to 100 MB encrypted before upload, Save writes to Downloads and never overwrites); **small groups** of up to 20 people (ADR 0024: create, write, members and settings, invites you can join, decline or block with the decision reaching your other devices, files for the whole group, the last 7 days for new members when the group offers it, remove, leave; senders you have not verified are marked and history shared with you says who shared it); **large groups** (up to 500 people on MLS, ADR 0025, experimental: create, invitations you accept, write, add and remove people as an admin, rename, make another admin, choose who may add, leave, your other devices join automatically, instant delivery; no files or history for new members yet; `node desktop/drive_large.mjs` drives three real windows through one), **agent grants** (create, change, revoke, typed-only, limits) and approvals; **devices and linking** (a Devices screen, "link this computer" at first start, and "Link a new device" on your main device, with the safety-code comparison and history choice).
@@ -52,7 +52,6 @@ Calls, search, Windows Hello, a tray icon and desktop notification banners (the 
 
 ## Known gaps
 - The passphrase crosses the bridge once as a JavaScript string, which cannot be zeroized (ADR 0019).
-- Only Windows has been run. Linux needs WebKitGTK; macOS needs signing and notarisation.
-- To bundle an installer you need `tauri-cli` (`cargo install tauri-cli --version "^2"`) and `"bundle": {"active": true}`; not set up.
+- Calls and the installer have only been exercised on Windows. Linux packages (deb, AppImage) are built under WSL on WebKitGTK 4.1, but calls are not wired up there: WebKitGTK denies the microphone unless the app answers its permission request. macOS is not built.
 
 **Backup and recovery** (ADR 0029): Settings makes an encrypted backup file in Downloads (a generated key or your own passphrase; history optional), and the create screen has "Restore from a backup file", which brings the identity back as a new device and signs out the others. `node desktop/drive_backup.mjs` drives two real windows through losing the only computer and restoring.

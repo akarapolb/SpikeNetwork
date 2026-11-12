@@ -5,6 +5,7 @@
 //! while the app is unlocked.
 
 pub mod api;
+pub mod media;
 pub mod updates;
 
 use api::apps::AppsDto;
@@ -670,6 +671,18 @@ fn add_contact(state: State<'_, AppState>, name: String, card: String) -> Result
     session(&state)?.add_contact(&name, &card).map_err(err)
 }
 
+/// The call screen turns this on while a call is up, so the page is granted the microphone only then.
+#[tauri::command]
+fn set_media_access(on: bool) {
+    media::set_active(on);
+}
+
+/// Give a contact a new name (defect: contact details could not be edited after adding).
+#[tauri::command]
+fn rename_contact(state: State<'_, AppState>, old: String, name: String) -> Result<(), String> {
+    session(&state)?.rename_contact(&old, &name).map_err(err)
+}
+
 #[tauri::command]
 fn mark_verified(
     state: State<'_, AppState>,
@@ -1148,6 +1161,28 @@ async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
     updates::install(&app).await
 }
 
+#[derive(serde::Serialize)]
+struct UpdateStatusDto {
+    /// Automatic checks are on.
+    auto: bool,
+    /// A newer version is downloaded and verified, waiting for a restart.
+    ready: Option<updates::Ready>,
+}
+
+/// What the screens need to show about updates. Needs no unlocked identity.
+#[tauri::command]
+fn update_status(state: State<'_, AppState>) -> UpdateStatusDto {
+    UpdateStatusDto {
+        auto: updates::auto_enabled(&state.dir),
+        ready: updates::ready(),
+    }
+}
+
+#[tauri::command]
+fn update_set_auto(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    updates::set_auto(&state.dir, on)
+}
+
 #[tauri::command]
 fn qr_svg(text: String) -> Result<String, String> {
     api::qr_svg(&text).map_err(err)
@@ -1198,6 +1233,7 @@ async fn link_finish(
 }
 
 pub fn run() {
+    media::configure_webview();
     let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     #[cfg(feature = "updater")]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
@@ -1216,6 +1252,10 @@ pub fn run() {
                 local_api: Mutex::new(None),
                 local_api_error: Mutex::new(None),
             });
+            if let Some(w) = app.get_webview_window("main") {
+                media::install(&w);
+            }
+            updates::start(app.handle().clone());
             {
                 use tauri_plugin_notification::NotificationExt;
                 let handle = app.handle().clone();
@@ -1264,6 +1304,8 @@ pub fn run() {
             sync,
             mark_read,
             add_contact,
+            rename_contact,
+            set_media_access,
             mark_verified,
             agents,
             decide,
@@ -1290,6 +1332,8 @@ pub fn run() {
             qr_svg,
             update_check,
             update_install,
+            update_status,
+            update_set_auto,
             link_wait,
             link_receive,
             link_cancel,

@@ -141,6 +141,30 @@ async fn chat_send_receive_unread_and_verification() {
 }
 
 #[tokio::test]
+async fn a_contact_can_be_renamed_and_its_card_updated_later() {
+    let url = relay().await;
+    let (alice, bob, carol) = (dev("alice", &url), dev("bob", &url), dev("carol", &url));
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    alice.s.add_contact("Carol", &card(&carol)).unwrap();
+
+    // Renaming is refused when the name is taken, unknown, or blank.
+    assert!(alice.s.rename_contact("Bob", "Carol").is_err());
+    assert!(alice.s.rename_contact("Nobody", "Dana").is_err());
+    assert!(alice.s.rename_contact("Bob", "   ").is_err());
+
+    alice.s.rename_contact("Bob", "Robert").unwrap();
+    // The same person under the new name is already known; the old name no longer exists.
+    assert!(alice
+        .s
+        .add_contact("Robert", &card(&bob))
+        .unwrap()
+        .contains("already"));
+    assert!(alice.s.rename_contact("Bob", "Bobby").is_err());
+    // Another identity cannot take over this contact's name.
+    assert!(alice.s.add_contact("Robert", &card(&carol)).is_err());
+}
+
+#[tokio::test]
 async fn typed_agent_requests_are_shown_by_their_fields_and_decided_here() {
     use spike_core::action::parse_pairs;
     let url = relay().await;

@@ -1,6 +1,6 @@
 [package]
 name = "spike-desktop"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Spike Connect desktop app (Tauri 2)"
@@ -33,8 +33,13 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 tauri-plugin-notification = "2"
 
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+
 [features]
-# Self-update. Needs a signing key pair and an update server: see docs/desktop-release.md.
+# Self-update (on by default). The public key and update address are in tauri.conf.json; release builds also
+# need the signing key (tauri.updater.conf.json). See docs/desktop-release.md.
+default = ["updater"]
 updater = ["dep:tauri-plugin-updater"]
 
 [dev-dependencies]
