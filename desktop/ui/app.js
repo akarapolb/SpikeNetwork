@@ -95,7 +95,7 @@ async function gate(mode) {
   pass.focus();
 }
 async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.group = null; st.screen = null; await refresh(); if (st.linkNew) { st.linkNew = false; st.section = "devices"; st.screen = "linknew"; render(); startLinkNew(); } else syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 60000); armAutoLock(); }
-function stop() { st.seen = null; clearInterval(st.polling); st.polling = null; clearTimeout(st.idleTimer); st.ov = st.agents = st.gdetail = null; st.msgs = []; st.editing = st.confirmDelete = null; st.apps = st.appWaiting = null; st.appsLoaded = false; }
+function stop() { if (typeof clearImages === "function") clearImages(); renderedKey = null; st.seen = null; clearInterval(st.polling); st.polling = null; clearTimeout(st.idleTimer); st.ov = st.agents = st.gdetail = null; st.msgs = []; st.editing = st.confirmDelete = null; st.apps = st.appWaiting = null; st.appsLoaded = false; }
 
 /* The backend holds one connection to the relay and tells us the moment something arrives; the slow poll above is only a safety net. */
 function listenToBackend() {
@@ -236,8 +236,35 @@ function renderRail() {
     h("button", { type: "button", "aria-label": "Lock", onclick: lockNow }, icon("lock"), h("span", { class: "tip", "aria-hidden": "true" }, `Lock  ${MOD}L`)));
 }
 async function lockNow() { try { await invoke("lock"); } catch (_) {} gate("unlock"); }
+/* render() rebuilds the whole screen. Without this, every sync would send the thread back to the top and empty the
+   message box. Remember where you were and what you were typing, and put it back if it is still the same screen. */
+let renderedKey = null;
+const screenKey = () => [st.section, st.screen || "", st.chat || "", st.group || ""].join("|");
+function captureView() {
+  const main = $("main"), sc = main.querySelector(".scroll");
+  const v = { key: renderedKey, mainTop: main.scrollTop, fields: [] };
+  if (sc) v.scroll = { top: sc.scrollTop, end: sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60 };
+  for (const sel of [".composer textarea", ".editbox textarea"]) {
+    const el = main.querySelector(sel);
+    if (el) v.fields.push({ sel, value: el.value, a: el.selectionStart, b: el.selectionEnd, focus: document.activeElement === el });
+  }
+  return v;
+}
+function restoreView(v) {
+  if (!v || v.key !== screenKey()) return;
+  const main = $("main");
+  main.scrollTop = v.mainTop;
+  for (const f of v.fields) {
+    const el = main.querySelector(f.sel); if (!el) continue;
+    if (el.value !== f.value) el.value = f.value;
+    if (f.focus) { el.focus(); try { el.setSelectionRange(f.a, f.b); } catch (_) {} }
+  }
+  const sc = main.querySelector(".scroll");
+  if (sc && v.scroll && !(st.find && st.find.jump)) sc.scrollTop = v.scroll.end ? sc.scrollHeight : v.scroll.top;
+}
 function render() {
   if (!st.ov) return;
+  const view = captureView();
   renderRail();
   const fe = document.activeElement, keep = fe && fe.dataset && fe.dataset.keep;
   const S = SECTIONS[st.section], items = S.list ? S.list() : [];
@@ -260,6 +287,7 @@ function render() {
   if (keepTop != null) { const s = $("main").querySelector(".scroll"); if (s) s.scrollTop = keepTop; }
   // A redraw (typing, or a message arriving) keeps the search box focused with the cursor at the end.
   if (keep) { const i = document.querySelector(`[data-keep="${keep}"]`); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
+  restoreView(view); renderedKey = screenKey();
   // Searching in a conversation: bring the current match into view once, when it changes.
   if (st.find && st.find.jump) { st.find.jump = false; $("main").querySelector(".msg.current")?.scrollIntoView({ block: "center" }); }
 }
@@ -455,6 +483,7 @@ function threadItems(inGroup) {
       quoteOf(m),
       inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag waiting", style: "margin-left:6px" }, "Not verified")) : null,
       m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, hit ? marked(m.body) : m.body) : null),
+      imageThumb(m),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       reactionsOf(m),
       h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", st.editing !== m.id ? msgActions(m, inGroup) : null, m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));

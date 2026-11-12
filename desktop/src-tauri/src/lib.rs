@@ -1063,6 +1063,16 @@ async fn save_attachment(
     write_unique(&dir, &name, &bytes).map(|p| p.display().to_string())
 }
 
+/// Fetch (and check) a message's file and hand the bytes to the window, for the image viewer. Nothing is saved.
+#[tauri::command]
+async fn attachment_bytes(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<tauri::ipc::Response, String> {
+    let (_name, bytes) = session(&state)?.attachment(&id).await.map_err(err)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 // ---- backup and recovery (ADR 0029)
 
 #[tauri::command]
@@ -1232,8 +1242,95 @@ async fn link_finish(
         .map_err(err)
 }
 
+/// Windows only: a previous copy (or a webview it left behind) can hold the app's data folder, and then the
+/// window cannot be created and a double-click appears to do nothing. Find such processes and offer to close them.
+#[cfg(windows)]
+mod single {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const NO_WINDOW: u32 = 0x0800_0000;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(h: isize, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Returns the button pressed: 6 = Yes, 7 = No, 1 = OK.
+    pub fn message(text: &str, kind: u32) -> i32 {
+        let (t, c) = (wide(text), wide("Spike Connect"));
+        unsafe { MessageBoxW(0, t.as_ptr(), c.as_ptr(), kind | 0x0001_0000) }
+    }
+
+    /// Other Spike Connect processes, and webview processes using this app's data folder: (pid, name).
+    fn others() -> Vec<(u32, String)> {
+        let me = std::process::id();
+        let script = "Get-CimInstance Win32_Process | Where-Object {             ($_.Name -eq 'spike-desktop.exe') -or             ($_.Name -eq 'msedgewebview2.exe' -and $_.CommandLine -match 'network.spike.connect') } |             ForEach-Object { \"$($_.ProcessId),$($_.Name)\" }";
+        let Ok(out) = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .creation_flags(NO_WINDOW)
+            .output()
+        else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let (pid, name) = l.trim().split_once(',')?;
+                Some((pid.parse::<u32>().ok()?, name.to_string()))
+            })
+            .filter(|(pid, _)| *pid != me)
+            .collect()
+    }
+
+    /// Returns false if the user chose to quit instead of closing the others.
+    pub fn clear_previous() -> bool {
+        // A deliberate second identity (SPIKE_DESKTOP_HOME) is allowed to run next to the first.
+        if std::env::var_os("SPIKE_DESKTOP_HOME").is_some() {
+            return true;
+        }
+        let found = others();
+        if found.is_empty() {
+            return true;
+        }
+        let apps = found.iter().filter(|(_, n)| n == "spike-desktop.exe").count();
+        let text = format!(
+            "Spike Connect is already running, or did not close completely ({} app and {} helper process(es) found).
+
+             Close them and start fresh?",
+            apps,
+            found.len() - apps
+        );
+        if message(&text, 0x24) != 6 {
+            return false; // Yes/No + question icon; anything but Yes quits
+        }
+        for (pid, _) in &found {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .creation_flags(NO_WINDOW)
+                .output();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        true
+    }
+}
+
 pub fn run() {
     media::configure_webview();
+    #[cfg(windows)]
+    {
+        // The window is created inside Tauri, which panics when it cannot; show why instead of vanishing.
+        std::panic::set_hook(Box::new(|info| {
+            single::message(&format!("Spike Connect could not start.\n\n{info}"), 0x10);
+        }));
+        if !single::clear_previous() {
+            return;
+        }
+    }
     let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     #[cfg(feature = "updater")]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
@@ -1328,6 +1425,7 @@ pub fn run() {
             revoke,
             send_file,
             save_attachment,
+            attachment_bytes,
             link_offer,
             qr_svg,
             update_check,
