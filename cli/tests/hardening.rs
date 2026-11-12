@@ -305,12 +305,12 @@ async fn a_ping_flood_is_rate_limited() {
         ed25519: hex::encode(id.ed_public()),
         sig: hex::encode(sig),
     };
-    ws.send(Message::Text(serde_json::to_string(&auth).unwrap()))
+    ws.send(Message::Text(serde_json::to_string(&auth).unwrap().into()))
         .await
         .unwrap();
     let ping = serde_json::to_string(&spike_core::wire::ClientMsg::Ping).unwrap();
     for _ in 0..40 {
-        if ws.send(Message::Text(ping.clone())).await.is_err() {
+        if ws.send(Message::Text(ping.clone().into())).await.is_err() {
             break;
         }
     }

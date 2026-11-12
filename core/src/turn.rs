@@ -5,7 +5,7 @@
 //! working when it expires, and a device that is not signed in to the relay cannot get one.
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 
 type HmacSha1 = Hmac<Sha1>;

@@ -62,7 +62,7 @@ L="$BIN/spike --home $D/alice-laptop/state --passphrase-file $D/alice-laptop.pas
 $L init >/dev/null
 $L link-new --yes --timeout-secs 30 >"$D/link.out" 2>"$D/link.err" & LINKPID=$!
 CODE=""
-for _ in $(seq 100); do CODE=$(grep -m1 '^spikelink1:' "$D/link.out" || true); [ -n "$CODE" ] && break; sleep 0.1; done
+for _ in $(seq 100); do CODE=$(grep -m1 '^spikelink2:' "$D/link.out" || true); [ -n "$CODE" ] && break; sleep 0.1; done
 echo "phone (existing device):"; $A link-device "$CODE" --yes | sed "s/^/  /"
 wait $LINKPID
 echo "laptop (new device):"; grep "^safety code" "$D/link.out" | sed "s/^/  /"
@@ -107,7 +107,7 @@ T="$BIN/spike --home $D/alice-tablet/state --passphrase-file $D/alice-tablet.pas
 $T init >/dev/null
 $T link-new --yes --timeout-secs 30 >"$D/link2.out" 2>/dev/null & LINKPID=$!
 CODE=""
-for _ in $(seq 100); do CODE=$(grep -m1 '^spikelink1:' "$D/link2.out" || true); [ -n "$CODE" ] && break; sleep 0.1; done
+for _ in $(seq 100); do CODE=$(grep -m1 '^spikelink2:' "$D/link2.out" || true); [ -n "$CODE" ] && break; sleep 0.1; done
 $A link-device "$CODE" --yes --history none >/dev/null
 wait $LINKPID
 echo -n "tablet messages with bob right after linking: "; $T history bob 2>&1 | grep -c "bob:\|you:" || true

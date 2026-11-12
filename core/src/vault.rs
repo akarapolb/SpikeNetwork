@@ -115,7 +115,7 @@ impl Vault {
         OsRng.fill_bytes(&mut nonce);
         let ct = XChaCha20Poly1305::new((&self.key).into())
             .encrypt(
-                XNonce::from_slice(&nonce),
+                &XNonce::from(nonce),
                 Payload {
                     msg: plaintext,
                     aad: name.as_bytes(),
@@ -136,10 +136,10 @@ impl Vault {
     /// Uses a subkey derived from the vault key, never the AEAD key itself.
     pub fn index_tag(&self, label: &str, data: &[u8]) -> [u8; 32] {
         type H = Hmac<Sha256>;
-        let mut sub = <H as Mac>::new_from_slice(&self.key).expect("any key length");
+        let mut sub = <H as KeyInit>::new_from_slice(&self.key).expect("any key length");
         sub.update(b"spike-vault-index-key-v1");
         let subkey = sub.finalize().into_bytes();
-        let mut m = <H as Mac>::new_from_slice(&subkey).expect("any key length");
+        let mut m = <H as KeyInit>::new_from_slice(&subkey).expect("any key length");
         m.update(label.as_bytes());
         m.update(&[0]);
         m.update(data);
@@ -152,7 +152,7 @@ impl Vault {
         }
         XChaCha20Poly1305::new((&self.key).into())
             .decrypt(
-                XNonce::from_slice(&sealed[4..28]),
+                &XNonce::try_from(&sealed[4..28]).map_err(|_| Error::Corrupted)?,
                 Payload {
                     msg: &sealed[28..],
                     aad: name.as_bytes(),

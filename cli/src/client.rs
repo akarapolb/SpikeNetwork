@@ -758,7 +758,7 @@ impl Relay {
 
     async fn write(&mut self, m: &ClientMsg) -> Result<()> {
         self.ws
-            .send(Message::Text(serde_json::to_string(m)?))
+            .send(Message::Text(serde_json::to_string(m)?.into()))
             .await?;
         Ok(())
     }

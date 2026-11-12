@@ -21,7 +21,7 @@ rand = "0.8"
 spike-core = { path = "../core" }
 spike-mls = { path = "../mls" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.30"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -33,7 +33,7 @@ zeroize = "1"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = "1"
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [dev-dependencies]

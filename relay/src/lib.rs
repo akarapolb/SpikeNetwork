@@ -293,7 +293,7 @@ where
 {
     let s = serde_json::to_string(m).map_err(|_| ())?;
     // A peer that stops reading must not hold a connection (and what is queued for it) forever.
-    tokio::time::timeout(WRITE_TIMEOUT, tx.send(Message::Text(s)))
+    tokio::time::timeout(WRITE_TIMEOUT, tx.send(Message::Text(s.into())))
         .await
         .map_err(|_| ())?
         .map_err(|_| ())
@@ -355,12 +355,10 @@ where
         .connections_current
         .fetch_add(1, Ordering::Relaxed);
     let _open = OpenGauge(state.clone());
-    let ws_cfg = WebSocketConfig {
-        // Room for the largest message blob or attachment chunk, hex-encoded in JSON.
-        max_message_size: Some(frame_limit(&cfg)),
-        max_frame_size: Some(frame_limit(&cfg)),
-        ..Default::default()
-    };
+    // Room for the largest message blob or attachment chunk, hex-encoded in JSON.
+    let ws_cfg = WebSocketConfig::default()
+        .max_message_size(Some(frame_limit(&cfg)))
+        .max_frame_size(Some(frame_limit(&cfg)));
     // Remember the forwarded-for header from the upgrade request: it is only believed if the
     // connection came from a trusted proxy (decided below).
     let forwarded = Arc::new(Mutex::new(None::<String>));
