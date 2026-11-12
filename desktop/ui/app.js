@@ -289,7 +289,7 @@ function chatsList() {
       h("button", { class: "iconbtn", type: "button", "aria-label": "Add a contact", title: "Add a contact", onclick: () => { st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson"))), search),
     h("nav", { class: "rows", "aria-label": "Conversations" },
       st.ov.requests ? h("button", { class: "reqrow", type: "button", onclick: () => { st.screen = "requests"; st.naming = null; render(); } }, icon("addperson"),
-        h("span", { style: "flex:1;font-size:14px;text-align:left" }, h("b", { style: "font-weight:600" }, `${st.ov.requests} message request${st.ov.requests > 1 ? "s" : ""}`), " ", h("span", { class: "muted" }, "from people not in your contacts")), icon("chev")) : null,
+        h("span", { style: "flex:1;font-size:14px;text-align:left" }, h("b", { style: "font-weight:600" }, `${st.ov.requests} ${st.ov.requests > 1 ? "people" : "person"} added you or wrote to you`), " ", h("span", { class: "muted" }, "Tap to accept or decline. Accepting adds them as a contact.")), icon("chev")) : null,
       entries.length ? entries.map((e) => e.row())
         : q ? emptyState(`Nothing matches “${st.query.trim()}”.`, "search")
         : emptyState("No contacts yet. Add one with the button above: paste their identity card.", "addperson")),
@@ -562,6 +562,14 @@ function contactScreen() {
       h("span", { class: "mono", style: "font-size:14px;overflow-wrap:anywhere" }, c.fingerprint),
       h("span", { class: "note" }, `${c.devices} device${c.devices === 1 ? "" : "s"}`),
       h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => { st.verifyFor = c.name; st.verifyDone = null; st.screen = "verify"; render(); } }, c.verified ? "Safety number" : "Verify")),
+    h("section", { class: "card", id: "share-card" }, h("h2", { class: "eyebrow" }, "Share your card"),
+      h("span", { class: "note" }, `${c.name} can add you on their side with this card: they paste it under Add a contact.`),
+      h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Your identity card", onfocus: (e) => e.target.select() }, st.ov.me.card),
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, copyCardButton(),
+        h("button", { class: "btn", type: "button", onclick: async () => {
+          try { await invoke("send", { name: c.name, text: "Here is my Spike identity card. Paste it under Add a contact to add me:\n\n" + st.ov.me.card, replyTo: null }); toast(`Card sent to ${c.name}.`); await refresh(); }
+          catch (e) { toast(String(e)); }
+        } }, `Send to ${c.name} in chat`))),
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Update their card"),
       h("span", { class: "note" }, "Their identity stays the same: this only adds devices they added. A different identity is refused."),
       cardIn,

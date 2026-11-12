@@ -165,6 +165,34 @@ async fn a_contact_can_be_renamed_and_its_card_updated_later() {
 }
 
 #[tokio::test]
+async fn adding_a_contact_introduces_you_to_them_as_a_request() {
+    let url = relay().await;
+    let (alice, bob) = (dev("alice", &url), dev("bob", &url));
+    alice.s.sync(IDLE).await.unwrap();
+    bob.s.sync(IDLE).await.unwrap();
+    // What the app does when you add someone: add their card, then send the introduction.
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    alice
+        .s
+        .send(
+            "Bob",
+            "Hi, I've added you as a contact on Spike. Accept my request so we can talk.",
+        )
+        .await
+        .unwrap();
+
+    let got = bob.s.sync(IDLE).await.unwrap();
+    assert_eq!((got.received, got.message_requests), (0, 1));
+    let reqs = bob.s.message_requests().unwrap();
+    assert_eq!(reqs.len(), 1, "Bob sees one request from Alice");
+    assert!(reqs[0].held[0].body.contains("added you"));
+    assert_eq!(
+        reqs[0].fingerprint,
+        alice.s.overview().unwrap().me.fingerprint
+    );
+}
+
+#[tokio::test]
 async fn typed_agent_requests_are_shown_by_their_fields_and_decided_here() {
     use spike_core::action::parse_pairs;
     let url = relay().await;
