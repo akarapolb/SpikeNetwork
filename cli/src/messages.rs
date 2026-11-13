@@ -8,10 +8,13 @@
 //! what they say. The sealed blob is bound to its row's tags, so rows cannot
 //! be moved between conversations or ids without detection.
 
+use crate::history::{History, MaybeSend};
+use crate::state::ready;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use spike_core::vault::Vault;
+use std::future::Future;
 use std::path::Path;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,7 +184,7 @@ impl<'v> MessageStore<'v> {
     /// Store a message. Returns false if a message with this id is already
     /// stored (redelivery, replay of the same envelope, or a second copy).
     /// Reactions that arrived before it, in the same conversation, join it here.
-    pub fn insert(&self, m: &StoredMessage) -> Result<bool> {
+    fn insert_now(&self, m: &StoredMessage) -> Result<bool> {
         let mut m = m.clone();
         m.changed_at = now_ms();
         let (id_tag, conv_tag) = self.tags(&m.id, &m.peer);
@@ -211,7 +214,7 @@ impl<'v> MessageStore<'v> {
 
     /// Keep a reaction to a message that is not here yet (see `EarlyReaction`). Per person and
     /// message only the newest waits, by the same rule as stored reactions.
-    pub fn park_reaction(
+    fn park_reaction_now(
         &self,
         target: &str,
         conv: &str,
@@ -287,7 +290,7 @@ impl<'v> MessageStore<'v> {
 
     /// The last `limit` messages with `peer`, oldest first. Fails loudly if
     /// any row is corrupted or was tampered with, rather than hiding it.
-    pub fn conversation(&self, peer: &str, limit: usize) -> Result<Vec<StoredMessage>> {
+    fn conversation_now(&self, peer: &str, limit: usize) -> Result<Vec<StoredMessage>> {
         let conv_tag = self.vault.index_tag("conv", peer.as_bytes());
         let mut stmt = self
             .conn
@@ -307,7 +310,7 @@ impl<'v> MessageStore<'v> {
 
     /// The message with exactly this id, or the only one whose id starts with
     /// `prefix` (at least 6 hex characters), as shown by `spike history`.
-    pub fn find(&self, prefix: &str) -> Result<StoredMessage> {
+    fn find_now(&self, prefix: &str) -> Result<StoredMessage> {
         let p = prefix.trim().to_lowercase();
         if p.len() == 32 {
             let id_tag = self.vault.index_tag("msg-id", p.as_bytes());
@@ -338,7 +341,7 @@ impl<'v> MessageStore<'v> {
     }
 
     /// The stored message with exactly this id, if any.
-    pub fn get(&self, id: &str) -> Result<Option<StoredMessage>> {
+    fn get_now(&self, id: &str) -> Result<Option<StoredMessage>> {
         let id_tag = self.vault.index_tag("msg-id", id.as_bytes());
         let row: Option<(Vec<u8>, Vec<u8>)> = self
             .conn
@@ -353,7 +356,7 @@ impl<'v> MessageStore<'v> {
     }
 
     /// Replace the content of an already stored message (same id and conversation).
-    pub fn update(&self, m: &StoredMessage) -> Result<()> {
+    fn update_now(&self, m: &StoredMessage) -> Result<()> {
         let mut m = m.clone();
         m.changed_at = now_ms();
         let m = &m;
@@ -374,7 +377,7 @@ impl<'v> MessageStore<'v> {
     }
 
     /// Messages this device learned or changed at or after `since_ms` (local clock).
-    pub fn changed_since(&self, since_ms: u64) -> Result<Vec<StoredMessage>> {
+    fn changed_since_now(&self, since_ms: u64) -> Result<Vec<StoredMessage>> {
         Ok(self
             .all()?
             .into_iter()
@@ -386,9 +389,9 @@ impl<'v> MessageStore<'v> {
     /// history, using the same rules as live edits and deletes: unknown messages
     /// are inserted (tombstones included); a delete always wins; a newer edit
     /// wins. Returns whether anything changed. Never resurrects a deleted message.
-    pub fn merge_record(&self, r: &StoredMessage) -> Result<bool> {
-        let Some(mut cur) = self.get(&r.id)? else {
-            return self.insert(r);
+    fn merge_record_now(&self, r: &StoredMessage) -> Result<bool> {
+        let Some(mut cur) = self.get_now(&r.id)? else {
+            return self.insert_now(r);
         };
         if cur.peer != r.peer || cur.direction != r.direction || cur.author != r.author {
             return Ok(false); // inconsistent record: not ours to apply
@@ -416,13 +419,13 @@ impl<'v> MessageStore<'v> {
             }
         }
         if changed {
-            self.update(&cur)?;
+            self.update_now(&cur)?;
         }
         Ok(changed)
     }
 
     /// Every stored message, oldest first (used to build history bundles).
-    pub fn all(&self) -> Result<Vec<StoredMessage>> {
+    fn all_now(&self) -> Result<Vec<StoredMessage>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id_tag, conv_tag, sealed FROM messages")?;
@@ -479,6 +482,88 @@ impl<'v> MessageStore<'v> {
     #[cfg(test)]
     fn raw(&self) -> &Connection {
         &self.conn
+    }
+}
+
+// The native `History` (ADR 0033, step 4). SQLite calls finish without waiting, so each method does its work
+// first and returns a finished future (which also keeps the non-`Sync` connection out of the future, so it is
+// `Send`). The synchronous methods below, which the app has always called, run these through `ready`.
+impl History for MessageStore<'_> {
+    fn insert(&self, m: &StoredMessage) -> impl Future<Output = Result<bool>> + MaybeSend {
+        std::future::ready(self.insert_now(m))
+    }
+    fn get(&self, id: &str) -> impl Future<Output = Result<Option<StoredMessage>>> + MaybeSend {
+        std::future::ready(self.get_now(id))
+    }
+    fn update(&self, m: &StoredMessage) -> impl Future<Output = Result<()>> + MaybeSend {
+        std::future::ready(self.update_now(m))
+    }
+    fn find(&self, prefix: &str) -> impl Future<Output = Result<StoredMessage>> + MaybeSend {
+        std::future::ready(self.find_now(prefix))
+    }
+    fn conversation(
+        &self,
+        peer: &str,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<StoredMessage>>> + MaybeSend {
+        std::future::ready(self.conversation_now(peer, limit))
+    }
+    fn all(&self) -> impl Future<Output = Result<Vec<StoredMessage>>> + MaybeSend {
+        std::future::ready(self.all_now())
+    }
+    fn changed_since(
+        &self,
+        since_ms: u64,
+    ) -> impl Future<Output = Result<Vec<StoredMessage>>> + MaybeSend {
+        std::future::ready(self.changed_since_now(since_ms))
+    }
+    fn merge_record(&self, r: &StoredMessage) -> impl Future<Output = Result<bool>> + MaybeSend {
+        std::future::ready(self.merge_record_now(r))
+    }
+    fn park_reaction(
+        &self,
+        target: &str,
+        conv: &str,
+        reactor: &str,
+        r: &Reaction,
+    ) -> impl Future<Output = Result<()>> + MaybeSend {
+        std::future::ready(self.park_reaction_now(target, conv, reactor, r))
+    }
+}
+
+impl MessageStore<'_> {
+    pub fn insert(&self, m: &StoredMessage) -> Result<bool> {
+        ready(History::insert(self, m))
+    }
+    pub fn get(&self, id: &str) -> Result<Option<StoredMessage>> {
+        ready(History::get(self, id))
+    }
+    pub fn update(&self, m: &StoredMessage) -> Result<()> {
+        ready(History::update(self, m))
+    }
+    pub fn find(&self, prefix: &str) -> Result<StoredMessage> {
+        ready(History::find(self, prefix))
+    }
+    pub fn conversation(&self, peer: &str, limit: usize) -> Result<Vec<StoredMessage>> {
+        ready(History::conversation(self, peer, limit))
+    }
+    pub fn all(&self) -> Result<Vec<StoredMessage>> {
+        ready(History::all(self))
+    }
+    pub fn changed_since(&self, since_ms: u64) -> Result<Vec<StoredMessage>> {
+        ready(History::changed_since(self, since_ms))
+    }
+    pub fn merge_record(&self, r: &StoredMessage) -> Result<bool> {
+        ready(History::merge_record(self, r))
+    }
+    pub fn park_reaction(
+        &self,
+        target: &str,
+        conv: &str,
+        reactor: &str,
+        r: &Reaction,
+    ) -> Result<()> {
+        ready(History::park_reaction(self, target, conv, reactor, r))
     }
 }
 
@@ -761,5 +846,57 @@ mod tests {
             !s.merge_record(&there).unwrap(),
             "nothing new the second time"
         );
+    }
+
+    // Everything the moved modules do goes through `History`; this drives the native store only by the trait,
+    // from code that knows nothing about SQLite (the shape the browser store will be written against).
+    async fn history_roundtrip<H: History>(h: &H) {
+        let a = msg("a".repeat(32).as_str(), "peer", 10, "one", Direction::In);
+        let b = msg("b".repeat(32).as_str(), "peer", 20, "two", Direction::Out);
+        assert!(h.insert(&a).await.unwrap());
+        assert!(!h.insert(&a).await.unwrap(), "same id is not stored twice");
+        assert!(h.insert(&b).await.unwrap());
+        assert_eq!(h.get(&a.id).await.unwrap().unwrap().body, "one");
+        assert!(h.get("missing").await.unwrap().is_none());
+        let mut a2 = a.clone();
+        a2.body = "one, edited".into();
+        h.update(&a2).await.unwrap();
+        assert_eq!(h.find(&a.id[..8]).await.unwrap().body, "one, edited");
+        assert_eq!(h.conversation("peer", 1).await.unwrap()[0].id, b.id);
+        assert_eq!(h.all().await.unwrap().len(), 2);
+        assert_eq!(h.changed_since(0).await.unwrap().len(), 2);
+        assert_eq!(h.changed_since(u64::MAX).await.unwrap().len(), 0);
+        let mut del = a.clone();
+        del.deleted = true;
+        assert!(h.merge_record(&del).await.unwrap(), "a delete wins");
+        assert!(h.get(&a.id).await.unwrap().unwrap().deleted);
+        let r = Reaction {
+            emoji: "+".into(),
+            lamport: 1,
+            device: "d".into(),
+        };
+        h.park_reaction(&"c".repeat(32), "peer", "who", &r)
+            .await
+            .unwrap();
+        let c = msg("c".repeat(32).as_str(), "peer", 30, "three", Direction::In);
+        assert!(h.insert(&c).await.unwrap());
+        assert!(
+            h.get(&c.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .reactions
+                .contains_key("who"),
+            "a reaction that arrived first joins the message"
+        );
+    }
+
+    #[test]
+    fn the_native_store_works_through_the_history_trait() {
+        let dir = tmp("history");
+        let v = vault();
+        let s = MessageStore::open(&dir.0.join("m.db"), &v).unwrap();
+        futures_util::FutureExt::now_or_never(history_roundtrip(&s))
+            .expect("the native store never waits");
     }
 }

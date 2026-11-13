@@ -4,6 +4,7 @@ pub mod backup;
 pub mod client;
 pub mod direct;
 pub mod groups;
+pub mod history;
 pub mod large;
 #[cfg(feature = "test-hooks")]
 pub mod large_testing;

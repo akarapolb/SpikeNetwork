@@ -95,7 +95,7 @@ pub enum Added {
 
 /// Run a future that is known not to wait (every `FileStore` operation). A `Store` that does wait would panic
 /// here, which is why the synchronous methods exist only for `Home<FileStore>`.
-fn ready<T>(f: impl Future<Output = T>) -> T {
+pub(crate) fn ready<T>(f: impl Future<Output = T>) -> T {
     f.now_or_never().expect("a FileStore operation never waits")
 }
 
@@ -610,8 +610,8 @@ impl Home<FileStore> {
         ready(self.save_json_async(name, value))
     }
 
-    /// Encrypted message history (see [`crate::messages`]). SQLite, so it stays with the state directory
-    /// until the chat store gets its own trait (ADR 0033, step 4).
+    /// Encrypted message history (see [`crate::messages`]). SQLite, so it stays with the state directory.
+    /// It implements [`crate::history::History`]; its synchronous methods run that trait's operations.
     pub fn messages(&self) -> Result<MessageStore<'_>> {
         MessageStore::open(&self.store.dir().join(MESSAGES), &self.vault)
     }
