@@ -365,6 +365,21 @@ needs a pricing, entity or hosting decision.
 7. **Ring policy and limits:** ring up to 8 with the per-group rate limit; whether voice mesh may rise to 6 if the
    phone measurements pass.
 
+## Decisions (2026-11-13)
+
+The owner answered four of the seven questions above; each took the recommendation.
+
+1. **Shape:** mesh up to 4, SFU with SFrame for 5 or more and for all large-group calls.
+2. **Non-contacts in a mesh:** pairs that are not both contacts connect through TURN with relay candidates only.
+3. **Money:** mesh up to 4 stays free; SFU calls are metered on hosted plans in participant-minutes, video weighted
+   higher, billed to the host's tenant; guests need no plan. Prices and allowances are still open.
+4. **Operators:** hosted and self-hosted relays only; the SFU is off by default on open-mode relays. The hosted SFU
+   waits for ADR 0023 (tenants); mesh and the spikes do not.
+
+**Still open:** the licence for the SFU (decision 4 of `hosted-relay-plan.md`), risk acceptance for `str0m` and the
+Android fallback order (question 6), and the ring policy and whether voice mesh may rise to 6 (question 7).
+Status stays **proposed** until those are answered.
+
 ## Not decided here
 
 - Recording, transcripts, or any server-side processing: out of scope, and they would conflict with SFrame.
