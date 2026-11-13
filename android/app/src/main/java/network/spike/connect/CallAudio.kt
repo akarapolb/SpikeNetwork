@@ -22,6 +22,11 @@ import androidx.compose.runtime.setValue
  * this one on hold until it ends.
  */
 object CallAudio {
+    /** Software gain on the far end's sound while the loudspeaker is in use (1.0 is none; the mixer limits clipping). */
+    private const val SPEAKER_GAIN = 2.0
+    /** The call volume the speaker starts a call at, as a share of its range, if the person had it lower. */
+    private const val SPEAKER_FLOOR = 0.7
+
     enum class Route(val label: String) { Earpiece("Earpiece"), Speaker("Speaker"), Bluetooth("Bluetooth headset"), Headset("Wired headset") }
 
     /** The route in use, and the ones the button steps through. Compose state: the call screen reads these. */
@@ -39,6 +44,9 @@ object CallAudio {
     private var chose = false
     private var connected = false
     private var video = false
+    private var remote: org.webrtc.AudioTrack? = null
+    private var raised = false
+    private var gain = 1.0
     private val main = Handler(Looper.getMainLooper())
 
     private val devices = object : AudioDeviceCallback() {
@@ -70,6 +78,7 @@ object CallAudio {
         video = withVideo
         connected = false
         chose = false
+        raised = false
         m.mode = AudioManager.MODE_IN_COMMUNICATION
         try {
             val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
@@ -95,9 +104,41 @@ object CallAudio {
         } catch (_: Exception) {}
         m.isSpeakerphoneOn = false
         m.mode = AudioManager.MODE_NORMAL
+        remote = null
         am = null; onHold = null; bySystem = { false }
         route = Route.Earpiece
         available = listOf(Route.Earpiece, Route.Speaker)
+    }
+
+    /** The far end's sound arrived: keep it so the loudspeaker can give it a software boost (see [SPEAKER_GAIN]). */
+    fun remote(t: org.webrtc.AudioTrack) {
+        remote = t
+        applyGain(route)
+    }
+
+    /**
+     * The call stream is quiet on the loudspeaker on many phones (its volume is kept per output and often starts low),
+     * and the codec output is not loud. On the speaker the far end gets a software gain, and the first time the speaker
+     * is used in a call the call volume is lifted to [SPEAKER_FLOOR] of its range if it is below that; after that the
+     * person's own volume keys are left alone.
+     */
+    private fun applyGain(r: Route) {
+        gain = if (r == Route.Speaker) SPEAKER_GAIN else 1.0
+        try { remote?.setVolume(gain) } catch (_: Exception) {}
+        val m = am ?: return
+        if (r == Route.Speaker && !raised) {
+            raised = true
+            try {
+                val max = m.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+                val floor = Math.ceil(max * SPEAKER_FLOOR).toInt()
+                if (m.getStreamVolume(AudioManager.STREAM_VOICE_CALL) < floor) {
+                    m.setStreamVolume(AudioManager.STREAM_VOICE_CALL, floor, 0)
+                    Trace.add("audio: call volume lifted to $floor of $max for the speaker")
+                }
+            } catch (e: Exception) {
+                Trace.add("audio: could not set the call volume (${e.javaClass.simpleName})")
+            }
+        }
     }
 
     /** The call is up: the screen may now switch off against the ear. */
@@ -165,6 +206,7 @@ object CallAudio {
             Trace.add("audio: could not use ${r.label} (${e.javaClass.simpleName})")
         }
         route = r
+        applyGain(r)
         proximity()
     }
 
@@ -186,5 +228,8 @@ object CallAudio {
     }
 
     /** For tests: what is going on (read through the debug bridge). */
-    fun describe(): String = "route=${route.name} available=${available.joinToString { it.name }} proximity=${prox?.isHeld == true}"
+    fun describe(): String {
+        val v = am?.let { "${it.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}/${it.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)}" } ?: "none"
+        return "route=${route.name} available=${available.joinToString { it.name }} proximity=${prox?.isHeld == true} volume=$v gain=$gain remote=${remote != null}"
+    }
 }

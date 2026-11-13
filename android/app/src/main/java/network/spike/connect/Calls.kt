@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -274,6 +275,7 @@ object CallManager {
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(r: org.webrtc.RtpReceiver, s: Array<out org.webrtc.MediaStream>) {
                 (r.track() as? VideoTrack)?.let { remoteVideo = it }
+                (r.track() as? AudioTrack)?.let { CallAudio.remote(it) }
             }
         }) ?: throw BridgeError("could not start the call")
         val src = f.createAudioSource(MediaConstraints())
@@ -786,6 +788,15 @@ fun rememberMicGate(camera: Boolean = false, then: () -> Unit): () -> Unit {
 
 @Composable
 fun CallScreen(u: CallUi) {
+    // The volume keys change the call's volume while a call is on screen, whichever activity shows it (otherwise they can move the media volume).
+    val host = androidx.compose.ui.platform.LocalContext.current
+    DisposableEffect(host) {
+        var c: android.content.Context? = host
+        while (c is android.content.ContextWrapper && c !is android.app.Activity) c = c.baseContext
+        val a = c as? android.app.Activity
+        a?.volumeControlStream = android.media.AudioManager.STREAM_VOICE_CALL
+        onDispose { a?.volumeControlStream = android.media.AudioManager.USE_DEFAULT_STREAM_TYPE }
+    }
     var now by androidx.compose.runtime.remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(u.connectedAt) { while (u.connectedAt != 0L) { now = System.currentTimeMillis(); delay(1000) } }
     val answerGate = rememberMicGate(camera = u.video) { CallManager.answer() }

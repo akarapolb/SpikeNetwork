@@ -103,12 +103,23 @@ object Listener {
         }
     }
 
+    /**
+     * While a screen needs the engine to itself (linking a device) the loop waits here instead of ending: [update] only
+     * starts a loop when the job is gone, and the direct loop keeps the job alive, so a loop that ended on a pause was
+     * never started again and the phone stopped reading the relay until the app was restarted.
+     */
+    private suspend fun whilePaused() {
+        while (paused && currentCoroutineContext().isActive) delay(300)
+    }
+
     private suspend fun loop(ctx: Context) {
         while (currentCoroutineContext().isActive) {
             try {
+                whilePaused()
                 val w = Bridge.obj("listen_once", args("ms" to 20000))
                 if (w.getBoolean("pushed")) Trace.add("relay says something is waiting")
-                if (!currentCoroutineContext().isActive || paused) break
+                if (!currentCoroutineContext().isActive) break
+                if (paused) continue // linking started while we waited: read after it, in the next round
                 // A one-to-one delivery was already stored on the listener's connection.
                 val r = if (w.isNull("sync")) Bridge.obj("sync") else w.getJSONObject("sync")
                 val news = r.getInt("received") + r.getInt("groups") + r.getInt("message_requests")

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Checkbox
@@ -111,8 +112,12 @@ fun BackupCard(m: AppModel) {
                 if (k != null) {
                     Muted("Your backup key. It is shown once and is not stored. Write it down and keep it apart from the file:", 13.sp)
                     Text(k, fontFamily = Mono, fontSize = 18.sp)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(ack, { ack = it }, colors = CheckboxDefaults.colors(checkedColor = C.Accent))
+                    // The whole row toggles, not only the small box: the words are what a person (or a screen reader) taps.
+                    Row(
+                        Modifier.toggleable(value = ack, role = androidx.compose.ui.semantics.Role.Checkbox, onValueChange = { ack = it }),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(ack, null, colors = CheckboxDefaults.colors(checkedColor = C.Accent))
                         Text("I wrote the key down", fontSize = 14.sp)
                     }
                 } else {
@@ -121,12 +126,15 @@ fun BackupCard(m: AppModel) {
                     }
                 }
                 Field(null, own, { own = it }, password = true, placeholder = "or type your own passphrase (14+ characters)")
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.toggleable(value = history, role = androidx.compose.ui.semantics.Role.Switch, onValueChange = { history = it }),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Column(Modifier.weight(1f)) {
                         Text("Include my message history", fontSize = 14.sp)
                         Muted("Makes the file larger and more valuable to anyone who gets it. Files are not included.", 12.5.sp)
                     }
-                    Switch(history, { history = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+                    Switch(history, null, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
                 }
                 val pass = own.ifEmpty { key ?: "" }
                 PrimaryButton("Save backup file", enabled = !m.busy && pass.isNotEmpty() && (own.isNotEmpty() || ack)) {
