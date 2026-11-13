@@ -95,16 +95,19 @@ async function gate(mode) {
   pass.focus();
 }
 async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.group = null; st.screen = null; await refresh(); if (st.linkNew) { st.linkNew = false; st.section = "devices"; st.screen = "linknew"; render(); startLinkNew(); } else syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 60000); armAutoLock(); }
-function stop() { st.seen = null; clearInterval(st.polling); st.polling = null; clearTimeout(st.idleTimer); st.ov = st.agents = st.gdetail = null; st.msgs = []; st.editing = st.confirmDelete = null; st.apps = st.appWaiting = null; st.appsLoaded = false; }
+function stop() { if (typeof clearImages === "function") clearImages(); renderedKey = null; st.seen = null; clearInterval(st.polling); st.polling = null; clearTimeout(st.idleTimer); st.ov = st.agents = st.gdetail = null; st.msgs = []; st.editing = st.confirmDelete = null; st.apps = st.appWaiting = null; st.appsLoaded = false; }
 
 /* The backend holds one connection to the relay and tells us the moment something arrives; the slow poll above is only a safety net. */
 function listenToBackend() {
   const ev = window.__TAURI__ && window.__TAURI__.event;
   if (!ev) return;
+  // A verified update may already be waiting from before this window opened.
+  invoke("update_status").then((s) => { st.updateAuto = s.auto; st.updateReady = s.ready; render(); }).catch(() => {});
   ev.listen("synced", async (e) => { if (!st.ov) return; st.offline = false; for (const n of (e.payload && e.payload.notes) || []) { const t = st.seenNotes.get(n); if (!t || Date.now() - t > 10000) toast(n); st.seenNotes.set(n, Date.now()); } await refresh(); await markOpenRead(); scrollEnd(); });
   ev.listen("banner-open", (e) => { try { openFromBanner(JSON.parse(e.payload)); } catch (_) {} });
   ev.listen("app-connect", (e) => { if (!st.ov) return; st.appWaiting = e.payload || []; render(); refreshApps(); });
   ev.listen("banner-action", (e) => { try { bannerAction(JSON.parse(e.payload.open), e.payload.action); } catch (_) {} });
+  ev.listen("update-ready", (e) => { st.updateReady = e.payload; render(); });
   ev.listen("relay-status", (e) => { if (!st.ov) return; const off = !e.payload.online; if (off !== st.offline) { st.offline = off; render(); } });
 }
 
@@ -233,22 +236,58 @@ function renderRail() {
     h("button", { type: "button", "aria-label": "Lock", onclick: lockNow }, icon("lock"), h("span", { class: "tip", "aria-hidden": "true" }, `Lock  ${MOD}L`)));
 }
 async function lockNow() { try { await invoke("lock"); } catch (_) {} gate("unlock"); }
+/* render() rebuilds the whole screen. Without this, every sync would send the thread back to the top and empty the
+   message box. Remember where you were and what you were typing, and put it back if it is still the same screen. */
+let renderedKey = null;
+const screenKey = () => [st.section, st.screen || "", st.chat || "", st.group || ""].join("|");
+function captureView() {
+  const main = $("main"), sc = main.querySelector(".scroll");
+  const v = { key: renderedKey, mainTop: main.scrollTop, fields: [] };
+  if (sc) v.scroll = { top: sc.scrollTop, end: sc.scrollHeight - sc.scrollTop - sc.clientHeight < 60 };
+  for (const sel of [".composer textarea", ".editbox textarea"]) {
+    const el = main.querySelector(sel);
+    if (el) v.fields.push({ sel, value: el.value, a: el.selectionStart, b: el.selectionEnd, focus: document.activeElement === el });
+  }
+  return v;
+}
+function restoreView(v) {
+  if (!v || v.key !== screenKey()) return;
+  const main = $("main");
+  main.scrollTop = v.mainTop;
+  for (const f of v.fields) {
+    const el = main.querySelector(f.sel); if (!el) continue;
+    if (el.value !== f.value) el.value = f.value;
+    if (f.focus) { el.focus(); try { el.setSelectionRange(f.a, f.b); } catch (_) {} }
+  }
+  const sc = main.querySelector(".scroll");
+  if (sc && v.scroll && !(st.find && st.find.jump)) sc.scrollTop = v.scroll.end ? sc.scrollHeight : v.scroll.top;
+}
 function render() {
   if (!st.ov) return;
+  const view = captureView();
   renderRail();
   const fe = document.activeElement, keep = fe && fe.dataset && fe.dataset.keep;
   const S = SECTIONS[st.section], items = S.list ? S.list() : [];
   $("list").replaceChildren(...items);
   $("shell").classList.toggle("nolist", !items.length);
   const main = st.screen ? SCREENS[st.screen]() : S.main();
+  // A redraw of the same screen (a button that changes its text, a poll) keeps the scroll position;
+  // moving to another screen starts at the top.
+  const viewKey = `${st.section}|${st.screen || ""}|${st.chat || ""}|${st.group || ""}`;
+  const oldScroll = $("main").querySelector(".scroll");
+  const keepTop = oldScroll && st.viewKey === viewKey ? oldScroll.scrollTop : null;
+  st.viewKey = viewKey;
   const banners = [];
   if (st.ov.me.removed) banners.push(h("div", { class: "err-banner", role: "alert" }, h("b", {}, "This device was removed from your identity."), " It keeps what it already has but receives nothing new. Create a new identity here, or link it again from your main device."));
   if (st.offline) banners.push(h("div", { class: "err-banner", role: "status" }, "Cannot reach the relay at ", h("b", {}, st.ov.relay), ". Messages are kept and sent when it is back. Check Settings."));
   for (const w of st.appWaiting || []) banners.push(appAskBanner(w));
+  if (st.updateReady) banners.push(updateBanner(st.updateReady));
   // A screen may leave a slot empty (no search bar, no warning): replaceChildren would print it as "null".
   $("main").replaceChildren(...banners, ...main.filter(Boolean));
+  if (keepTop != null) { const s = $("main").querySelector(".scroll"); if (s) s.scrollTop = keepTop; }
   // A redraw (typing, or a message arriving) keeps the search box focused with the cursor at the end.
   if (keep) { const i = document.querySelector(`[data-keep="${keep}"]`); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }
+  restoreView(view); renderedKey = screenKey();
   // Searching in a conversation: bring the current match into view once, when it changes.
   if (st.find && st.find.jump) { st.find.jump = false; $("main").querySelector(".msg.current")?.scrollIntoView({ block: "center" }); }
 }
@@ -285,7 +324,7 @@ function chatsList() {
       h("button", { class: "iconbtn", type: "button", "aria-label": "Add a contact", title: "Add a contact", onclick: () => { st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson"))), search),
     h("nav", { class: "rows", "aria-label": "Conversations" },
       st.ov.requests ? h("button", { class: "reqrow", type: "button", onclick: () => { st.screen = "requests"; st.naming = null; render(); } }, icon("addperson"),
-        h("span", { style: "flex:1;font-size:14px;text-align:left" }, h("b", { style: "font-weight:600" }, `${st.ov.requests} message request${st.ov.requests > 1 ? "s" : ""}`), " ", h("span", { class: "muted" }, "from people not in your contacts")), icon("chev")) : null,
+        h("span", { style: "flex:1;font-size:14px;text-align:left" }, h("b", { style: "font-weight:600" }, `${st.ov.requests} ${st.ov.requests > 1 ? "people" : "person"} added you or wrote to you`), " ", h("span", { class: "muted" }, "Tap to accept or decline. Accepting adds them as a contact.")), icon("chev")) : null,
       entries.length ? entries.map((e) => e.row())
         : q ? emptyState(`Nothing matches “${st.query.trim()}”.`, "search")
         : emptyState("No contacts yet. Add one with the button above: paste their identity card.", "addperson")),
@@ -443,22 +482,85 @@ function threadItems(inGroup) {
     items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") + (hit ? " hit" : "") + (hit && m.id === current ? " current" : ""), "data-id": m.id },
       quoteOf(m),
       inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag waiting", style: "margin-left:6px" }, "Not verified")) : null,
-      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, hit ? marked(m.body) : m.body) : null),
+      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, hit ? marked(m.body) : mentioned(m.body)) : null),
+      imageThumb(m),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       reactionsOf(m),
       h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", st.editing !== m.id ? msgActions(m, inGroup) : null, m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
   }
   return items;
 }
+/* "@" mentions: typing @ in a composer offers the people in the chat (in a group, its members); picking one inserts "@Name".
+   The mention is plain text in the message, so everyone sees it and nothing is sent beyond the message itself. */
+function mentionBox(ta, people) {
+  const list = h("div", { class: "mentions", role: "listbox", "aria-label": "Mention someone", hidden: true });
+  let items = [], at = -1, active = 0;
+  const close = () => { list.hidden = true; list.replaceChildren(); items = []; at = -1; };
+  const pick = (name) => {
+    const caret = ta.selectionStart;
+    ta.value = ta.value.slice(0, at) + "@" + name + " " + ta.value.slice(caret);
+    const pos = at + name.length + 2;
+    ta.setSelectionRange(pos, pos); close(); ta.focus();
+  };
+  const show = () => {
+    list.replaceChildren(...items.map((n, i) => h("button", { class: "mention" + (i === active ? " on" : ""), type: "button", role: "option", "aria-selected": String(i === active), onmousedown: (e) => { e.preventDefault(); pick(n); } }, n)));
+    list.hidden = !items.length;
+  };
+  ta.addEventListener("input", () => {
+    const before = ta.value.slice(0, ta.selectionStart);
+    const m = /(^|\s)@([^\n@]{0,30})$/.exec(before);
+    if (!m) return close();
+    at = before.length - m[2].length - 1;
+    const q = m[2].toLowerCase();
+    items = people().filter((n) => n.toLowerCase().includes(q)).slice(0, 6);
+    active = 0; show();
+  });
+  ta.addEventListener("blur", close);
+  return {
+    list,
+    /** Handles a key while the list is open. Returns true when the key was used, so Enter does not send. */
+    key(e) {
+      if (list.hidden || !items.length) return false;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); active = (active + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length; show(); return true; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(items[active]); return true; }
+      if (e.key === "Escape") { e.preventDefault(); close(); return true; }
+      return false;
+    },
+  };
+}
+/** Names that can be mentioned in the open chat or group, for highlighting "@Name" in messages. */
+function mentionNames() {
+  const names = st.ov ? st.ov.contacts.map((c) => c.name) : [];
+  if (st.group && st.gdetail) names.push(...st.gdetail.members.map((m) => m.name));
+  return [...new Set(names)].filter(Boolean);
+}
+/** Message text with each known "@Name" shown as a highlighted mention. */
+function mentioned(text) {
+  const names = mentionNames().sort((a, b) => b.length - a.length);
+  if (!names.length || !text.includes("@")) return text;
+  const alt = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const re = new RegExp("@(" + alt + ")(?![\\p{L}\\p{N}])", "gu");
+  const out = []; let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push(h("span", { class: "mention-tag" }, m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
 function chatMain() {
   if (st.group) return groupMain();
   const c = st.ov.contacts.find((x) => x.name === st.chat);
   if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), startState()];
   const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name), h("span", { class: c.agent ? "verified" : null }, c.agent ? [icon("shield"), "Agent"] : `End-to-end encrypted · ${c.devices} device${c.devices > 1 ? "s" : ""}`)),
-    findButton(), callButtons(c), h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
+    findButton(), callButtons(c), h("button", { class: "btn quiet", type: "button", onclick: () => { st.contactFor = c.name; st.contactForm = null; st.screen = "contact"; render(); } }, "Details"),
+    h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
   const items = threadItems(false);
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
-  const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: `Message ${c.name}`, rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
+  const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: `Message ${c.name}`, rows: "1", onkeydown: (e) => { if (mention.key(e)) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
+  const mention = mentionBox(ta, () => st.ov.contacts.map((x) => x.name));
   async function send() {
     const text = ta.value; if (!text.trim()) return; ta.disabled = true;
     try { const n = await invoke("send", { name: c.name, text, replyTo: st.replyTo ? st.replyTo.id : null }); ta.value = ""; st.replyTo = null; if (!n) toast("Saved, but no device could be reached yet. It will be delivered when they connect."); await refresh(); scrollEnd(); }
@@ -466,7 +568,7 @@ function chatMain() {
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
   return [head, findBar(), h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
-    h("div", { class: "composer" }, replyStrip(), h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
+    h("div", { class: "composer" }, mention.list, replyStrip(), h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
 }
 
 /* ---------- verify + add ---------- */
@@ -492,8 +594,13 @@ function cardQr(card) {
 function copyCardButton() {
   return h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(st.ov.me.card); toast("Card copied. Send it to your contact."); } catch (_) { toast("Select the card text in Settings and copy it."); } } }, "Copy card");
 }
+/* What a new contact is first sent, so they can accept the request without pasting your card (ADR 0021). */
+const INTRO_TEXT = "Hi, I've added you as a contact on Spike. Accept my request so we can talk.";
 function addScreen() {
-  const name = h("input", { "aria-label": "Name", placeholder: "Name, e.g. Bob Chen" }), card = h("textarea", { class: "cardbox", "aria-label": "Identity card", placeholder: "Paste their identity card (starts with spike2:)" });
+  // The draft lives in state, not in the inputs: a redraw (a poll, a message arriving) must not lose what was typed.
+  const d = st.addDraft || (st.addDraft = { name: "", card: "" });
+  const name = h("input", { "aria-label": "Name", placeholder: "Name, e.g. Bob Chen", value: d.name, "data-keep": "addName", oninput: (e) => { d.name = e.target.value; } });
+  const card = h("textarea", { class: "cardbox", "aria-label": "Identity card", placeholder: "Paste their identity card (starts with spike2:)", "data-keep": "addCard", oninput: (e) => { d.card = e.target.value; } }, d.card);
   // Two steps side by side: their card in, your card out. Swapping cards is the whole of adding someone.
   return [header("Add a contact", () => { st.screen = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page" },
     h("p", { class: "lead" }, "There is no phone-number or email lookup. You swap cards directly, so no server learns who knows whom."),
@@ -501,12 +608,69 @@ function addScreen() {
       h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "1 · Add their card"),
         h("label", { style: "font-weight:600" }, "Name"), h("div", { class: "field" }, name),
         h("label", { style: "font-weight:600" }, "Their identity card"), card,
-        h("button", { class: "btn primary big", type: "button", onclick: async () => { try { st.addMsg = await invoke("add_contact", { name: name.value, card: card.value }); const n = name.value.trim(); await refresh(); st.screen = null; st.section = "chats"; await openChat(n); toast(st.addMsg); } catch (e) { toast(String(e)); } } }, "Add contact"),
+        h("button", { class: "btn primary big", type: "button", onclick: addContactFromScreen }, "Add contact"),
         h("p", { class: "note", style: "margin:0" }, "They arrive as not verified until you compare safety numbers.")),
       h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "2 · Give them yours"),
         h("span", { class: "note" }, "A phone scans this code. On a computer, copy your card and send it to them."),
         cardQr(st.ov.me.card),
         copyCardButton()))))];
+}
+async function addContactFromScreen() {
+  const d = st.addDraft || { name: "", card: "" };
+  const n = d.name.trim();
+  try {
+    const isNew = !st.ov.contacts.some((c) => c.name === n);
+    const msg = await invoke("add_contact", { name: d.name, card: d.card });
+    st.addDraft = null;
+    await refresh();
+    st.screen = null; st.section = "chats";
+    await openChat(n);
+    toast(msg);
+    // The other person must accept a request from us before they can talk to us; introducing ourselves
+    // now means they see that request straight away, with our card, and need no card of their own.
+    if (isNew) { try { await invoke("send", { name: n, text: INTRO_TEXT, replyTo: null }); await refresh(); } catch (_) {} }
+  } catch (e) { toast(String(e)); }
+}
+
+/* Contact details: rename, and replace the identity card when the person's devices changed (ADR 0008). */
+function contactScreen() {
+  const c = st.ov.contacts.find((x) => x.name === st.contactFor);
+  if (!c) { st.screen = null; return [header("Contact", () => { st.screen = null; render(); })]; }
+  const f = st.contactForm && st.contactForm.for === c.name ? st.contactForm : (st.contactForm = { for: c.name, name: c.name, card: "" });
+  const nameIn = h("input", { "aria-label": "Contact name", value: f.name, "data-keep": "contactName", oninput: (e) => { f.name = e.target.value; } });
+  const cardIn = h("textarea", { class: "cardbox", "aria-label": "New identity card", placeholder: "Only if they added or removed a device: paste their new card (starts with spike2:)", "data-keep": "contactCard", oninput: (e) => { f.card = e.target.value; } }, f.card);
+  const saveName = async () => {
+    const n = f.name.trim();
+    if (!n || n === c.name) { toast("Type a new name first."); return; }
+    try { await invoke("rename_contact", { old: c.name, name: n }); st.contactFor = n; st.chat = n; st.contactForm = null; await refresh(); toast(`Renamed to ${n}.`); }
+    catch (e) { toast(String(e)); }
+  };
+  const saveCard = async () => {
+    if (!f.card.trim()) { toast("Paste their new card first."); return; }
+    try { const msg = await invoke("add_contact", { name: c.name, card: f.card }); f.card = ""; await refresh(); toast(msg); }
+    catch (e) { toast(String(e)); }
+  };
+  return [header("Contact", () => { st.screen = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page" },
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Name"),
+      h("div", { class: "field" }, nameIn),
+      h("button", { class: "btn primary", type: "button", onclick: saveName }, "Save name")),
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Identity"),
+      h("span", { class: "note" }, c.verified ? "Verified: you compared the safety number." : "Not verified yet: compare the safety number over a call or in person."),
+      h("span", { class: "mono", style: "font-size:14px;overflow-wrap:anywhere" }, c.fingerprint),
+      h("span", { class: "note" }, `${c.devices} device${c.devices === 1 ? "" : "s"}`),
+      h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => { st.verifyFor = c.name; st.verifyDone = null; st.screen = "verify"; render(); } }, c.verified ? "Safety number" : "Verify")),
+    h("section", { class: "card", id: "share-card" }, h("h2", { class: "eyebrow" }, "Share your card"),
+      h("span", { class: "note" }, `${c.name} can add you on their side with this card: they paste it under Add a contact.`),
+      h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Your identity card", onfocus: (e) => e.target.select() }, st.ov.me.card),
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, copyCardButton(),
+        h("button", { class: "btn", type: "button", onclick: async () => {
+          try { await invoke("send", { name: c.name, text: "Here is my Spike identity card. Paste it under Add a contact to add me:\n\n" + st.ov.me.card, replyTo: null }); toast(`Card sent to ${c.name}.`); await refresh(); }
+          catch (e) { toast(String(e)); }
+        } }, `Send to ${c.name} in chat`))),
+    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Update their card"),
+      h("span", { class: "note" }, "Their identity stays the same: this only adds devices they added. A different identity is refused."),
+      cardIn,
+      h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: saveCard }, "Update card")))) ];
 }
 
 /* ---------- agents ---------- */
@@ -834,12 +998,26 @@ function restoreGate() {
 }
 
 /* ---------- updates: only when asked (docs/desktop-release.md) ---------- */
+/* A verified update waits for a restart. Installing restarts the app, so it waits for the person, and never during a call. */
+function updateBanner(r) {
+  const restart = async () => {
+    if (cs) { toast("Finish the call first. The update installs when you restart."); return; }
+    try { toast("Installing the update…"); await invoke("update_install"); }
+    catch (e) { toast(String(e)); }
+  };
+  return h("div", { class: "status soft", role: "status" }, h("span", {}, h("b", {}, `Spike Connect ${r.version} is ready.`), " Restart to finish updating. Your messages and identity are kept."),
+    h("button", { class: "btn primary", type: "button", onclick: restart }, "Restart to update"));
+}
 function updatesCard() {
   const u = st.update;
   const check = async () => { st.update = { busy: "Checking…" }; render(); try { st.update = await invoke("update_check"); } catch (e) { st.update = { error: String(e) }; } render(); };
-  const install = async () => { st.update = { ...st.update, busy: "Downloading and verifying…" }; render(); try { await invoke("update_install"); } catch (e) { st.update = { error: String(e) }; render(); } };
+  const install = async () => { if (cs) { toast("Finish the call first."); return; } st.update = { ...st.update, busy: "Downloading and verifying…" }; render(); try { await invoke("update_install"); } catch (e) { st.update = { error: String(e) }; render(); } };
+  const auto = h("input", { type: "checkbox", id: "update-auto", "aria-describedby": "update-auto-note" });
+  auto.checked = st.updateAuto !== false;
+  auto.addEventListener("change", async () => { try { await invoke("update_set_auto", { on: auto.checked }); st.updateAuto = auto.checked; toast(auto.checked ? "Spike will check for updates in the background." : "Automatic update checks are off."); } catch (e) { auto.checked = !auto.checked; toast(String(e)); } });
   return h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Updates"),
-    h("span", { class: "note" }, "Spike never looks for updates by itself, because a check tells the update server that this computer runs Spike. Check when you choose."),
+    h("label", { style: "display:flex;gap:10px;align-items:flex-start" }, auto, h("span", {}, h("b", { style: "font-weight:600" }, "Check for updates automatically"),
+      h("span", { class: "note", id: "update-auto-note", style: "display:block" }, "Spike checks at start-up and every six hours, and downloads a verified update. It installs only when you choose Restart to update. A check tells the update host (GitHub) this computer's address and that it runs Spike."))),
     u && u.error ? h("div", { class: "status bad", role: "alert" }, h("span", {}, u.error)) : null,
     u && u.supported === false ? h("div", { class: "status soft" }, h("span", {}, "This build cannot update itself. Install a newer version from where you got this one.")) : null,
     u && u.available ? h("div", { class: "status soft" }, h("b", {}, "Version " + u.available + " is available."), u.notes ? h("span", {}, u.notes) : null) : null,
@@ -929,7 +1107,8 @@ function groupMain() {
   const refusedNote = !left && d.large && d.refused ? h("div", { class: "sysline", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
     h("span", { style: "flex:1" }, `${plural(d.refused, "change was", "changes were")} refused because ${d.refused === 1 ? "it" : "they"} broke the group's rules, and skipped. Latest: ${d.refused_why || "unknown"}.`)) : null;
   const items = threadItems(true);
-  const ta = h("textarea", { "aria-label": "Message to " + d.name, placeholder: `Message ${d.name}`, rows: "1", onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
+  const ta = h("textarea", { "aria-label": "Message to " + d.name, placeholder: `Message ${d.name}`, rows: "1", onkeydown: (e) => { if (mention.key(e)) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
+  const mention = mentionBox(ta, () => d.members.filter((m) => !m.you).map((m) => m.name));
   async function send() {
     const text = ta.value; if (!text.trim()) return; ta.disabled = true;
     try {
@@ -941,7 +1120,7 @@ function groupMain() {
   }
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendGroupFile(d.id, f, ta.value); } });
   const composer = left ? h("div", { class: "composer" }, h("span", { class: "note" }, d.large ? "You are not in this group. Your history stays on this computer; an admin can invite you again." : "You are not in this group. Your history stays on this computer; nobody can add you back without your OK."))
-    : h("div", { class: "composer" }, replyStrip(), h("div", { class: "bar" }, d.large ? null : h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), d.large ? null : picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
+    : h("div", { class: "composer" }, mention.list, replyStrip(), h("div", { class: "bar" }, d.large ? null : h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), d.large ? null : picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
       h("span", { class: "note" }, d.large ? `One encrypted copy for all ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}. Files are not available in large groups yet.` : `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
   return [head, findBar(), warn, refusedNote, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState("No messages yet.")), composer].filter(Boolean);
 }
@@ -1075,7 +1254,7 @@ function newGroupScreen() {
 }
 
 const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { main: agentsMain }, devices: { main: devicesMain }, settings: { main: settingsMain } };
-const SCREENS = { group: groupScreen, newgroup: newGroupScreen, requests: requestsScreen, verify: verifyScreen, add: addScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
+const SCREENS = { group: groupScreen, newgroup: newGroupScreen, requests: requestsScreen, verify: verifyScreen, add: addScreen, contact: contactScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
 
 document.addEventListener("keydown", (e) => {
   if (!(MAC ? e.metaKey : e.ctrlKey) || e.altKey || $("app").hidden) return;

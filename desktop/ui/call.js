@@ -37,11 +37,14 @@ async function iceServers() { try { return await invoke("call_ice_servers"); } c
 function newPeer(servers) {
   const pc = new RTCPeerConnection({ iceServers: servers || [], bundlePolicy: "max-bundle", iceTransportPolicy: relayOnly() && servers && servers.length ? "relay" : "all" });
   cs.pc = pc; cs.pendingIce = []; cs.localIce = []; cs.remoteSet = false;
+  // Candidates go to the relay in a few large batches, not one connection per candidate: every relay
+  // connection displaces the listener's, so a trickle of small sends made the relay link flap during a call.
   pc.onicecandidate = (e) => {
-    if (!e.candidate || !e.candidate.candidate) return;
+    if (!cs) return;
+    if (!e.candidate || !e.candidate.candidate) { clearTimeout(cs.iceTimer); flushIce(); return; } // gathering done
     cs.localIce.push(e.candidate.candidate);
     clearTimeout(cs.iceTimer);
-    cs.iceTimer = setTimeout(flushIce, 50);
+    cs.iceTimer = setTimeout(flushIce, 400);
   };
   pc.ontrack = (e) => {
     if (!cs.remote) cs.remote = new MediaStream();
@@ -77,9 +80,18 @@ async function flushIce() {
   try { await cs.ready; await invoke("call_ice", { candidates: batch }); } catch (_) {}
   if (cs && cs.localIce.length) cs.iceTimer = setTimeout(flushIce, 50);
 }
+/* Why the microphone (or camera) was not given to the call, in words the person can act on (defect: calls failed on some Windows machines). */
+function mediaProblem(e, video) {
+  const n = (e && e.name) || "";
+  const what = video ? "The camera or microphone" : "The microphone";
+  if (n === "NotFoundError" || n === "OverconstrainedError") return `${what} was not found on this computer. Plug one in, or pick another device in Windows Sound settings.`;
+  if (n === "NotReadableError") return `${what} is in use by another program. Close it and try again.`;
+  if (n === "NotAllowedError" || n === "SecurityError") return `${what} is blocked. In Windows Settings, go to Privacy & security, then Microphone (and Camera for video), turn on access for desktop apps, then try again.`;
+  return `${what} is not available (${n || e}).`;
+}
 async function getMedia(video) {
   try { return await navigator.mediaDevices.getUserMedia({ audio: true, video: video ? { width: 1280, height: 720 } : false }); }
-  catch (e) { throw new Error(video ? "Camera or microphone not available: " + (e.name || e) : "Microphone not available: " + (e.name || e) + ". Allow it for Spike Connect and try again."); }
+  catch (e) { throw new Error(mediaProblem(e, video)); }
 }
 function fingerprintOf(sdp) { const m = /a=fingerprint:sha-256 ([0-9A-Fa-f:]+)/.exec(sdp || ""); return m ? m[1].toUpperCase() : ""; }
 /* Four digits both people can read to each other, from the two DTLS certificate fingerprints. The media
@@ -211,6 +223,7 @@ async function startCall(name, video) {
   cs = { name, video, incoming: false, status: "calling", verified: !!(c && c.verified) };
   drawCall();
   try {
+    await invoke("set_media_access", { on: true }).catch(() => {});
     cs.local = await getMedia(video);
     const pc = newPeer(await iceServers());
     cs.local.getTracks().forEach((t) => pc.addTrack(t, cs.local));
@@ -227,6 +240,7 @@ async function answerCall() {
   stopRing();
   cs.status = "connecting"; drawCall();
   try {
+    await invoke("set_media_access", { on: true }).catch(() => {});
     cs.local = await getMedia(cs.video);
     const pc = newPeer(await iceServers());
     cs.local.getTracks().forEach((t) => pc.addTrack(t, cs.local));
@@ -249,6 +263,7 @@ function hangUp() { if (!cs) return; invoke("call_hangup").catch(() => {}); endL
 function endLocal(message) {
   if (!cs) return;
   stopMedia(); cs = null; drawCall();
+  invoke("set_media_access", { on: false }).catch(() => {});
   if (message) toast(message);
 }
 

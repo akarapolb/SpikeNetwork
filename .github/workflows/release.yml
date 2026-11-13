@@ -1,19 +1,18 @@
-name: Desktop release build (manual)
+name: Desktop release
 
-# Builds installers for the desktop app on Windows, Linux and macOS. Run it by hand from the
-# Actions tab. It publishes nothing: the installers are artifacts of this run.
+# Builds, signs and publishes the desktop app for Windows and Linux when a version tag is pushed
+# (tag v<version>, matching desktop/src-tauri/tauri.conf.json). The release carries the installers and
+# latest.json, which the app's automatic updates read (docs/desktop-release.md).
 #
-# Signing is optional and happens only if you add the secrets described in docs/desktop-release.md.
-# Without them the installers are UNSIGNED and carry no update channel (the same as installer.yml).
-# Only the Windows job has been run end to end by the author; Linux was built and tested under WSL
-# and macOS has never been run: treat those two jobs as a starting point.
+# Needs the repository secret TAURI_SIGNING_PRIVATE_KEY (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD if the key
+# has one): without it the updater packages are not signed and the build fails on purpose.
+# Windows Authenticode signing is optional (WINDOWS_CERTIFICATE and WINDOWS_CERTIFICATE_PASSWORD).
+#
+# A manual run (workflow_dispatch) builds and uploads the packages as run artifacts only; it publishes nothing.
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      updater:
-        description: "Build with the self-updater (needs the TAURI_SIGNING_PRIVATE_KEY secret and a real pubkey/endpoint in tauri.updater.conf.json)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -26,15 +25,11 @@ jobs:
         include:
           - os: windows-latest
             bundles: nsis
-            artifact: windows
+            platform: windows
           - os: ubuntu-24.04
             bundles: deb,appimage
-            artifact: linux
-          - os: macos-latest
-            bundles: dmg
-            artifact: macos
+            platform: linux
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os != 'windows-latest' }}
     env:
       WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -62,26 +57,66 @@ jobs:
           $pw = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
           $c = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw
           Remove-Item $pfx
-          "SIGN_THUMBPRINT=$($c.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append
           '{"bundle":{"windows":{"certificateThumbprint":"' + $c.Thumbprint + '","digestAlgorithm":"sha256","timestampUrl":"http://timestamp.digicert.com"}}}' | Out-File -Encoding ascii signing.conf.json
-      - name: Build
+      - name: Build and sign the packages
         working-directory: desktop/src-tauri
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          args="--bundles ${{ matrix.bundles }}"
-          if [ -f ../../signing.conf.json ]; then args="$args --config ../../signing.conf.json"; fi
-          if [ "${{ inputs.updater }}" = "true" ]; then args="$args --features updater --config tauri.updater.conf.json"; fi
+          args="--bundles ${{ matrix.bundles }} --config tauri.updater.conf.json"
+          if [ -f signing.conf.json ]; then args="$args --config signing.conf.json"; fi
           cargo tauri build $args
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Name the packages for the release
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./tauri.conf.json').version")
+          mkdir -p "$RUNNER_TEMP/stage"
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            src=$(ls target/release/bundle/nsis/*-setup.exe)
+            cp "$src" "$RUNNER_TEMP/stage/spike-connect-$version-windows-x64.exe"
+            cp "$src.sig" "$RUNNER_TEMP/stage/spike-connect-$version-windows-x64.exe.sig"
+          else
+            src=$(ls target/release/bundle/appimage/*.AppImage)
+            cp "$src" "$RUNNER_TEMP/stage/spike-connect-$version-linux-x86_64.AppImage"
+            cp "$src.sig" "$RUNNER_TEMP/stage/spike-connect-$version-linux-x86_64.AppImage.sig"
+            cp target/release/bundle/deb/*.deb "$RUNNER_TEMP/stage/spike-connect-$version-linux-amd64.deb"
+          fi
+          ls -l "$RUNNER_TEMP/stage"
+      - name: Keep the packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: spike-connect-${{ matrix.artifact }}
-          path: |
-            desktop/src-tauri/target/release/bundle/**/*.exe
-            desktop/src-tauri/target/release/bundle/**/*.deb
-            desktop/src-tauri/target/release/bundle/**/*.AppImage
-            desktop/src-tauri/target/release/bundle/**/*.dmg
-            desktop/src-tauri/target/release/bundle/**/*.sig
+          name: spike-connect-${{ matrix.platform }}
+          path: ${{ runner.temp }}/stage/*
           if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ${{ runner.temp }}/packages
+          merge-multiple: true
+      - name: Write latest.json (the update manifest)
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: node scripts/make-update-manifest.mjs "$RUNNER_TEMP/packages" "$REPO" "$TAG" "$RUNNER_TEMP/packages/latest.json"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packages"
+          # Updater packages and their signatures are read by the app; the installers are for first installs.
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Spike Connect $TAG" --generate-notes \
+            latest.json spike-connect-*

@@ -869,6 +869,26 @@ impl Session {
         Ok(())
     }
 
+    /// Give a contact a new name on this device. Conversations follow the person's owner key, not the
+    /// name, so history, unread counts and verification all stay with the contact.
+    pub fn rename_contact(&self, old: &str, new: &str) -> Result<()> {
+        let new = new.trim();
+        if new.is_empty() || new.chars().count() > MAX_NAME || new.chars().any(char::is_control) {
+            bail!("give the contact a name of 1 to {MAX_NAME} characters");
+        }
+        let mut contacts = self.home.load_contacts()?;
+        if old != new && contacts.iter().any(|c| c.name == new) {
+            bail!("you already have a contact called '{new}'");
+        }
+        let c = contacts
+            .iter_mut()
+            .find(|c| c.name == old)
+            .with_context(|| format!("no contact '{old}'"))?;
+        c.name = new.to_string();
+        self.home.save_contacts(&contacts)?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------ network
 
     pub async fn send(&self, name: &str, text: &str) -> Result<usize> {
