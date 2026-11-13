@@ -57,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -173,8 +174,8 @@ fun GateScreen(m: AppModel) {
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(C.Accent), contentAlignment = Alignment.Center) {
-                    Ico(Ic.ShieldCheck, C.OnAccent, 20.dp)
+                Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(C.MarkBg), contentAlignment = Alignment.Center) {
+                    Ico(Ic.Mark, C.Mark, 22.dp)
                 }
                 Text("Spike Connect", fontFamily = Grotesk, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             }
@@ -240,29 +241,32 @@ private sealed interface Item {
     data class G(val g: Group) : Item { override val ts get() = g.lastTs }
 }
 
+/** The tabs as a floating pill: the selected tab is an ink capsule with its name, the others are icons (named for
+ *  screen readers and for the drivers' taps). */
 @Composable
 fun TabBar(m: AppModel) {
-    Row(
-        Modifier.fillMaxWidth().background(C.Surface).navigationBarsPadding().padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-    ) {
-        val tabs = listOf(Tab.Chats to ("Chats" to Ic.Chat), Tab.Agents to ("Agents" to Ic.Sparkle), Tab.Devices to ("Devices" to Ic.Devices), Tab.Settings to ("Settings" to Ic.Sliders))
-        for ((tab, p) in tabs) {
-            val on = m.tab == tab && m.screen == null
-            Column(
-                Modifier.weight(1f).heightIn(min = 56.dp).clip(RoundedCornerShape(16.dp)).clickable { m.select(tab) },
-                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
-            ) {
-                // The selected tab's icon sits in a soft accent pill.
-                Box(
-                    Modifier.size(width = 56.dp, height = 30.dp).clip(RoundedCornerShape(15.dp)).background(if (on) C.AccentSoft else Color.Transparent),
-                    contentAlignment = Alignment.Center,
-                ) { Ico(p.second, if (on) C.AccentSoftText else C.Muted) }
-                Spacer(Modifier.height(4.dp))
-                Text(p.first, fontSize = 12.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) C.Text else C.Muted)
+    Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(top = 6.dp, bottom = 12.dp), contentAlignment = Alignment.Center) {
+        val pill = RoundedCornerShape(999.dp)
+        Row(
+            Modifier.shadow(14.dp, pill, ambientColor = Color.Black.copy(alpha = 0.10f), spotColor = Color.Black.copy(alpha = 0.16f))
+                .clip(pill).background(C.Surface).border(1.dp, C.BorderStrong, pill).padding(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val tabs = listOf(Tab.Chats to ("Chats" to Ic.Chat), Tab.Agents to ("Agents" to Ic.Sparkle), Tab.Devices to ("Devices" to Ic.Devices), Tab.Settings to ("Settings" to Ic.Sliders))
+            for ((tab, p) in tabs) {
+                val on = m.tab == tab && m.screen == null
+                Row(
+                    Modifier.height(46.dp).widthIn(min = 52.dp).clip(pill).background(if (on) C.Accent else Color.Transparent)
+                        .clickable { m.select(tab) }.semantics(mergeDescendants = true) { contentDescription = p.first }
+                        .padding(horizontal = if (on) 16.dp else 14.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                ) {
+                    Ico(p.second, if (on) C.OnAccent else C.Muted, 21.dp)
+                    if (on) Text(p.first, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = C.OnAccent)
+                }
             }
         }
     }
-    Box(Modifier.fillMaxWidth().height(0.dp))
 }
 
 @Composable
@@ -278,29 +282,28 @@ fun ChatsTab(m: AppModel) {
     val relayHost = o.relay.removePrefix("wss://").removePrefix("ws://")
     Column(Modifier.fillMaxSize()) {
         Column(
-            Modifier.statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier.statusBarsPadding().padding(start = 20.dp, end = 16.dp, top = 14.dp, bottom = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(Modifier.weight(1f)) { H1("Chats") }
+                Box(Modifier.weight(1f)) { H1("Chats", 30.sp) }
                 Box(
-                    Modifier.size(44.dp).clip(CircleShape).background(C.AccentSoft)
+                    Modifier.size(38.dp).clip(CircleShape).background(C.Subtle)
                         .clickable { m.open(Screen.AddContact) }.semantics { contentDescription = "Add a contact" },
                     contentAlignment = Alignment.Center,
-                ) { Ico(Ic.AddPerson, C.AccentSoftText) }
+                ) { Ico(Ic.AddPerson, C.Text, 19.dp) }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Chip(
-                    "In sync on ${o.me.devices} ${if (o.me.devices == 1) "device" else "devices"}",
-                    dot = C.Green,
-                ) { m.select(Tab.Devices) }
-                Chip(
-                    when (m.relayOk) { true -> "Relay connected"; false -> "Relay not reachable"; null -> "Relay: $relayHost" },
-                    icon = Ic.Lock,
-                ) { m.select(Tab.Settings) }
+            // Status stays out of the way while things work; it appears as one line only when the relay is unreachable.
+            if (m.relayOk == false) {
+                Text(
+                    "Relay not reachable. Messages wait on this phone until it is back.",
+                    color = C.AmberText, fontSize = 13.sp,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.AmberBg)
+                        .clickable { m.select(Tab.Settings) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                )
             }
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(RoundedCornerShape(22.dp)).background(C.Subtle).padding(horizontal = 14.dp),
+                Modifier.fillMaxWidth().heightIn(min = 40.dp).clip(RoundedCornerShape(12.dp)).background(C.Subtle).padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Ico(Ic.Search, C.Muted, 18.dp)
@@ -309,7 +312,7 @@ fun ChatsTab(m: AppModel) {
                     textStyle = TextStyle(fontFamily = Plex, fontSize = 15.sp, color = C.Text),
                     modifier = Modifier.weight(1f),
                     decorationBox = { inner ->
-                        if (query.isEmpty()) Text("Search chats by name", color = C.Muted, fontSize = 15.sp)
+                        if (query.isEmpty()) Text("Search", color = C.Muted, fontSize = 15.sp)
                         inner()
                     },
                 )
@@ -350,21 +353,16 @@ fun ChatsTab(m: AppModel) {
             items(items) { r ->
                 when (r) {
                     is Item.P -> ChatRow(
-                        r.c.name, square = false,
-                        tag = if (r.c.verified) null else "Not verified", tagKind = TagKind.Amber, verified = r.c.verified,
-                        preview = r.c.last ?: "No messages yet", time = listTime(r.c.lastTs), unread = r.c.unread,
+                        r.c.name, square = false, verified = r.c.verified, redNote = if (r.c.verified) null else "Not verified",
+                        preview = r.c.last ?: if (r.c.verified) "No messages yet" else "", time = listTime(r.c.lastTs), unread = r.c.unread,
                     ) { m.open(Screen.Chat(r.c.name)) }
                     is Item.G -> ChatRow(
-                        r.g.name, square = true,
-                        tag = when {
-                            r.g.status == "invited" -> "Invite"
-                            r.g.status == "left" -> "left"
-                            r.g.large -> "Large group"
-                            else -> "Group"
+                        r.g.name, square = true, verified = false, redNote = null,
+                        preview = when {
+                            r.g.status == "invited" -> "Invite from ${r.g.invitedBy ?: "someone"}"
+                            r.g.status == "left" -> "You left this group"
+                            else -> r.g.last ?: "${r.g.members} people · no messages yet"
                         },
-                        tagKind = if (r.g.status == "invited") TagKind.Amber else TagKind.Neutral, verified = false, plainTag = true,
-                        preview = if (r.g.status == "invited") "Invite from ${r.g.invitedBy ?: "someone"}"
-                        else r.g.last ?: "${r.g.members} people · no messages yet",
                         previewAmber = r.g.status == "invited", time = listTime(r.g.lastTs), unread = r.g.unread,
                     ) { m.open(if (r.g.status == "invited") Screen.Invite(r.g.id) else Screen.GroupChat(r.g.id)) }
                 }
@@ -374,38 +372,46 @@ fun ChatsTab(m: AppModel) {
 }
 
 @Composable
+/** One chat: a neutral avatar, the name with a teal mark when verified, and a one-line preview. "Not verified" is red
+ *  text at the start of the preview, as in the design, not a badge. */
 private fun ChatRow(
-    title: String, square: Boolean, tag: String?, tagKind: TagKind, verified: Boolean, preview: String,
-    time: String, unread: Int, plainTag: Boolean = false, previewAmber: Boolean = false, onClick: () -> Unit,
+    title: String, square: Boolean, verified: Boolean, redNote: String?, preview: String,
+    time: String, unread: Int, previewAmber: Boolean = false, onClick: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 68.dp).clip(RoundedCornerShape(16.dp))
-            .background(if (unread > 0) C.Surface else Color.Transparent).clickable(onClick = onClick)
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Avatar(title, 46.dp, square)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                if (verified) Ico(Ic.ShieldCheck, C.Green, 16.dp)
-                if (tag != null) {
-                    if (plainTag && tagKind == TagKind.Neutral) Text(tag, fontSize = 12.5.sp, color = C.Muted) else Tag(tag, tagKind)
-                }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(
+                    title, fontSize = 16.sp, fontWeight = if (unread > 0) FontWeight.SemiBold else FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+                )
+                if (verified) Ico(Ic.ShieldCheck, C.Green, 15.dp)
             }
             Text(
-                preview, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                androidx.compose.ui.text.buildAnnotatedString {
+                    if (redNote != null) {
+                        pushStyle(androidx.compose.ui.text.SpanStyle(color = C.Danger, fontWeight = FontWeight.Medium)); append(redNote); pop()
+                        if (preview.isNotEmpty()) append(" · ")
+                    }
+                    append(preview)
+                },
+                fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = if (previewAmber) C.AmberText else if (unread > 0) C.Text else C.Muted,
-                fontWeight = if (previewAmber || unread > 0) FontWeight.Medium else FontWeight.Normal,
+                fontWeight = if (previewAmber) FontWeight.Medium else FontWeight.Normal,
             )
         }
-        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
-            Text(time, fontSize = 12.sp, color = if (unread > 0) C.Accent else C.Muted, fontWeight = if (unread > 0) FontWeight.SemiBold else FontWeight.Normal)
+        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 2.dp)) {
+            Text(time, fontSize = 12.5.sp, color = C.Muted)
             if (unread > 0) {
                 Box(
-                    Modifier.heightIn(min = 20.dp).widthIn(min = 20.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent).padding(horizontal = 6.dp),
+                    Modifier.heightIn(min = 19.dp).widthIn(min = 19.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent).padding(horizontal = 6.dp),
                     contentAlignment = Alignment.Center,
-                ) { Text("$unread", color = C.OnAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                ) { Text("$unread", color = C.OnAccent, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold) }
             }
         }
     }
@@ -459,11 +465,11 @@ fun ConversationScreen(
     }
     Page(C.BgChat) {
         Row(
-            Modifier.fillMaxWidth().background(C.Surface).statusBarsPadding().padding(start = 10.dp, end = 10.dp, top = 12.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Modifier.fillMaxWidth().background(C.Surface).statusBarsPadding().padding(start = 4.dp, end = 6.dp, top = 6.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Box(Modifier.size(44.dp).clip(CircleShape).clickable { m.open(null) }.semantics { contentDescription = "Back to chats" }, contentAlignment = Alignment.Center) { Ico(Ic.Back) }
-            Avatar(title, 40.dp, square)
+            Box(Modifier.size(42.dp).clip(CircleShape).clickable { m.open(null) }.semantics { contentDescription = "Back to chats" }, contentAlignment = Alignment.Center) { Ico(Ic.Back) }
+            Avatar(title, 38.dp, square)
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
@@ -474,8 +480,8 @@ fun ConversationScreen(
             if (onCall != null) {
                 val gate = rememberMicGate { onCall(false) }
                 val vgate = rememberMicGate(camera = true) { onCall(true) }
-                Box(Modifier.size(40.dp).clip(CircleShape).clickable { gate() }.semantics { contentDescription = "Voice call" }, contentAlignment = Alignment.Center) { Ico(IcHandset) }
-                Box(Modifier.size(40.dp).clip(CircleShape).clickable { vgate() }.semantics { contentDescription = "Video call" }, contentAlignment = Alignment.Center) { Ico(IcVideo) }
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { gate() }.semantics { contentDescription = "Voice call" }, contentAlignment = Alignment.Center) { Ico(IcHandset, C.Text, 21.dp) }
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { vgate() }.semantics { contentDescription = "Video call" }, contentAlignment = Alignment.Center) { Ico(IcVideo, C.Text, 21.dp) }
             }
             Box(
                 Modifier.size(40.dp).clip(CircleShape).background(if (finding) C.AccentSoft else Color.Transparent)
@@ -514,7 +520,6 @@ fun ConversationScreen(
         Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth().padding(horizontal = 14.dp), state = listState,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item { Spacer(Modifier.height(2.dp)) }
             if (m.messages.isEmpty()) {
@@ -523,15 +528,22 @@ fun ConversationScreen(
             m.messages.forEachIndexed { i, msg ->
                 if (i == 0 || !sameDay(m.messages[i - 1].ts, msg.ts)) {
                     item(key = "day-${msg.id}") {
-                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            Text(dayLabel(msg.ts), fontSize = 12.sp, fontWeight = FontWeight.Medium, color = C.Muted, modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(C.Surface).padding(horizontal = 10.dp, vertical = 3.dp))
+                        Box(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 4.dp), contentAlignment = Alignment.Center) {
+                            Text(dayLabel(msg.ts), fontSize = 12.5.sp, fontWeight = FontWeight.Medium, color = C.Muted)
                         }
                     }
                 }
+                // Messages from the same sender within five minutes form a run: they sit close together, and only the
+                // last one shows its time.
+                val prev = m.messages.getOrNull(i - 1)
+                val next = m.messages.getOrNull(i + 1)
+                val run = { a: Message, b: Message -> a.out == b.out && a.from == b.from && sameDay(a.ts, b.ts) && b.ts - a.ts < 300_000 }
+                val cont = prev != null && run(prev, msg)
+                val mid = next != null && run(msg, next)
                 item(key = msg.id) {
                     val hit = msg.id in hits
                     Bubble(
-                        msg, onCall, mark = if (hit) q else null, current = hit && hits.getOrNull(cur) == msg.id,
+                        msg, onCall, cont = cont, mid = mid, mark = if (hit) q else null, current = hit && hits.getOrNull(cur) == msg.id,
                         quoteName = msg.reply?.let { r -> if (r.out) "You" else r.from ?: title },
                         menu = menuFor == msg.id,
                         onLongPress = { menuFor = if (menuFor == msg.id) null else msg.id },
@@ -545,10 +557,10 @@ fun ConversationScreen(
                     ) { m.run { saveAndOpen(ctx, msg.id) } }
                 }
             }
-            item { Spacer(Modifier.height(2.dp)) }
+            item { Spacer(Modifier.height(10.dp)) }
         }
         Column(
-            Modifier.fillMaxWidth().background(C.Surface).navigationBarsPadding().padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 10.dp),
+            Modifier.fillMaxWidth().background(C.Surface).navigationBarsPadding().padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Box(Modifier.fillMaxWidth().height(0.dp))
@@ -567,19 +579,20 @@ fun ConversationScreen(
                     }
                 }
             }
-            // One pill holds the attach button, the text and the send button, as on the desktop.
+            // One bordered bar holds attach, the text, a lock that says how it is encrypted, and send, as on the desktop.
+            val bar = RoundedCornerShape(22.dp)
             Row(
-                Modifier.clip(RoundedCornerShape(26.dp)).background(C.Subtle).padding(4.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
+                Modifier.clip(bar).background(C.Surface).border(1.dp, C.BorderStrong, bar).padding(5.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 if (attach != null) {
                     Box(
-                        Modifier.size(44.dp).clip(CircleShape).clickable { pick.launch("*/*") }.semantics { contentDescription = "Attach a file" },
+                        Modifier.size(40.dp).clip(CircleShape).clickable { pick.launch("*/*") }.semantics { contentDescription = "Attach a file" },
                         contentAlignment = Alignment.Center,
-                    ) { Ico(Ic.Clip, C.Muted) }
+                    ) { Ico(Ic.Plus, C.Text, 22.dp) }
                 }
                 Box(
-                    Modifier.weight(1f).heightIn(min = 44.dp).padding(start = if (attach != null) 0.dp else 12.dp, top = 10.dp, bottom = 10.dp),
+                    Modifier.weight(1f).heightIn(min = 40.dp).padding(start = if (attach != null) 2.dp else 12.dp, top = 9.dp, bottom = 9.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     BasicTextField(
@@ -592,8 +605,9 @@ fun ConversationScreen(
                         },
                     )
                 }
+                Box(Modifier.padding(horizontal = 6.dp).semantics { contentDescription = caption }) { Ico(Ic.Lock, C.Green, 17.dp) }
                 Box(
-                    Modifier.size(44.dp).clip(CircleShape).background(if (text.isBlank()) C.Accent.copy(alpha = 0.4f) else C.Accent)
+                    Modifier.size(38.dp).clip(CircleShape).background(if (text.isBlank()) C.Accent.copy(alpha = 0.35f) else C.Accent)
                         .clickable(enabled = text.isNotBlank()) {
                             val t = text
                             val r = replyTo?.id
@@ -602,9 +616,8 @@ fun ConversationScreen(
                             m.run { onSend(t, r); m.refresh() }
                         }.semantics { contentDescription = "Send" },
                     contentAlignment = Alignment.Center,
-                ) { Ico(Ic.Send, C.OnAccent, 20.dp) }
+                ) { Ico(Ic.ArrowUp, C.OnAccent, 19.dp) }
             }
-            Muted(caption, 11.5.sp, Modifier.fillMaxWidth().padding(horizontal = 12.dp))
         }
     }
 }
@@ -623,7 +636,7 @@ private fun marked(text: String, q: String?): androidx.compose.ui.text.Annotated
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun Bubble(
-    msg: Message, onCall: ((Boolean) -> Unit)?, mark: String? = null, current: Boolean = false,
+    msg: Message, onCall: ((Boolean) -> Unit)?, cont: Boolean = false, mid: Boolean = false, mark: String? = null, current: Boolean = false,
     quoteName: String? = null, menu: Boolean = false, onLongPress: () -> Unit = {}, onReply: () -> Unit = {},
     onQuote: (String) -> Unit = {}, onReact: (String) -> Unit = {}, onFile: () -> Unit,
 ) {
@@ -631,13 +644,22 @@ private fun Bubble(
     val callVideo = msg.body.contains("video call", ignoreCase = true)
     val callBack = if (msg.id.startsWith("call-") && !msg.deleted && onCall != null) rememberMicGate(camera = callVideo) { onCall(callVideo) } else null
     Column(
-        Modifier.fillMaxWidth(), horizontalAlignment = if (msg.out) Alignment.End else Alignment.Start,
+        Modifier.fillMaxWidth().padding(top = if (cont) 3.dp else 10.dp), horizontalAlignment = if (msg.out) Alignment.End else Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        if (!msg.out && msg.from != null) {
-            Text(msg.from + if (msg.fromVerified) "" else " · not verified", fontSize = 12.sp, color = C.Muted, modifier = Modifier.padding(start = 6.dp))
+        if (!msg.out && msg.from != null && !cont) {
+            Text(
+                androidx.compose.ui.text.buildAnnotatedString {
+                    append(msg.from)
+                    if (!msg.fromVerified) { append("  "); pushStyle(androidx.compose.ui.text.SpanStyle(color = C.Danger, fontWeight = FontWeight.Medium)); append("Not verified"); pop() }
+                },
+                fontSize = 12.sp, color = C.Muted, modifier = Modifier.padding(start = 4.dp),
+            )
         }
-        val shape = if (msg.out) RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp) else RoundedCornerShape(18.dp, 18.dp, 18.dp, 6.dp)
+        // A run of messages: the corner on the sender's side tightens where one bubble meets the next.
+        val big = 18.dp; val small = 5.dp
+        val shape = if (msg.out) RoundedCornerShape(big, if (cont) small else big, if (mid) small else big, big)
+        else RoundedCornerShape(if (cont) small else big, big, big, if (mid) small else big)
         msg.reply?.let { r ->
             Column(
                 Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(10.dp)).background(C.Subtle)
@@ -651,9 +673,9 @@ private fun Bubble(
         Box(
             Modifier.widthIn(max = 300.dp).clip(shape)
                 .then(if (msg.deleted || msg.id.startsWith("call-")) Modifier else Modifier.combinedClickable(onClick = { if (menu) onLongPress() }, onLongClick = onLongPress))
-                .background(if (msg.out) C.BubbleOut else C.Surface)
-                .then(if (current) Modifier.border(2.dp, C.Accent, shape) else Modifier)
-                .padding(horizontal = 14.dp, vertical = 9.dp),
+                .background(if (msg.out) C.BubbleOut else C.Subtle)
+                .then(if (current) Modifier.border(2.dp, C.Green, shape) else Modifier)
+                .padding(horizontal = 13.dp, vertical = 8.dp),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (msg.fileName != null && !msg.deleted) {
@@ -717,7 +739,7 @@ private fun Bubble(
                 }
             }
         }
-        Muted(clock(msg.ts) + if (msg.edited) " · edited" else "", 11.5.sp)
+        if (!mid || msg.edited) Muted(clock(msg.ts) + if (msg.edited) " · edited" else "", 11.5.sp, Modifier.padding(horizontal = 4.dp))
     }
 }
 

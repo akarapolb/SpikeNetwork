@@ -101,13 +101,13 @@ object Previews {
                 PendingIntent.FLAG_UPDATE_CURRENT or (if (mutable) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE),
             )
         val b = NotificationCompat.Builder(ctx, Notifier.NEWS)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.drawable.ic_stat_mark)
             .setStyle(style)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
             .setContentIntent(Notifier.openApp(ctx))
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(NotificationCompat.Builder(ctx, Notifier.NEWS).setSmallIcon(android.R.drawable.stat_notify_chat).setContentTitle("Spike Connect").build())
+            .setPublicVersion(NotificationCompat.Builder(ctx, Notifier.NEWS).setSmallIcon(R.drawable.ic_stat_mark).setContentTitle("Spike Connect").build())
         val reply = RemoteInput.Builder(REPLY_KEY).setLabel("Reply to ${c.title}").build()
         b.addAction(
             NotificationCompat.Action.Builder(0, "Reply", action("reply", 0, {}, mutable = true))
@@ -151,7 +151,7 @@ class PreviewActionReceiver : BroadcastReceiver() {
                 Trace.add("notification: ${intent.action} failed (${e.message?.take(60)})")
                 nm.notify(
                     id,
-                    NotificationCompat.Builder(ctx, Notifier.NEWS).setSmallIcon(android.R.drawable.stat_notify_chat)
+                    NotificationCompat.Builder(ctx, Notifier.NEWS).setSmallIcon(R.drawable.ic_stat_mark)
                         .setContentTitle("Spike Connect").setContentText("Could not send. Open the app to try again.")
                         .setContentIntent(Notifier.openApp(ctx)).setAutoCancel(true).build(),
                 )

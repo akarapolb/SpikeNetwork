@@ -1,10 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the app window may ask Tauri to do. Only listening for the backend's own events: every other call goes through the app's own commands, which need no permission.",
+  "description": "What the app window may ask Tauri to do. Listening for the backend's own events, and moving, minimising, maximising and closing itself from its own title bar (the system frame is off). Every other call goes through the app's own commands, which need no permission.",
   "windows": ["main"],
   "permissions": [
     "core:event:allow-listen",
-    "core:event:allow-unlisten"
+    "core:event:allow-unlisten",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
+    "core:window:allow-close"
   ]
 }

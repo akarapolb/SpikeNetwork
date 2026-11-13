@@ -8,6 +8,17 @@
 </head>
 <body>
 <div class="gate" id="gate"></div>
+<!-- The window's own title bar (the system frame is off, tauri.conf.json "decorations": false). It comes after #gate so
+     the unlock form stays the first input on the page. Empty space in it drags the window; double-click maximises. -->
+<header class="titlebar" id="titlebar" data-tauri-drag-region>
+  <div class="tb-brand" data-tauri-drag-region><span class="tb-mark" aria-hidden="true"></span>Spike Connect</div>
+  <label class="tb-search" id="tbsearch" hidden><span class="tb-search-ic" aria-hidden="true"></span><input type="search" id="tbq" aria-label="Search chats" placeholder="Search chats" autocomplete="off" spellcheck="false"><kbd id="tbkbd"></kbd></label>
+  <div class="tb-ctl">
+    <button type="button" id="tbmin" aria-label="Minimise" title="Minimise"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8h9"/></svg></button>
+    <button type="button" id="tbmax" aria-label="Maximise" title="Maximise"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="2.5"/></svg></button>
+    <button type="button" id="tbclose" class="close" aria-label="Close" title="Close"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg></button>
+  </div>
+</header>
 <div class="app" id="app" hidden>
   <div class="shell" id="shell">
     <nav class="rail" id="rail" aria-label="Sections"></nav>

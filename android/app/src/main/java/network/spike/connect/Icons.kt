@@ -19,6 +19,16 @@ object Ic {
         return b.build()
     }
 
+    /** The app mark: an open ring (a C for Connect) and the point that closes it. Same shape as the launcher icon. */
+    val Mark: ImageVector = ImageVector.Builder("Mark", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M17.6 6.3A8.2 8.2 0 1 0 17.6 17.7"), fill = null, stroke = SolidColor(Color.Black),
+            strokeLineWidth = 3.4f, strokeLineCap = StrokeCap.Round,
+        )
+        addPath(pathData = addPathNodes("M16.6 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0z"), fill = SolidColor(Color.Black))
+    }.build()
+
+    val ArrowUp = icon("ArrowUp", "M12 19V5", "M6 11l6-6 6 6")
     val Back = icon("Back", "M15 5l-7 7 7 7")
     val Chevron = icon("Chevron", "M9 5l7 7-7 7")
     val Link = icon("Link", "M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7", "M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7")

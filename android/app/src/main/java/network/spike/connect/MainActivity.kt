@@ -199,14 +199,13 @@ private fun Ready(m: AppModel) {
                     Tab.Settings -> SettingsTab(m)
                 }
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
             TabBar(m)
         }
         is Screen.Chat -> {
             val c = o?.contacts?.firstOrNull { it.name == s.name }
             val n = c?.devices ?: 1
             ConversationScreen(
-                m, s.name, "End-to-end encrypted · $n ${if (n == 1) "device" else "devices"}", c?.verified == true, false,
+                m, s.name, "${if (c?.verified == true) "Verified" else "Not verified"} · $n ${if (n == 1) "device" else "devices"}", c?.verified == true, false,
                 if (n == 1) "Encrypted for ${s.name}'s device and your own other devices" else "Encrypted separately for each of ${s.name}'s $n devices and your own other devices",
                 { t, replyTo -> Bridge.call("send", args("name" to s.name, "text" to t, "reply_to" to replyTo)) },
                 { m.open(Screen.Verify(s.name)) },

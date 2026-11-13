@@ -51,40 +51,47 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * The palette, shared with the desktop app (desktop/ui/app.css): refined teal, colour means status,
- * and people's avatars get a soft tint so they are easier to tell apart. Light and dark follow the phone.
+ * The palette, shared with the desktop app (desktop/ui/app.css): "quiet ink, one signal". Actions and your own
+ * messages are ink; colour means status only: teal ([Green]) = verified or encrypted, amber = waiting for you,
+ * red = danger. The name [Accent] is kept so existing screens keep working; its value is now ink, not teal.
+ * People's avatars get a soft tint so they are easier to tell apart. Light and dark follow the phone.
  */
 object C {
     /** Set by [SpikeTheme]; a composable that reads a colour recomposes when this changes. */
     var dark by mutableStateOf(false)
     private fun p(light: Long, dark: Long) = Color(if (this.dark) dark else light)
 
-    val Bg get() = p(0xFFF4F6F8, 0xFF0E1417)
-    val BgChat get() = p(0xFFEEF2F5, 0xFF111A1E)
-    val Surface get() = p(0xFFFFFFFF, 0xFF162026)
-    /** Filled inputs, chips and the composer. */
-    val Subtle get() = p(0xFFEDF1F4, 0xFF1D2930)
-    val Border get() = p(0xFFE1E6EB, 0xFF26343C)
-    val BorderStrong get() = p(0xFFCBD4DC, 0xFF34454F)
-    val Text get() = p(0xFF13202A, 0xFFE6EDF2)
-    val Muted get() = p(0xFF5B6875, 0xFF95A4AF)
-    val AvatarBg get() = p(0xFFE8EDF1, 0xFF22303A)
-    val AvatarText get() = p(0xFF3A4753, 0xFFC3CED7)
-    val Accent get() = p(0xFF0E7C86, 0xFF5CC2C9)
+    val Bg get() = p(0xFFF6F7F7, 0xFF0A0D0E)
+    val BgChat get() = p(0xFFFFFFFF, 0xFF111516)
+    val Surface get() = p(0xFFFFFFFF, 0xFF111516)
+    /** Filled inputs, chips, incoming bubbles and the composer. */
+    val Subtle get() = p(0xFFEEF0F0, 0xFF1E2427)
+    val Border get() = p(0xFFE4E7E8, 0xFF22292B)
+    val BorderStrong get() = p(0xFFCFD5D7, 0xFF343D40)
+    val Text get() = p(0xFF0D1416, 0xFFF0F3F3)
+    val Muted get() = p(0xFF657175, 0xFF8C989C)
+    val AvatarBg get() = p(0xFFEEF0F0, 0xFF1E2427)
+    val AvatarText get() = p(0xFF4B565A, 0xFFB4BEC1)
+    /** Ink: buttons, selection, your own messages. */
+    val Accent get() = p(0xFF0D1416, 0xFFF0F3F3)
     /** Text and icons on a filled accent background. */
-    val OnAccent get() = p(0xFFFFFFFF, 0xFF062A2D)
-    val AccentSoft get() = p(0xFFE0F1F2, 0xFF15353A)
-    val AccentSoftText get() = p(0xFF0A5A61, 0xFFA3E0E4)
-    val BubbleOut get() = p(0xFF0E7C86, 0xFF1F7F87)
-    val OnBubbleOut = Color.White
-    val Green get() = p(0xFF1F7A45, 0xFF6FCF97)
-    val AmberText get() = p(0xFF7A4A00, 0xFFF5DDB0)
-    val AmberDeep get() = p(0xFF4A3200, 0xFFF5DDB0)
-    val AmberBg get() = p(0xFFFBEED0, 0xFF3A2C10)
+    val OnAccent get() = p(0xFFFFFFFF, 0xFF0A0D0E)
+    val AccentSoft get() = p(0xFFEEF0F0, 0xFF1E2427)
+    val AccentSoftText get() = p(0xFF0D1416, 0xFFF0F3F3)
+    val BubbleOut get() = p(0xFF0D1416, 0xFFF0F3F3)
+    val OnBubbleOut get() = p(0xFFFFFFFF, 0xFF0A0D0E)
+    /** The one signal colour: verified, encrypted, connected. Teal, despite the name. */
+    val Green get() = p(0xFF00786F, 0xFF56CFC1)
+    val AmberText get() = p(0xFF7A4A00, 0xFFF0CB86)
+    val AmberDeep get() = p(0xFF4A3200, 0xFFF0CB86)
+    val AmberBg get() = p(0xFFFAF0DA, 0xFF2E2410)
     val AmberBorder get() = p(0xFFE4C98F, 0xFF9A7330)
     val RedText get() = p(0xFF6E1F1C, 0xFFF6C4C1)
-    val RedBg get() = p(0xFFF8E1E1, 0xFF3A1B1A)
-    val Danger get() = p(0xFFA0302B, 0xFFF08A84)
+    val RedBg get() = p(0xFFF8E3E0, 0xFF3A1B1A)
+    val Danger get() = p(0xFFB93A2E, 0xFFF0867B)
+    /** The app mark keeps its own colours in both themes. */
+    val MarkBg = Color(0xFF0B1113)
+    val Mark = Color(0xFF2FEBD3)
 
     private val tintsLight = listOf(
         0xFFDCEBF7 to 0xFF24527A, 0xFFE5E0F5 to 0xFF4B3C85, 0xFFF5E1EA to 0xFF7A2D52,
@@ -119,8 +126,19 @@ val Mono = FontFamily(Font(R.font.plex_mono_regular, FontWeight.Normal))
 @Composable
 fun SpikeTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
     C.dark = dark
-    val scheme = if (dark) darkColorScheme(primary = C.Accent, onPrimary = C.OnAccent, background = C.Bg, surface = C.Surface, onSurface = C.Text, onBackground = C.Text)
-    else lightColorScheme(primary = C.Accent, onPrimary = C.OnAccent, background = C.Bg, surface = C.Surface, onSurface = C.Text, onBackground = C.Text)
+    // Filled in beyond primary so stock Material parts (switches, checkboxes, dialogs, snackbars) use the palette
+    // instead of Material's default purple-grey.
+    val scheme = (if (dark) darkColorScheme() else lightColorScheme()).copy(
+        primary = C.Accent, onPrimary = C.OnAccent, primaryContainer = C.AccentSoft, onPrimaryContainer = C.AccentSoftText,
+        secondary = C.Accent, onSecondary = C.OnAccent, secondaryContainer = C.Subtle, onSecondaryContainer = C.Text,
+        tertiary = C.Green, background = C.Bg, onBackground = C.Text, surface = C.Surface, onSurface = C.Text,
+        surfaceVariant = C.Subtle, onSurfaceVariant = C.Muted, surfaceTint = C.Surface,
+        surfaceContainerLowest = C.Surface, surfaceContainerLow = C.Surface, surfaceContainer = C.Surface,
+        surfaceContainerHigh = C.Subtle, surfaceContainerHighest = C.BorderStrong,
+        inverseSurface = C.Accent, inverseOnSurface = C.OnAccent, inversePrimary = C.Mark,
+        // outline is also an off switch's thumb and border, so it must stand out from the track (surfaceContainerHighest).
+        outline = C.Muted, outlineVariant = C.Border, error = C.Danger, onError = C.OnAccent,
+    )
     MaterialTheme(colorScheme = scheme) {
         CompositionLocalProvider(
             LocalTextStyle provides TextStyle(fontFamily = Plex, fontSize = 15.sp, color = C.Text),
@@ -144,12 +162,13 @@ fun Muted(text: String, size: TextUnit = 13.sp, modifier: Modifier = Modifier) {
     Text(text, color = C.Muted, fontSize = size, modifier = modifier)
 }
 
-/** Initials in a softly tinted circle (a person) or a neutral rounded square (a group, an agent). */
+/** Initials in a neutral circle (a person) or rounded square (a group, an agent), as in the design: people are
+ *  told apart by their initials, colour is kept for status. */
 @Composable
 fun Avatar(text: String, size: Dp = 46.dp, square: Boolean = false) {
     val initials = text.split(' ', '-', '_').filter { it.isNotEmpty() }.take(2)
         .joinToString("") { it.take(1).uppercase() }.ifEmpty { "?" }
-    val (bg, fg) = if (square) C.AvatarBg to C.AvatarText else C.tint(text)
+    val (bg, fg) = C.AvatarBg to C.AvatarText
     Box(
         Modifier.size(size).clip(if (square) RoundedCornerShape(size * 0.3f) else CircleShape).background(bg),
         contentAlignment = Alignment.Center,

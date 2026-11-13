@@ -32,6 +32,8 @@ const PATHS = {
   back: '<path d="M15 5l-7 7 7 7"/>',
   chev: '<path d="M9 5l7 7-7 7"/>',
   shield: '<path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  // The app mark: an open ring (a C for Connect) and the point that closes it.
+  mark: '<path d="M17.6 6.3A8.2 8.2 0 1 0 17.6 17.7" stroke-width="3.4"/><circle cx="19.6" cy="12" r="3" fill="currentColor" stroke="none"/>',
   send: '<path d="M4 12l16-8-6 16-2-7z"/>',
   file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
   devices: '<rect x="3" y="5" width="12" height="9" rx="1.5"/><path d="M1.5 17h15"/><rect x="17" y="8" width="5.5" height="12" rx="1.2"/>',
@@ -40,6 +42,10 @@ const PATHS = {
   group: '<circle cx="9" cy="8" r="3"/><circle cx="16.5" cy="9.5" r="2.5"/><path d="M3 19c.7-3 3-4.8 6-4.8s5.3 1.8 6 4.8"/><path d="M15 14.6c2.6.1 4.6 1.6 5.2 4.4"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
   up: '<path d="M6 15l6-6 6 6"/>',
+  // The composer's send arrow and attach plus, and the details-panel toggle.
+  arrowup: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  panel: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M15 5v14"/>',
   down: '<path d="M6 9l6 6 6-6"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   newgroup: '<circle cx="8" cy="8" r="3"/><path d="M2.5 19c.7-3 3-4.8 5.5-4.8s4.8 1.8 5.5 4.8"/><circle cx="15" cy="9" r="2.3"/><path d="M19 13v6M16 16h6"/>',
@@ -60,6 +66,8 @@ function when(ts) {
 }
 const dayOf = (ts) => { const w = when(ts); return w === "Yesterday" ? w : w === clock(ts) ? "Today" : new Date(ts).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }); };
 const ini = (n) => (n.trim()[0] || "?").toUpperCase();
+// Two initials for avatars ("Bob Tanaka" -> "BT"); one for a single word.
+const ini2 = (n) => { const w = (n || "").trim().split(/\s+/).filter(Boolean); return ((w[0] ? [...w[0]][0] : "?") + (w[1] ? [...w[1]][0] : "")).toUpperCase(); };
 async function call(cmd, args) { try { return await invoke(cmd, args); } catch (e) { if (e === "locked") { gate("unlock"); } else toast(String(e)); throw e; } }
 
 /* ---------- state ---------- */
@@ -69,6 +77,7 @@ const st = { seenNotes: new Map(), group: null, gdetail: null, verifyFor: null, 
 async function gate(mode) {
   stop();
   $("app").hidden = true; $("gate").hidden = false;
+  $("tbsearch").hidden = true; $("tbq").value = ""; st.query = "";
   if (!mode) mode = (await invoke("app_status")).exists ? "unlock" : "create";
   const create = mode === "create";
   const pass = h("input", { id: "pass", type: "password", autocomplete: create ? "new-password" : "current-password", "aria-describedby": "passHelp" });
@@ -228,11 +237,11 @@ function renderRail() {
   const item = (k, label, n, warn) => h("button", { type: "button", "aria-current": st.section === k ? "page" : null, "aria-label": n ? `${label}, ${n} ${warn ? "waiting" : "unread"}` : label, onclick: () => go(k) },
     icon(k), h("span", { class: "tip", "aria-hidden": "true" }, `${label}  ${MOD}${keys[k]}`), n ? h("span", { class: "badge" + (warn ? " warn" : ""), "aria-hidden": "true" }, n) : null);
   $("rail").replaceChildren(
-    h("span", { class: "tile sm me", title: "This device", "aria-hidden": "true" }, icon("shield")),
-    item("chats", "Chats", unread), item("agents", "Agents", w, true), item("devices", "Devices"), item("settings", "Settings"),
+    // The brand is in the title bar now; the rail is just the sections, with settings and the rest at the bottom.
+    item("chats", "Chats", unread), item("agents", "Agents", w, true), item("devices", "Devices"),
     h("span", { class: "spacer" }),
+    item("settings", "Settings"),
     h("button", { type: "button", "aria-label": "Switch light or dark", onclick: () => { const r = document.documentElement; const dark = matchMedia("(prefers-color-scheme: dark)").matches; r.dataset.theme = (r.dataset.theme || (dark ? "dark" : "light")) === "dark" ? "light" : "dark"; } }, icon("moon"), h("span", { class: "tip", "aria-hidden": "true" }, "Light or dark")),
-    h("span", { class: "sep", "aria-hidden": "true" }),
     h("button", { type: "button", "aria-label": "Lock", onclick: lockNow }, icon("lock"), h("span", { class: "tip", "aria-hidden": "true" }, `Lock  ${MOD}L`)));
 }
 async function lockNow() { try { await invoke("lock"); } catch (_) {} gate("unlock"); }
@@ -265,6 +274,7 @@ function restoreView(v) {
 function render() {
   if (!st.ov) return;
   const view = captureView();
+  $("tbsearch").hidden = false;
   renderRail();
   const fe = document.activeElement, keep = fe && fe.dataset && fe.dataset.keep;
   const S = SECTIONS[st.section], items = S.list ? S.list() : [];
@@ -292,7 +302,11 @@ function render() {
   if (st.find && st.find.jump) { st.find.jump = false; $("main").querySelector(".msg.current")?.scrollIntoView({ block: "center" }); }
 }
 function header(title, back) { return h("div", { class: "head" }, back ? h("button", { class: "iconbtn", type: "button", "aria-label": "Back", onclick: back }, icon("back")) : null, h("h1", {}, title)); }
-function tile(c, sm) { return h("span", { class: `tile${sm ? " sm" : ""}${c.agent ? " sq" : ""} ${tint(c.name)}`, "aria-hidden": "true" }, ini(c.name)); }
+// People are round with two initials; agents are rounded squares with the agent mark.
+function tile(c, sm) { return h("span", { class: `tile${sm ? " sm" : ""}${c.agent ? " sq" : ""} ${tint(c.name)}`, "aria-hidden": "true" }, c.agent ? icon("agents") : ini2(c.name)); }
+// The teal mark after a verified name.
+const vtick = () => h("span", { class: "vtick", title: "Verified" }, icon("shield"));
+const notVerified = () => h("span", { class: "flag bad" }, "Not verified");
 // A soft tint picked from the name, so people are easier to tell apart. Status colours stay red, amber and green.
 function tint(name) { let n = 0; for (const ch of name || "") n = (n * 31 + ch.codePointAt(0)) >>> 0; return `c-t${n % 6}`; }
 // An empty state: a quiet icon above the same sentence as before.
@@ -313,26 +327,30 @@ function chatsList() {
   const cs = st.ov.contacts, gs = st.ov.groups;
   // One list, newest activity first; contacts without messages stay alphabetical after the active ones.
   const q = (st.query || "").trim().toLowerCase();
-  const entries = [...cs.map((c) => ({ ts: c.last_ts || 0, name: c.name, row: () => contactRow(c) })), ...gs.map((g) => ({ ts: g.last_ts || 0, name: g.name, row: () => groupRow(g) }))]
+  const tab = st.listTab || "all";
+  const entries = [...cs.map((c) => ({ ts: c.last_ts || 0, name: c.name, unread: c.unread, group: false, row: () => contactRow(c) })), ...gs.map((g) => ({ ts: g.last_ts || 0, name: g.name, unread: g.unread || g.status === "invited", group: true, row: () => groupRow(g) }))]
     .filter((e) => !q || e.name.toLowerCase().includes(q))
+    .filter((e) => tab === "all" || (tab === "unread" && e.unread) || (tab === "groups" && e.group))
     .sort((x, y) => y.ts - x.ts || x.name.localeCompare(y.name));
-  const search = cs.length + gs.length > 0 ? h("div", { class: "field search" }, icon("search"),
-    h("input", { type: "search", "data-keep": "chats", "aria-label": "Search chats", placeholder: `Search chats  (${MOD}K)`, value: st.query || "", oninput: (e) => { st.query = e.target.value; render(); },
-      onkeydown: (e) => { if (e.key === "Escape") { st.query = ""; render(); } } })) : null;
+  // The search field is in the title bar (titleBar()); it sets st.query.
   return [h("div", { class: "listhead" }, h("div", { class: "title" }, h("h1", {}, "Chats"),
       h("button", { class: "iconbtn", type: "button", "aria-label": "New group", title: "New group", onclick: () => { if (!cs.length) return toast("Add a contact first: a group is made from your contacts."); st.newGroup = { name: "", members: [], anyCanAdd: false, week: false, large: false }; st.screen = "newgroup"; render(); } }, icon("newgroup")),
-      h("button", { class: "iconbtn", type: "button", "aria-label": "Add a contact", title: "Add a contact", onclick: () => { st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson"))), search),
+      h("button", { class: "iconbtn", type: "button", "aria-label": "Add a contact", title: "Add a contact", onclick: () => { st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson"))),
+      // Filters, and message requests (people who added you or wrote to you) as the last tab.
+      h("div", { class: "ltabs", role: "tablist", "aria-label": "Show" },
+        ...[["all", "All"], ["unread", "Unread"], ["groups", "Groups"]].map(([k, label]) => h("button", { type: "button", role: "tab", "aria-selected": String(tab === k), onclick: () => { st.listTab = k; render(); } }, label)),
+        st.ov.requests ? h("button", { type: "button", class: "req", title: "People who added you or wrote to you. Accepting adds them as a contact.", onclick: () => { st.screen = "requests"; st.naming = null; render(); } }, `Requests ${st.ov.requests}`) : null)),
     h("nav", { class: "rows", "aria-label": "Conversations" },
-      st.ov.requests ? h("button", { class: "reqrow", type: "button", onclick: () => { st.screen = "requests"; st.naming = null; render(); } }, icon("addperson"),
-        h("span", { style: "flex:1;font-size:14px;text-align:left" }, h("b", { style: "font-weight:600" }, `${st.ov.requests} ${st.ov.requests > 1 ? "people" : "person"} added you or wrote to you`), " ", h("span", { class: "muted" }, "Tap to accept or decline. Accepting adds them as a contact.")), icon("chev")) : null,
       entries.length ? entries.map((e) => e.row())
+        : tab !== "all" && !q ? emptyState(tab === "unread" ? "Nothing unread." : "No groups yet.", tab === "unread" ? "chats" : "group")
         : q ? emptyState(`Nothing matches “${st.query.trim()}”.`, "search")
         : emptyState("No contacts yet. Add one with the button above: paste their identity card.", "addperson")),
   ];
 }
 function contactRow(c) {
   return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.chat === c.name), onclick: () => openChat(c.name) }, tile(c),
-    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.agent ? h("span", { class: "tag plain" }, "agent") : null, c.verified ? null : h("span", { class: "tag waiting" }, "Not verified")), h("span", { class: "preview" }, c.last || "No messages yet")),
+    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.verified ? vtick() : null),
+      h("span", { class: "preview" }, c.verified || c.agent ? (c.last || "No messages yet") : [notVerified(), c.last ? ` · ${c.last}` : ""])),
     h("span", { class: "meta" }, c.last_ts ? when(c.last_ts) : "", c.unread ? h("span", { class: "count" }, c.unread) : null));
 }
 function ownActions(m) {
@@ -474,14 +492,16 @@ function msgActions(m, inGroup) {
 function threadItems(inGroup) {
   const items = []; let day = "", prev = null;
   const hits = findHits(), current = hits.length && st.find ? hits[st.find.i] : null;
-  for (const m of st.msgs) {
+  for (const [i, m] of st.msgs.entries()) {
     const d = dayOf(m.ts); if (d !== day) { day = d; prev = null; items.push(h("div", { class: "day" }, d)); }
     // A message right after one from the same sender sits closer to it.
     const cont = prev && prev.out === m.out && prev.from === m.from && m.ts - prev.ts < 300000; prev = m;
+    // Only the last message of such a run shows its time below it; the others show it (and their actions) on hover.
+    const nx = st.msgs[i + 1], mid = !!nx && dayOf(nx.ts) === d && nx.out === m.out && nx.from === m.from && nx.ts - m.ts < 300000;
     const hit = hits.includes(m.id);
-    items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") + (hit ? " hit" : "") + (hit && m.id === current ? " current" : ""), "data-id": m.id },
+    items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") + (mid ? " mid" : "") + (hit ? " hit" : "") + (hit && m.id === current ? " current" : ""), "data-id": m.id },
       quoteOf(m),
-      inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "tag waiting", style: "margin-left:6px" }, "Not verified")) : null,
+      inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "flag bad", style: "margin-left:6px" }, "Not verified")) : null,
       m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, hit ? marked(m.body) : mentioned(m.body)) : null),
       imageThumb(m),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
@@ -550,13 +570,23 @@ function mentioned(text) {
   return out;
 }
 
+/* The composer: attach, the text, a lock that says how the message is encrypted (hover for the details), and send. */
+function composerBar(ta, picker, send, encNote) {
+  return h("div", { class: "bar" },
+    picker ? h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("plus")) : null, picker,
+    ta,
+    h("span", { class: "enc", title: encNote, "aria-label": encNote, role: "img" }, icon("lock")),
+    h("button", { class: "sendbtn", type: "button", "aria-label": "Send", title: "Send  (Enter)", onclick: send }, icon("arrowup")));
+}
 function chatMain() {
   if (st.group) return groupMain();
   const c = st.ov.contacts.find((x) => x.name === st.chat);
   if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), startState()];
-  const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name), h("span", { class: c.agent ? "verified" : null }, c.agent ? [icon("shield"), "Agent"] : `End-to-end encrypted · ${c.devices} device${c.devices > 1 ? "s" : ""}`)),
-    findButton(), callButtons(c), h("button", { class: "btn quiet", type: "button", onclick: () => { st.contactFor = c.name; st.contactForm = null; st.screen = "contact"; render(); } }, "Details"),
-    h("button", { class: c.verified ? "btn quiet" : "btn", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, c.verified ? "Safety number" : "Verify"));
+  const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name, c.verified ? vtick() : null),
+      h("span", {}, c.agent ? "Agent · acts only within the limits you set" : [`${c.devices} device${c.devices > 1 ? "s" : ""} · end-to-end encrypted`, c.verified ? "" : [" · ", notVerified()]])),
+    c.verified ? null : h("button", { class: "btn small", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, "Verify"),
+    callButtons(c), findButton(),
+    h("button", { class: "iconbtn", type: "button", "aria-label": "Details and safety number", title: "Details and safety number", onclick: () => { st.contactFor = c.name; st.contactForm = null; st.screen = "contact"; render(); } }, icon("panel")));
   const items = threadItems(false);
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
   const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: `Message ${c.name}`, rows: "1", onkeydown: (e) => { if (mention.key(e)) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
@@ -568,7 +598,7 @@ function chatMain() {
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
   return [head, findBar(), h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
-    h("div", { class: "composer" }, mention.list, replyStrip(), h("div", { class: "bar" }, h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file", onclick: () => picker.click() }, icon("clip")), picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))), h("span", { class: "note" }, `Encrypted separately for each of ${c.name}'s devices.`))];
+    h("div", { class: "composer" }, mention.list, replyStrip(), composerBar(ta, picker, send, `Encrypted separately for each of ${c.name}'s devices.`))];
 }
 
 /* ---------- verify + add ---------- */
@@ -846,7 +876,8 @@ function appAskBanner(w) {
       h("button", { class: "btn", type: "button", onclick: () => decide(false) }, "Don't allow"),
       h("button", { class: "btn primary", type: "button", onclick: () => decide(true) }, "Allow")));
 }
-function when(ms) { return ms ? new Date(ms).toLocaleString() : "not yet"; }
+// Named apart from when(): a second "function when" would replace the chat list's short time everywhere (hoisting).
+function whenFull(ms) { return ms ? new Date(ms).toLocaleString() : "not yet"; }
 function appsCard() {
   const a = st.apps;
   if (!a) return null;
@@ -862,7 +893,7 @@ function appsCard() {
     a.api ? h("div", { class: a.error ? "status warn" : "status soft", id: "apps-api-status" }, h("b", {}, a.error ? "Not listening." : "Listening."), h("span", { class: "mono" }, a.error ? a.error : `127.0.0.1:${a.port}`)) : null,
     a.apps.length ? a.apps.map((x) => h("div", { class: "devrow app-row", style: "flex-wrap:wrap" },
       h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, x.name), " ", h("span", { class: "mono note" }, x.app), x.connected ? h("span", { class: "pill plain", style: "margin-left:6px" }, "connected") : null,
-        h("div", { class: "note" }, `Last used ${when(x.last)} · received ${x.received} · sent ${x.sent}`)),
+        h("div", { class: "note" }, `Last used ${whenFull(x.last)} · received ${x.received} · sent ${x.sent}`)),
       h("button", { class: "btn danger", type: "button", "aria-label": `Remove ${x.name}`, onclick: () => remove(x) }, "Remove")))
       : h("span", { class: "note", id: "apps-none" }, "No apps are set up on this computer."),
     a.dropped.length ? h("div", { class: "status soft", id: "apps-dropped" }, h("b", {}, "Dropped:"), h("span", {}, "data arrived for apps that are not set up here: ", a.dropped.map((d) => `${d.app} (${d.count})`).join(", "), ".")) : null);
@@ -1073,7 +1104,8 @@ async function sendGroupFile(id, file, caption) {
     r.notes.forEach(toast); await refresh(); scrollEnd();
   } catch (e) { toast(String(e)); }
 }
-const groupTile = (sm) => h("span", { class: `tile${sm ? " sm" : ""} c-neutral`, "aria-hidden": "true" }, icon("group"));
+// Groups are rounded squares with two initials, like the mockup; no name falls back to the group icon.
+const groupTile = (sm, name) => h("span", { class: `tile sq${sm ? " sm" : ""} c-neutral`, "aria-hidden": "true" }, name ? ini2(name) : icon("group"));
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 async function loadGroup() {
   try { st.msgs = await invoke("group_conversation", { id: st.group }); st.gdetail = await invoke("group", { id: st.group }); }
@@ -1089,9 +1121,10 @@ async function openGroup(id) {
 function openMembers() { st.screen = "group"; st.picked = []; st.picking = false; st.nameMember = null; render(); }
 function groupRow(g) {
   const invited = g.status === "invited", left = g.status === "left";
-  return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.group === g.id), onclick: () => openGroup(g.id) }, groupTile(false),
-    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, g.name), invited ? h("span", { class: "tag waiting" }, "Invite") : left ? h("span", { class: "tag plain" }, "left") : g.unverified ? h("span", { class: "tag waiting" }, `${g.unverified} not verified`) : null, g.large ? h("span", { class: "tag plain" }, "Large") : null),
-      h("span", { class: "preview" }, invited ? `Invite from ${g.invited_by || "someone"}` : g.last || `${plural(g.members, "person", "people")} · no messages yet`)),
+  return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.group === g.id), onclick: () => openGroup(g.id) }, groupTile(false, g.name),
+    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, g.name)),
+      h("span", { class: "preview" }, invited ? h("span", { class: "flag" }, `Invite from ${g.invited_by || "someone"}`) : left ? "You left this group"
+        : [g.unverified ? h("span", { class: "flag bad" }, `${g.unverified} not verified`) : null, g.unverified ? " · " : "", g.last || `${plural(g.members, "person", "people")} · no messages yet`])),
     h("span", { class: "meta" }, g.last_ts ? when(g.last_ts) : "", g.unread ? h("span", { class: "count" }, g.unread) : null));
 }
 function groupMain() {
@@ -1099,8 +1132,8 @@ function groupMain() {
   if (!g || !d) return [h("div", { class: "head" }, h("h1", {}, "Chats")), emptyState("Choose a conversation.")];
   if (d.status === "invited") return inviteScreen();
   const left = d.status !== "joined";
-  const head = h("div", { class: "head" }, groupTile(true), h("span", { class: "who" }, h("b", {}, d.name), h("span", {}, left ? "You are not in this group" : `${plural(d.members.length, "person", "people")} · end-to-end encrypted${d.large ? " · large group" : ""}`)),
-    findButton(), h("button", { class: "btn", type: "button", onclick: openMembers }, icon("group"), "Members"));
+  const head = h("div", { class: "head" }, groupTile(true, d.name), h("span", { class: "who" }, h("b", {}, d.name), h("span", {}, left ? "You are not in this group" : [`${plural(d.members.length, "person", "people")}${d.large ? " · large group" : ""}`, d.unverified ? [" · ", h("span", { class: "flag bad" }, `${d.unverified} not verified`)] : " · end-to-end encrypted"])),
+    findButton(), h("button", { class: "iconbtn", type: "button", "aria-label": "Members and group settings", title: "Members and group settings", onclick: openMembers }, icon("panel")));
   const warn = !left && d.unverified ? h("div", { class: "sysline attention", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
     h("span", { style: "flex:1" }, `${unverifiedText(d)} Messages from them are marked.`),
     h("button", { class: "btn", type: "button", onclick: openMembers }, "Review")) : null;
@@ -1120,8 +1153,7 @@ function groupMain() {
   }
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendGroupFile(d.id, f, ta.value); } });
   const composer = left ? h("div", { class: "composer" }, h("span", { class: "note" }, d.large ? "You are not in this group. Your history stays on this computer; an admin can invite you again." : "You are not in this group. Your history stays on this computer; nobody can add you back without your OK."))
-    : h("div", { class: "composer" }, mention.list, replyStrip(), h("div", { class: "bar" }, d.large ? null : h("button", { class: "iconbtn", type: "button", "aria-label": "Attach a file", title: "Attach a file for everyone in the group", onclick: () => picker.click() }, icon("clip")), d.large ? null : picker, ta, h("button", { class: "iconbtn", type: "button", "aria-label": "Send", style: "background:var(--accent);color:var(--accent-ink);border:0", onclick: send }, icon("send"))),
-      h("span", { class: "note" }, d.large ? `One encrypted copy for all ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}. Files are not available in large groups yet.` : `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
+    : h("div", { class: "composer" }, mention.list, replyStrip(), composerBar(ta, d.large ? null : picker, send, d.large ? `One encrypted copy for all ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}. Files are not available in large groups yet.` : `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
   return [head, findBar(), warn, refusedNote, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState("No messages yet.")), composer].filter(Boolean);
 }
 const HISTORY_CHOICES = [["join", "Messages from when they join"], ["week", "The last 7 days"]];
@@ -1261,6 +1293,20 @@ document.addEventListener("keydown", (e) => {
   const k = { "1": "chats", "2": "agents", "3": "devices", "4": "settings" }[e.key];
   if (k) { e.preventDefault(); go(k); }
   else if (e.key.toLowerCase() === "f" && st.section === "chats" && !st.screen && (st.chat || st.group)) { e.preventDefault(); openFind(); }
-  else if (e.key.toLowerCase() === "k") { e.preventDefault(); if (st.section !== "chats" || st.screen) go("chats"); $("list").querySelector(".search input")?.focus(); } else if (e.key.toLowerCase() === "l") { e.preventDefault(); lockNow(); }
+  else if (e.key.toLowerCase() === "k") { e.preventDefault(); if (st.section !== "chats" || st.screen) go("chats"); $("tbq").focus(); $("tbq").select(); } else if (e.key.toLowerCase() === "l") { e.preventDefault(); lockNow(); }
 });
-window.addEventListener("DOMContentLoaded", () => { listenToBackend(); gate(); });
+/* The window's own title bar (the system frame is off in tauri.conf.json): the window buttons, and the chat search,
+   which lives here so it is one keystroke away from any screen. Typing in it opens Chats and filters the list. */
+function titleBar() {
+  const w = window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow();
+  if (w) {
+    $("tbmin").onclick = () => w.minimize();
+    $("tbmax").onclick = () => w.toggleMaximize();
+    $("tbclose").onclick = () => w.close();
+  }
+  $("tbkbd").textContent = MAC ? "⌘ K" : "Ctrl K";
+  const q = $("tbq");
+  q.addEventListener("input", () => { st.query = q.value; if (st.section !== "chats" || st.screen) { st.section = "chats"; st.screen = null; } render(); });
+  q.addEventListener("keydown", (e) => { if (e.key === "Escape") { q.value = ""; st.query = ""; render(); q.blur(); } });
+}
+window.addEventListener("DOMContentLoaded", () => { titleBar(); listenToBackend(); gate(); });

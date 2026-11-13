@@ -1,0 +1,9 @@
+<!-- Spike Connect app mark: an open ring (a C for Connect) and the point that closes it, bright aqua on near-black.
+     Source for the generated icons: cargo tauri icon desktop/src-tauri/icons/app-icon.svg -o <dir>, then copy icon.ico and icon.png. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <rect width="1024" height="1024" rx="230" fill="#0B1113"/>
+  <g transform="translate(194 194) scale(26.5)" fill="none" stroke="#2FEBD3" stroke-width="3.4" stroke-linecap="round">
+    <path d="M17.6 6.3A8.2 8.2 0 1 0 17.6 17.7"/>
+    <circle cx="19.6" cy="12" r="3" fill="#2FEBD3" stroke="none"/>
+  </g>
+</svg>

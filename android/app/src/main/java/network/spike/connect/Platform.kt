@@ -190,7 +190,7 @@ object Notifier {
     fun serviceNotification(ctx: Context): Notification {
         ensureChannels(ctx)
         return NotificationCompat.Builder(ctx, SERVICE)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.drawable.ic_stat_mark)
             .setContentTitle("Spike Connect")
             .setContentText("Listening for new messages")
             .setOngoing(true)
@@ -205,14 +205,14 @@ object Notifier {
         ensureChannels(ctx)
         if (Prefs.notificationPreviews(ctx) && Previews.show(ctx)) return
         val n = NotificationCompat.Builder(ctx, NEWS)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.drawable.ic_stat_mark)
             .setContentTitle("Spike Connect")
             .setContentText(if (count == 1) "New message" else "$count new messages")
             .setAutoCancel(true)
             .setContentIntent(open(ctx))
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(
-                NotificationCompat.Builder(ctx, NEWS).setSmallIcon(android.R.drawable.stat_notify_chat).setContentTitle("Spike Connect").build(),
+                NotificationCompat.Builder(ctx, NEWS).setSmallIcon(R.drawable.ic_stat_mark).setContentTitle("Spike Connect").build(),
             )
             .build()
         ctx.getSystemService(NotificationManager::class.java).notify(NEWS_ID, n)

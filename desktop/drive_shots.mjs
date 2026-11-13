@@ -40,10 +40,10 @@ try {
   await sleep(500);
 
   await both(alice, "1-chats-empty-main");
-  await alice.eval(`const i=document.querySelector('#list .search input'); if(i){ i.focus(); i.value='car'; i.dispatchEvent(new Event('input',{bubbles:true})); }`);
+  await alice.eval(`const i=document.querySelector('#tbq'); if(i){ i.focus(); i.value='car'; i.dispatchEvent(new Event('input',{bubbles:true})); }`);
   await sleep(300);
   await alice.shot("1b-search");
-  await alice.eval(`const i=document.querySelector('#list .search input'); if(i){ i.value=''; i.dispatchEvent(new Event('input',{bubbles:true})); }`);
+  await alice.eval(`const i=document.querySelector('#tbq'); if(i){ i.value=''; i.dispatchEvent(new Event('input',{bubbles:true})); }`);
   await alice.click("Bob Tanaka", "#list");
   await sleep(800);
   await both(alice, "2-conversation");
