@@ -80,7 +80,7 @@ const st = { seenNotes: new Map(), group: null, gdetail: null, verifyFor: null, 
 async function gate(mode) {
   stop();
   $("app").hidden = true; $("gate").hidden = false;
-  $("tbsearch").hidden = true; $("tbq").value = ""; st.query = "";
+  $("tbsearch").hidden = true; $("tbq").value = ""; st.query = ""; cmdClose(); cmd.msgs = [];
   if (!mode) mode = (await invoke("app_status")).exists ? "unlock" : "create";
   const create = mode === "create";
   const pass = h("input", { id: "pass", type: "password", autocomplete: create ? "new-password" : "current-password", "aria-describedby": "passHelp", placeholder: create ? "Passphrase" : "" });
@@ -324,7 +324,7 @@ function startState() {
   el.append(...[h("div", { class: "actions" },
     h("a", { class: "btn primary", href: "#", onclick: (e) => { e.preventDefault(); st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson"), "Add a contact"),
     has ? h("a", { class: "btn", href: "#", onclick: (e) => { e.preventDefault(); st.newGroup = { name: "", members: [], anyCanAdd: false, week: false, large: false }; st.screen = "newgroup"; render(); } }, icon("newgroup"), "New group") : null),
-    has ? h("span", { class: "note" }, `${MOD}K searches your chats. Enter sends, Shift+Enter adds a line.`) : null].filter(Boolean));
+    has ? h("span", { class: "note" }, `${MOD}K finds people, messages and actions. Enter sends, Shift+Enter adds a line.`) : null].filter(Boolean));
   return el;
 }
 
@@ -1479,7 +1479,7 @@ document.addEventListener("keydown", (e) => {
   const k = { "1": "chats", "2": "agents", "3": "devices", "4": "settings" }[e.key];
   if (k) { e.preventDefault(); go(k); }
   else if (e.key.toLowerCase() === "f" && st.section === "chats" && !st.screen && (st.chat || st.group)) { e.preventDefault(); openFind(); }
-  else if (e.key.toLowerCase() === "k") { e.preventDefault(); if (st.section !== "chats" || st.screen) go("chats"); $("tbq").focus(); $("tbq").select(); } else if (e.key.toLowerCase() === "l") { e.preventDefault(); lockNow(); }
+  else if (e.key.toLowerCase() === "k") { e.preventDefault(); $("tbq").focus(); $("tbq").select(); cmdOpen(); } else if (e.key.toLowerCase() === "l") { e.preventDefault(); lockNow(); }
 });
 /* The window's own title bar (the system frame is off in tauri.conf.json): the window buttons, and the chat search,
    which lives here so it is one keystroke away from any screen. Typing in it opens Chats and filters the list. */
@@ -1492,7 +1492,121 @@ function titleBar() {
   }
   $("tbkbd").textContent = MAC ? "⌘ K" : "Ctrl K";
   const q = $("tbq");
-  q.addEventListener("input", () => { st.query = q.value; if (st.section !== "chats" || st.screen) { st.section = "chats"; st.screen = null; } render(); });
-  q.addEventListener("keydown", (e) => { if (e.key === "Escape") { q.value = ""; st.query = ""; render(); q.blur(); } });
+  // Typing still filters the chat list (and opens Chats); the command bar lists what else matches.
+  q.addEventListener("input", () => { st.query = q.value; if (st.section !== "chats" || st.screen) { st.section = "chats"; st.screen = null; } render(); cmdOpen(); });
+  q.addEventListener("focus", () => cmdOpen());
+  q.addEventListener("blur", () => cmdClose());
+  q.addEventListener("keydown", cmdKey);
+}
+
+/* ---------- the command bar ----------
+   The title-bar field finds people, chats, messages and actions. The list is rebuilt on every keystroke; arrows move,
+   Enter runs the highlighted entry, Esc closes and clears. Message text is searched here, in this window, from the
+   conversations the backend already returns to it. */
+const SET_SECS = [["set-identity", "Identity"], ["set-relay", "Home relay"], ["backupCard", "Backup"], ["set-privacy", "Privacy and security"], ["direct-card", "Direct connections"], ["apps-card", "Apps"], ["calls-card", "Calls"], ["set-trust", "Relay trust"], ["set-blocked", "Blocked"], ["set-updates", "Updates"]];
+const cmd = { open: false, sel: 0, items: [], msgs: [], loading: null };
+function cmdLoadMsgs() {
+  if (!st.ov || cmd.loading) return;
+  const jobs = [
+    ...st.ov.contacts.map((c) => invoke("conversation", { name: c.name }).then((ms) => ms.map((m) => ({ ...m, chat: c.name }))).catch(() => [])),
+    ...st.ov.groups.filter((g) => g.status !== "invited").map((g) => invoke("group_conversation", { id: g.id }).then((ms) => ms.map((m) => ({ ...m, group: g.id, gname: g.name }))).catch(() => [])),
+  ];
+  cmd.loading = Promise.all(jobs).then((all) => { cmd.msgs = all.flat().filter((m) => !m.deleted && m.body); cmd.loading = null; if (cmd.open) cmdRender(); });
+}
+function cmdOpen() {
+  if (!st.ov || $("app").hidden) return;
+  if (!cmd.open) { cmd.open = true; cmdLoadMsgs(); }
+  cmd.sel = 0;
+  cmdRender();
+}
+function cmdClose() {
+  cmd.open = false;
+  const p = $("cmdpal"); if (p) p.remove();
+  $("tbq").setAttribute("aria-expanded", "false"); $("tbq").removeAttribute("aria-activedescendant");
+}
+// Close, clear the chat filter, leave the field, then do the thing.
+async function cmdRun(it) {
+  const q = $("tbq"); cmdClose(); q.value = ""; st.query = ""; q.blur();
+  try { await it.run(); } catch (e) { toast(String(e)); }
+  if (st.ov && !$("app").hidden) render();
+}
+function cmdKey(e) {
+  if (e.key === "Escape") { e.preventDefault(); const q = $("tbq"); q.value = ""; st.query = ""; cmdClose(); render(); q.blur(); return; }
+  if (!cmd.open) { if (e.key === "ArrowDown") { e.preventDefault(); cmdOpen(); } return; }
+  const n = cmd.items.length;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); if (n) { cmd.sel = (cmd.sel + (e.key === "ArrowDown" ? 1 : -1) + n) % n; cmdRender(); } }
+  else if (e.key === "Enter") { e.preventDefault(); const it = cmd.items[cmd.sel]; if (it) cmdRun(it); }
+}
+// A short piece of a message around the match.
+function snippet(text, q) {
+  const one = text.replace(/\s+/g, " "), i = one.toLowerCase().indexOf(q);
+  if (i < 0 || one.length <= 64) return one;
+  const a = Math.max(0, i - 24), b = Math.min(one.length, a + 64);
+  return (a ? "…" : "") + one.slice(a, b) + (b < one.length ? "…" : "");
+}
+function personItem(c) { return { kind: "person", label: c.name, verified: c.verified, sub: c.last || "", tile: tile(c, true), run: () => openChat(c.name) }; }
+function groupItem(g) { return { kind: "chat", label: g.name, sub: g.last || "", tile: groupTile(true, g.name), run: () => openGroup(g.id) }; }
+function cmdItems(raw) {
+  const q = raw.trim().toLowerCase(), ov = st.ov, has = (s) => (s || "").toLowerCase().includes(q);
+  const key = (k) => `${MAC ? "⌘" : "Ctrl"} ${k}`;
+  const newGroup = () => { if (!ov.contacts.length) return toast("Add a contact first: a group is made from your contacts."); st.section = "chats"; st.newGroup = { name: "", members: [], anyCanAdd: false, week: false, large: false }; st.screen = "newgroup"; };
+  const inCall = () => { if (typeof cs !== "undefined" && cs) { toast("You are already in a call."); return true; } return false; };
+  const actions = [
+    { label: "New group", ic: "newgroup", run: newGroup },
+    { label: "Add a contact", ic: "addperson", run: () => { st.section = "chats"; st.screen = "add"; st.addMsg = null; } },
+    { label: "Link a device", ic: "devices", run: () => go("devices") },
+    { label: "Lock now", ic: "lock", kbd: key("L"), run: lockNow },
+    ...SET_SECS.filter(([id]) => id !== "set-blocked" || st.blocked.length).map(([id, label]) => ({ label: `Settings: ${label}`, ic: "settings", run: () => { st.setSec = id; go("settings"); } })),
+    { label: "Go to Chats", ic: "chats", kbd: key(1), run: () => go("chats") },
+    { label: "Go to Agents", ic: "agents", kbd: key(2), run: () => go("agents") },
+    { label: "Go to Devices", ic: "devices", kbd: key(3), run: () => go("devices") },
+    { label: "Switch light or dark", ic: "moon", run: () => { const r = document.documentElement; const dark = matchMedia("(prefers-color-scheme: dark)").matches; r.dataset.theme = (r.dataset.theme || (dark ? "dark" : "light")) === "dark" ? "light" : "dark"; } },
+  ];
+  if (!q) {
+    // Nothing typed yet: the latest chats, then the everyday actions.
+    const recent = [...ov.contacts.map((c) => ({ c, ts: c.last_ts || 0 })), ...ov.groups.map((g) => ({ g, ts: g.last_ts || 0 }))].sort((x, y) => y.ts - x.ts).slice(0, 4);
+    return [["Recent", recent.map(({ c, g }) => (c ? personItem(c) : groupItem(g)))], ["Actions", actions.slice(0, 4)]];
+  }
+  const people = [...ov.contacts.filter((c) => has(c.name)).map(personItem), ...ov.groups.filter((g) => has(g.name)).map(groupItem)].slice(0, 5);
+  const hits = cmd.msgs.filter((m) => m.body.toLowerCase().includes(q)).sort((x, y) => y.ts - x.ts).slice(0, 4).map((m) => ({
+    kind: "msg", label: m.chat || m.gname, sub: `“${snippet(m.body, q)}”`,
+    tile: m.chat ? tile(ov.contacts.find((c) => c.name === m.chat) || { name: m.chat }, true) : groupTile(true, m.gname),
+    // Open the conversation with its search on that message.
+    run: async () => {
+      if (m.chat) await openChat(m.chat); else await openGroup(m.group);
+      const f = { q: raw.trim(), i: 0, jump: true }; st.find = f; f.i = Math.max(0, findHits().indexOf(m.id));
+    },
+  }));
+  // "car" offers Call Carol; "call car" does too.
+  const words = q.split(/\s+/), fits = (label) => words.every((w) => label.toLowerCase().includes(w));
+  const calls = ov.contacts.filter((c) => !c.agent).flatMap((c) => [
+    { label: `Call ${c.name}`, ic: "phone", run: () => { if (!inCall()) startCall(c.name, false); } },
+    { label: `Video call ${c.name}`, ic: "video", run: () => { if (!inCall()) startCall(c.name, true); } }]).filter((a) => fits(a.label)).slice(0, 4);
+  return [["People and chats", people], ["Messages", hits], ["Actions", [...calls, ...actions.filter((a) => fits(a.label))].slice(0, 6)]];
+}
+function cmdRender() {
+  if (!cmd.open) return;
+  const q = $("tbq"), groups = cmdItems(q.value).filter(([, list]) => list.length);
+  cmd.items = groups.flatMap(([, list]) => list);
+  if (cmd.sel >= cmd.items.length) cmd.sel = 0;
+  let idx = 0;
+  const rows = groups.map(([cap, list]) => h("div", { role: "group", "aria-label": cap }, h("span", { class: "cap", "aria-hidden": "true" }, cap), list.map((it) => {
+    const i = idx++, on = i === cmd.sel;
+    return h("div", { class: "pi" + (on ? " on" : ""), role: "option", id: `cmd-${i}`, "aria-selected": String(on), "data-kind": it.kind || "action",
+      onmousedown: (e) => e.preventDefault(), onmousemove: () => { if (cmd.sel !== i) { cmd.sel = i; cmdRender(); } }, onclick: () => cmdRun(it) },
+      it.tile || icon(it.ic), h("span", { class: "pl" }, it.label), it.verified ? vtick() : null, it.sub ? h("span", { class: "s" }, it.sub) : null,
+      it.kbd ? h("kbd", {}, it.kbd) : on ? h("kbd", {}, "Enter") : null);
+  })));
+  const empty = cmd.items.length ? null : h("div", { class: "pempty" }, cmd.loading ? "Searching…" : `Nothing matches “${q.value.trim()}”.`);
+  let p = $("cmdpal");
+  if (!p) {
+    // The dimmed window under the list; a click on it closes the list.
+    p = h("div", { class: "cmdscrim", id: "cmdpal" });
+    p.addEventListener("mousedown", (e) => { if (e.target === p) { e.preventDefault(); q.blur(); } });
+    document.body.append(p);
+  }
+  p.replaceChildren(h("div", { class: "pal", role: "listbox", id: "cmdlist", "aria-label": "Results" }, rows, empty));
+  q.setAttribute("aria-expanded", "true");
+  if (cmd.items.length) { q.setAttribute("aria-activedescendant", `cmd-${cmd.sel}`); $(`cmd-${cmd.sel}`)?.scrollIntoView({ block: "nearest" }); } else q.removeAttribute("aria-activedescendant");
 }
 window.addEventListener("DOMContentLoaded", () => { titleBar(); listenToBackend(); gate(); });
