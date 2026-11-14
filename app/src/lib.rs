@@ -21,6 +21,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use spike_cli::agent::{self, Status};
 use spike_cli::client::Relay;
+use spike_cli::directory;
 use spike_cli::groups;
 use spike_cli::large;
 use spike_cli::link;
@@ -176,6 +177,24 @@ pub struct ActionTypeDto {
     pub fields: Vec<String>,
     pub money: bool,
     pub template: String,
+}
+
+/// One agent in the directory (ADR 0036), with what this device already knows about it.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryEntryDto {
+    #[serde(flatten)]
+    pub entry: directory::Entry,
+    /// The contact it is saved as, when it is one.
+    pub contact: Option<String>,
+    /// It has a grant now.
+    pub allowed: bool,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryDto {
+    /// Listers the person trusts. Empty by default: nobody vouches for an agent until one is added.
+    pub listers: Vec<directory::Lister>,
+    pub entries: Vec<DirectoryEntryDto>,
 }
 
 /// What the UI sends to create a grant. Amounts are in the smallest unit (cents).
@@ -1368,6 +1387,75 @@ impl Session {
             g.typed_only,
         )?;
         Ok(())
+    }
+
+    /// The agent directory: listings you imported, marked verified only when a lister you trust signed them.
+    pub fn directory(&self) -> Result<DirectoryDto> {
+        let contacts = self.home.load_contacts()?;
+        let grants = agent::list_grants(&self.home)?;
+        let entries = directory::entries(&self.home)?
+            .into_iter()
+            .map(|e| DirectoryEntryDto {
+                contact: contacts
+                    .iter()
+                    .find(|c| c.conversation_key().is_ok_and(|k| k == e.agent))
+                    .map(|c| c.name.clone()),
+                allowed: grants.iter().any(|g| g.body.agent == e.agent),
+                entry: e,
+            })
+            .collect();
+        Ok(DirectoryDto {
+            listers: directory::listers(&self.home)?,
+            entries,
+        })
+    }
+
+    /// Trust a lister: from now on its listings mark agents "identity verified".
+    pub fn add_lister(&self, name: &str, key: &str) -> Result<String> {
+        let l = directory::add_lister(&self.home, name, key)?;
+        Ok(format!("{} is trusted to say who runs an agent.", l.name))
+    }
+
+    pub fn remove_lister(&self, key: &str) -> Result<bool> {
+        directory::remove_lister(&self.home, key)
+    }
+
+    /// Take signed listings from pasted text or a file.
+    pub fn import_listings(&self, text: &str) -> Result<String> {
+        let (ok, bad) = directory::import(&self.home, text)?;
+        if ok == 0 && bad > 0 {
+            bail!("none of those listings checked out (a bad signature, expired, or a card that does not match)");
+        }
+        Ok(match bad {
+            0 => format!("{ok} listing(s) added."),
+            _ => format!("{ok} listing(s) added; {bad} did not check out and were left out."),
+        })
+    }
+
+    /// Save a listed agent as a contact (if it is not one yet) and return its contact name, for the
+    /// grant form. Adding it grants nothing.
+    pub fn add_listed(&self, agent_key: &str) -> Result<String> {
+        let e = directory::find(&self.home, agent_key)?;
+        let contacts = self.home.load_contacts()?;
+        if let Some(c) = contacts
+            .iter()
+            .find(|c| c.conversation_key().is_ok_and(|k| k == e.agent))
+        {
+            return Ok(c.name.clone());
+        }
+        let mut name = e.name.chars().take(MAX_NAME).collect::<String>();
+        if contacts.iter().any(|c| c.name == name) {
+            name = format!(
+                "{} ({})",
+                e.name
+                    .chars()
+                    .take(MAX_NAME.saturating_sub(12))
+                    .collect::<String>(),
+                &e.agent[..8]
+            );
+        }
+        self.add_contact(&name, &e.card)?;
+        Ok(name)
     }
 
     /// Remove an agent's grant. Approvals already given live until they expire.

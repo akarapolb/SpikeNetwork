@@ -17,6 +17,8 @@ data class Contact(
     val unread: Int,
     val last: String?,
     val lastTs: Long,
+    /** Added as an agent (it asks permission), not a person. */
+    val agent: Boolean = false,
 )
 
 data class Group(
@@ -66,6 +68,7 @@ fun parseOverview(o: JSONObject): Overview {
                 it.getString("name"), it.getBoolean("verified"), it.getString("fingerprint"),
                 it.getInt("devices"), it.getInt("unread"), it.str("last"),
                 if (it.isNull("last_ts")) 0 else it.getLong("last_ts"),
+                it.optBoolean("agent", false),
             )
         },
         groups = o.getJSONArray("groups").mapObjects {

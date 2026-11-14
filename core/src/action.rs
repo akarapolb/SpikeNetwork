@@ -93,7 +93,7 @@ pub fn lookup(name: &str) -> Option<&'static ActionType> {
 
 /// Characters that change how text displays without being visible:
 /// bidirectional overrides and isolates, zero-width characters, BOM.
-fn invisible(c: char) -> bool {
+pub(crate) fn invisible(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{061c}' | '\u{feff}' | '\u{00ad}')
 }
 

@@ -3,6 +3,7 @@ pub mod apps;
 pub mod backup;
 pub mod client;
 pub mod direct;
+pub mod directory;
 pub mod groups;
 pub mod history;
 pub mod large;

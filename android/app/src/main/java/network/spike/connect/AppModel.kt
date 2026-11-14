@@ -33,6 +33,18 @@ sealed interface Screen {
 
     /** The signed, hash-chained activity log. */
     data object AgentLog : Screen
+
+    /** Choose which contact to give a grant. */
+    data object NewGrant : Screen
+
+    /** The agent directory: listed agents (ADR 0036). */
+    data object Directory : Screen
+
+    /** A listed agent nobody you trust vouches for. */
+    data class ReviewListed(val agent: String) : Screen
+
+    /** Listers you trust, and adding listings. */
+    data object Listers : Screen
 }
 
 /** What the screens show, and what they ask for. One per app process. */
@@ -47,6 +59,7 @@ class AppModel(private val scope: CoroutineScope) {
     var group by mutableStateOf<GroupDetail?>(null)
     var requests by mutableStateOf<List<MsgRequest>>(emptyList())
     var agents by mutableStateOf<Agents?>(null)
+    var directory by mutableStateOf<Directory?>(null)
     var busy by mutableStateOf(false)
     /** Which tab Add a contact opens on (0 my code, 1 scan, 2 paste, 3 share). */
     var addTab by mutableStateOf(0)
@@ -92,7 +105,8 @@ class AppModel(private val scope: CoroutineScope) {
             else -> {}
         }
         val s = screen
-        if ((s == null && tab == Tab.Agents) || s is Screen.AgentRequest || s is Screen.AgentGrant || s == Screen.AgentLog) agents = parseAgents(Bridge.obj("agents"))
+        if ((s == null && tab == Tab.Agents) || s is Screen.AgentRequest || s is Screen.AgentGrant || s == Screen.AgentLog || s == Screen.NewGrant) agents = parseAgents(Bridge.obj("agents"))
+        if (s == Screen.Directory || s is Screen.ReviewListed || s == Screen.Listers) directory = parseDirectory(Bridge.obj("directory"))
     }
 
     private suspend fun loadGroup(id: String, withMessages: Boolean) {

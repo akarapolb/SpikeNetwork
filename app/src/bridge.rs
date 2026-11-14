@@ -315,7 +315,15 @@ impl Engine {
             "decide" => val(rt.block_on(x.decide(&s(a, "id")?, b(a, "approve")?))?),
             // Stop an agent: its standing permission ends; approvals already given live until they expire.
             "revoke" => val(x.revoke(&s(a, "name")?)?),
-            // Give an agent a standing permission (the phone has no form for it yet; the drivers use it).
+            // The typed action types a grant can name: the phone's limits screen offers them as scopes.
+            "action_types" => val(crate::action_types()),
+            // The agent directory (ADR 0036): trusted listers, imported listings, adding one as a contact.
+            "directory" => val(x.directory()?),
+            "add_lister" => val(x.add_lister(&s(a, "name")?, &s(a, "key")?)?),
+            "remove_lister" => val(x.remove_lister(&s(a, "key")?)?),
+            "import_listings" => val(x.import_listings(&s(a, "text")?)?),
+            "add_listed" => val(x.add_listed(&s(a, "agent")?)?),
+            // Give an agent a standing permission, or replace its limits (the phone's limits screen).
             "grant" => {
                 let req: crate::GrantRequest =
                     serde_json::from_value(a.get("request").cloned().unwrap_or(Value::Null))
