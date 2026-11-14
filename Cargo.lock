@@ -2930,7 +2930,7 @@ dependencies = [
  "base64 0.22.1",
  "chacha20poly1305 0.10.1",
  "hex",
- "hkdf 0.12.4",
+ "hkdf 0.13.0",
  "hmac 0.12.1",
  "rand 0.8.8",
  "serde",
@@ -2948,7 +2948,7 @@ version = "0.0.1"
 dependencies = [
  "chacha20poly1305 0.10.1",
  "hex",
- "hkdf 0.12.4",
+ "hkdf 0.13.0",
  "openmls",
  "openmls_basic_credential",
  "openmls_memory_storage",
