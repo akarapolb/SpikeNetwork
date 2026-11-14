@@ -2,6 +2,15 @@ package network.spike.connect
 
 import android.os.Bundle
 import android.view.WindowManager
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.isImeVisible
@@ -190,21 +199,96 @@ private fun Root() {
     }
 }
 
+/** Wide enough for two panes (a tablet in landscape, a large foldable): the tabs move to a rail on the left and an
+ *  open conversation sits beside the chat list, as on the desktop. Phones keep one screen at a time. */
+const val TWO_PANE_DP = 840
+
+/** True inside the two-pane layout: the conversation then has no back button (the list is beside it). */
+val LocalTwoPane = androidx.compose.runtime.staticCompositionLocalOf { false }
+
 @Composable
 private fun Ready(m: AppModel) {
-    val o = m.overview
+    val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= TWO_PANE_DP
+    if (wide) { TwoPane(m); return }
     when (val s = m.screen) {
         null -> Column(Modifier.fillMaxSize()) {
-            Box(Modifier.weight(1f)) {
-                when (m.tab) {
-                    Tab.Chats -> ChatsTab(m)
-                    Tab.Agents -> AgentsTab(m)
-                    Tab.Devices -> DevicesTab(m)
-                    Tab.Settings -> SettingsTab(m)
-                }
-            }
+            Box(Modifier.weight(1f)) { TabContent(m) }
             TabBar(m)
         }
+        else -> ScreenContent(m, s)
+    }
+}
+
+@Composable
+private fun TabContent(m: AppModel) {
+    when (m.tab) {
+        Tab.Chats -> ChatsTab(m)
+        Tab.Agents -> AgentsTab(m)
+        Tab.Devices -> DevicesTab(m)
+        Tab.Settings -> SettingsTab(m)
+    }
+}
+
+/** The tablet layout: a rail of tabs, then on Chats the list (300dp) and the open conversation; other tabs fill the
+ *  space beside the rail, and a screen opened from them takes the same space. */
+@Composable
+private fun TwoPane(m: AppModel) {
+    androidx.compose.runtime.CompositionLocalProvider(LocalTwoPane provides true) {
+        Row(Modifier.fillMaxSize()) {
+            TabRail(m)
+            Box(Modifier.width(1.dp).fillMaxHeight().background(C.Border))
+            if (m.tab == Tab.Chats) {
+                Box(Modifier.width(320.dp).fillMaxHeight()) { ChatsTab(m) }
+                Box(Modifier.width(1.dp).fillMaxHeight().background(C.Border))
+                Box(Modifier.weight(1f).fillMaxHeight().semantics { contentDescription = "Conversation pane" }) {
+                    when (val s = m.screen) {
+                        null -> Box(Modifier.fillMaxSize().background(C.BgChat), contentAlignment = Alignment.Center) {
+                            EmptyState(Ic.Chat, "Choose a chat to read it here.")
+                        }
+                        else -> androidx.compose.runtime.key(s) { ScreenContent(m, s) }
+                    }
+                }
+            } else {
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    when (val s = m.screen) {
+                        null -> TabContent(m)
+                        else -> androidx.compose.runtime.key(s) { ScreenContent(m, s) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The tabs as a vertical rail, for the two-pane layout: the selected tab is an ink tile, Settings sits at the foot. */
+@Composable
+private fun TabRail(m: AppModel) {
+    Column(
+        Modifier.width(68.dp).fillMaxHeight().background(C.Surface).statusBarsPadding().navigationBarsPadding()
+            .padding(vertical = 18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        @Composable
+        fun item(tab: Tab, name: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
+            val on = m.tab == tab
+            Box(
+                Modifier.size(44.dp).clip(RoundedCornerShape(13.dp)).background(if (on) C.Accent else Color.Transparent)
+                    .clickable { m.select(tab) }.semantics { contentDescription = name; selected = on },
+                contentAlignment = Alignment.Center,
+            ) { Ico(icon, if (on) C.OnAccent else C.Muted, 21.dp) }
+        }
+        item(Tab.Chats, "Chats", Ic.Chat)
+        item(Tab.Agents, "Agents", Ic.Sparkle)
+        item(Tab.Devices, "Devices", Ic.Devices)
+        Spacer(Modifier.weight(1f))
+        item(Tab.Settings, "Settings", Ic.Sliders)
+    }
+}
+
+@Composable
+private fun ScreenContent(m: AppModel, s: Screen) {
+    val o = m.overview
+    when (s) {
         is Screen.Chat -> {
             val c = o?.contacts?.firstOrNull { it.name == s.name }
             val n = c?.devices ?: 1
