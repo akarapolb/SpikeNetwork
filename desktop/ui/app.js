@@ -594,6 +594,46 @@ function composerBar(ta, picker, send, encNote) {
     h("span", { class: "enc", title: encNote, "aria-label": encNote, role: "img" }, icon("lock")),
     h("button", { class: "sendbtn", type: "button", "aria-label": "Send", title: "Send  (Enter)", onclick: send }, icon("arrowup")));
 }
+/* ---------- the details panel beside a conversation, as in the design ---------- */
+// Open by default; the header's panel button closes and reopens it, and the choice is remembered.
+function sideOpen() { try { return localStorage.getItem("sidePanel") !== "0"; } catch (_) { return true; } }
+function toggleSide() { try { localStorage.setItem("sidePanel", sideOpen() ? "0" : "1"); } catch (_) {} render(); }
+function sideButton(label) {
+  return h("button", { class: "iconbtn" + (sideOpen() ? " on" : ""), type: "button", "aria-label": label, title: label, "aria-pressed": String(sideOpen()), onclick: toggleSide }, icon("panel"));
+}
+/** The conversation's columns: the chat itself, and the panel beside it when it is open. */
+function withSide(items, side) {
+  if (!sideOpen() || !side) return items;
+  return [h("div", { class: "withside" }, h("div", { class: "col" }, ...items.filter(Boolean)), side)];
+}
+const sideCap = (t) => h("h3", { class: "scap" }, t);
+function safetyGrid(fp) { return h("div", { class: "sgrid mono", "aria-label": "Safety number " + fp }, fp.split(/[-\s]+/).filter(Boolean).map((g) => h("span", { "aria-hidden": "true" }, g))); }
+function contactSide(c) {
+  return h("aside", { class: "side", "aria-label": `About ${c.name}` },
+    h("div", { class: "stop" }, h("span", { class: "tile lg" + (c.agent ? " sq" : "") + " c-neutral", "aria-hidden": "true" }, c.agent ? icon("agents") : ini2(c.name)),
+      h("b", {}, c.name),
+      c.verified ? h("span", { class: "vbadge" }, icon("shield"), "Verified") : h("span", { class: "nvbadge" }, "Not verified")),
+    h("div", {}, sideCap("Safety number"), safetyGrid(c.fingerprint),
+      h("button", { class: "btn small", type: "button", style: "margin-top:12px", onclick: () => { st.verifyFor = c.name; st.verifyDone = null; st.screen = "verify"; render(); } }, c.verified ? "Compare again" : "Verify")),
+    h("div", {}, sideCap("Devices"), h("div", { class: "sdv" }, `${plural(c.devices, "device", "devices")} on their signed list`, h("span", {}, "end-to-end"))),
+    h("div", {}, sideCap(c.agent ? "Agent" : "Contact"),
+      c.agent ? h("button", { class: "slink", type: "button", onclick: () => { go("agents"); } }, "What this agent may do") : null,
+      h("button", { class: "slink", type: "button", onclick: () => { st.contactFor = c.name; st.contactForm = null; st.screen = "contact"; render(); } }, "Rename, or update their card")));
+}
+function groupSide(d) {
+  const ms = [...d.members].sort((a, b) => (b.you - a.you) || (b.admin - a.admin) || a.name.localeCompare(b.name));
+  return h("aside", { class: "side", "aria-label": `About ${d.name}` },
+    h("div", {}, sideCap(`Members · ${d.members.length} of ${d.max}`),
+      ms.map((m) => h("div", { class: "smem" }, h("span", { class: `tile sm ${m.you ? "me" : "c-neutral"}`, "aria-hidden": "true" }, memLetter(m)),
+        h("span", { class: "body" }, h("b", {}, m.you ? "You" : m.name, !m.you && m.verified ? vtick() : null),
+          m.admin ? h("span", {}, "Admin") : !m.you && !m.verified ? h("span", { class: "bad" }, m.contact ? "Not verified" : "Not in your contacts") : null))),
+      d.can_add ? h("button", { class: "btn small", type: "button", style: "margin-top:10px", onclick: openMembers }, icon("plus"), "Add people") : null),
+    h("div", {}, sideCap("Group rules"),
+      h("div", { class: "sdv" }, "Who adds people", h("span", {}, d.add_by === "any" ? "Anyone" : "Admins")),
+      h("div", { class: "sdv" }, "New members see", h("span", {}, d.large ? "From joining" : d.history === "week" ? "The last 7 days" : "From joining")),
+      h("button", { class: "slink", type: "button", onclick: openMembers }, "Group settings")));
+}
+
 function chatMain() {
   if (st.group) return groupMain();
   const c = st.ov.contacts.find((x) => x.name === st.chat);
@@ -602,7 +642,7 @@ function chatMain() {
       h("span", {}, c.agent ? "Agent · acts only within the limits you set" : [`${c.devices} device${c.devices > 1 ? "s" : ""} · end-to-end encrypted`, c.verified ? "" : [" · ", notVerified()]])),
     c.verified ? null : h("button", { class: "btn small", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, "Verify"),
     callButtons(c), findButton(),
-    h("button", { class: "iconbtn", type: "button", "aria-label": "Details and safety number", title: "Details and safety number", onclick: () => { st.contactFor = c.name; st.contactForm = null; st.screen = "contact"; render(); } }, icon("panel")));
+    sideButton("Details and safety number"));
   const items = threadItems(false);
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendFile(c.name, f, ta.value); } });
   const ta = h("textarea", { "aria-label": "Message to " + c.name, placeholder: `Message ${c.name}`, rows: "1", onkeydown: (e) => { if (mention.key(e)) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } else if (e.key === "Escape" && st.replyTo) { st.replyTo = null; render(); } } });
@@ -613,8 +653,8 @@ function chatMain() {
     catch (e) { toast(String(e)); }
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
-  return [head, findBar(), h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
-    h("div", { class: "composer" }, mention.list, replyStrip(), composerBar(ta, picker, send, `Encrypted separately for each of ${c.name}'s devices.`))];
+  return withSide([head, findBar(), h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
+    h("div", { class: "composer" }, mention.list, replyStrip(), composerBar(ta, picker, send, `Encrypted separately for each of ${c.name}'s devices.`))], contactSide(c));
 }
 
 /* ---------- verify + add ---------- */
@@ -724,42 +764,121 @@ function contactScreen() {
 }
 
 /* ---------- agents ---------- */
-function approvalCard(r) {
-  const typed = !!r.typed, cur = typed ? r.typed.currency : null;
-  const amount = r.amount_cents != null ? (cur ? money(r.amount_cents, cur) : `${r.amount_cents} cents`) : null;
-  const sec = h("section", { class: "card" + (r.status === "waiting" ? " attention" : ""), "aria-label": "Request from " + r.from },
-    h("span", { class: "eyebrow" }, r.status === "waiting" ? "Needs your approval" : r.status === "approved" ? `Approved${r.by ? " by " + r.by : ""}` : `Denied${r.by ? " by " + r.by : ""}`),
-    h("h2", { class: typed && r.summary ? "bigline" : "bigline quote" }, typed && r.summary ? r.summary : `“${r.note}”`),
-    typed ? h("span", { style: "display:flex;gap:6px;align-items:center;flex-wrap:wrap" }, h("span", { class: "tag neutral" }, "typed action"), h("span", { class: "note" }, "This line comes from the signed fields. The service must match them exactly."))
-      : h("div", { class: "status soft", style: "padding:8px 12px;border-radius:10px" }, h("b", {}, "Free text. "), "These are the agent's own words. Only the scope", r.amount_cents ? " and amount" : "", " were checked."),
-    h("dl", { class: "kv" }, h("dt", {}, "From"), h("dd", {}, r.from),
-      typed ? [h("dt", {}, "Agent says"), h("dd", {}, r.note, h("span", { class: "note" }, " (not verified)"))] : null,
-      typed ? Object.entries(r.typed).map(([k, v]) => [h("dt", {}, k[0].toUpperCase() + k.slice(1)), h("dd", { class: "mono" }, v)]) : null,
-      amount ? [h("dt", {}, "Amount"), h("dd", { style: "font-weight:600" }, amount + " once")] : null,
-      h("dt", {}, "Scope"), h("dd", { class: "mono" }, r.scope),
-      r.status === "waiting" ? [h("dt", {}, "Expires"), h("dd", {}, new Date(r.expires).toLocaleString())] : null));
-  if (r.status === "waiting") sec.append(h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:10px" },
-    h("button", { class: "btn big", type: "button", onclick: () => decide(r, false) }, "Deny"),
-    h("button", { class: "btn primary big", type: "button", onclick: () => decide(r, true) }, amount ? `Approve ${amount}` : "Approve")),
-    h("span", { class: "note", style: "text-align:center" }, r.forwarded ? "Your main device records this and sends the signed receipt." : "Your decision is signed by this device and added to the agent log."));
-  return sec;
+async function decide(r, approve) { st.agentSel = { kind: "req", id: r.id }; try { toast(await invoke("decide", { id: r.id, approve })); await refresh(); } catch (e) { toast(String(e)); } }
+/* ---------- agents: a list on the left, the chosen request or grant on the right, the signed log below ---------- */
+// An amount: in the request's currency when it has one; a grant's limits have none, so they show as plain units.
+const amt = (c, cur) => (cur ? money(c, cur) : (c / 100).toFixed(2));
+const grantOf = (name) => (st.agents?.grants || []).find((g) => g.agent === name);
+function grantLine(g) {
+  return g.max_cents == null ? `${g.scopes.join(", ")} · no payments` : `Pay up to ${amt(g.max_cents)} · ${g.per_hour} an hour`;
 }
-async function decide(r, approve) { try { toast(await invoke("decide", { id: r.id, approve })); await refresh(); } catch (e) { toast(String(e)); } }
+/** What the right side shows: the chosen item, or the first waiting request, or the first grant. */
+function agentSelection() {
+  const a = st.agents; if (!a) return null;
+  const s = st.agentSel;
+  if (s && s.kind === "req") { const r = a.requests.find((x) => x.id === s.id); if (r) return { kind: "req", r }; }
+  if (s && s.kind === "grant") { const g = a.grants.find((x) => x.agent === s.agent); if (g) return { kind: "grant", g }; }
+  const w = a.requests.find((x) => x.status === "waiting");
+  if (w) return { kind: "req", r: w };
+  if (a.grants[0]) return { kind: "grant", g: a.grants[0] };
+  if (a.requests[0]) return { kind: "req", r: a.requests[0] };
+  return null;
+}
+function agentsList() {
+  const a = st.agents; if (!a) return [];
+  const w = a.requests.filter((r) => r.status === "waiting"), done = a.requests.filter((r) => r.status !== "waiting").slice(0, 10);
+  const sel = agentSelection();
+  const isOn = (kind, key) => !!sel && sel.kind === kind && (kind === "req" ? sel.r.id === key : sel.g.agent === key);
+  const row = (on, name, preview, meta, waiting, pick) => h("button", { class: "row", type: "button", "aria-current": String(on), onclick: () => { st.agentSel = pick; st.screen = null; render(); } },
+    h("span", { class: "tile sq c-neutral", "aria-hidden": "true" }, icon("agents")),
+    h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, name)), h("span", { class: "preview" }, preview)),
+    h("span", { class: "meta" }, meta || "", waiting ? h("i", { class: "dot wait", role: "img", "aria-label": "Waiting for you" }) : null));
+  const headline = (r) => (r.summary || `“${r.note}”`);
+  return [
+    h("div", { class: "listhead" }, h("div", { class: "title" }, h("h1", {}, "Agents"),
+      a.approver ? h("button", { class: "iconbtn", type: "button", "aria-label": "Give an agent a grant", title: "Give an agent a grant", onclick: () => openGrantForm(null) }, icon("plus")) : null)),
+    h("nav", { class: "rows agentrows", "aria-label": "Agents" },
+      h("div", { class: "lcap" }, "Waiting for you"),
+      w.length ? w.map((r) => row(isOn("req", r.id), r.from, h("span", { class: "flag" }, headline(r)), when(r.received), true, { kind: "req", id: r.id }))
+        : h("p", { class: "lnone" }, "Nothing waiting"),
+      h("div", { class: "lcap" }, "Allowed"),
+      a.grants.length ? a.grants.map((g) => row(isOn("grant", g.agent), g.agent, grantLine(g), "", false, { kind: "grant", agent: g.agent }))
+        : h("p", { class: "lnone" }, a.approver ? "No agent may ask yet" : "Grants are set on your main device"),
+      done.length ? [h("div", { class: "lcap" }, "Decided"),
+        done.map((r) => row(isOn("req", r.id), r.from, `${headline(r)} · ${r.status === "approved" ? "approved" : "denied"}`, when(r.received), false, { kind: "req", id: r.id }))] : null),
+  ].flat(Infinity).filter(Boolean);
+}
+function inWords(ms) {
+  const m = Math.round((ms - Date.now()) / 60000);
+  if (m <= 0) return "now"; if (m < 60) return `in ${m} min`; if (m < 1440) return `in ${Math.round(m / 60)} h`; return `in ${Math.round(m / 1440)} days`;
+}
+function requestDetail(r) {
+  const typed = !!r.typed, cur = typed ? r.typed.currency : null;
+  const amount = r.amount_cents != null ? amt(r.amount_cents, cur) : null;
+  const g = grantOf(r.from), waiting = r.status === "waiting";
+  const kv = (k, v, cls) => h("div", {}, h("span", {}, k), h("span", { class: cls || "" }, v));
+  return h("div", { class: "req" },
+    h("div", { class: "reqmain" },
+      h("div", { class: "from" }, h("span", { class: "tile sm sq c-neutral", "aria-hidden": "true" }, icon("agents")), `${r.from} asks to`),
+      // A payment leads with what and how much ("Pay 286.00 EUR"), and says to whom underneath, as in the design.
+      (() => { const m = typed && r.summary ? /^(.+?) to (\S+)$/.exec(r.summary) : null;
+        return h("div", { class: "amt" + (typed && r.summary ? "" : " quote") }, m ? m[1] : typed && r.summary ? r.summary : `“${r.note}”`,
+          h("small", {}, m ? `to ${m[2]}` : typed ? `Signed, typed action · ${r.scope}` : `Free text · ${r.scope}`)); })(),
+      waiting ? h("div", { class: "do" },
+        h("button", { class: "btn primary", type: "button", onclick: () => decide(r, true) }, amount ? `Approve ${amount}` : "Approve"),
+        h("button", { class: "btn", type: "button", onclick: () => decide(r, false) }, "Deny"))
+        : h("span", { class: "pill " + (r.status === "approved" ? "good" : "bad") }, `${r.status === "approved" ? "Approved" : "Denied"}${r.by ? " by " + r.by : ""}`),
+      h("span", { class: "note" }, waiting ? (r.forwarded ? "Your main device records this and sends the signed receipt." : "Your decision is signed by this device and added to the log.")
+        : typed ? "The service must match the signed fields exactly." : "These were the agent's own words. Only the scope and amount were checked.")),
+    h("div", { class: "kv2" },
+      // A grant's ceiling refuses anything above it without asking; below the threshold it approves alone. In between, you decide.
+      g && g.max_cents != null ? kv("Your limit", `${amt(g.max_cents, cur)} a request`) : null,
+      g && g.max_cents != null && amount ? kv("Asks you above", g.auto_below_cents ? amt(g.auto_below_cents, cur) : "Every payment", "over") : null,
+      amount && !(typed && r.summary) ? kv("Amount", `${amount} once`) : null,
+      kv("Request", typed ? "Signed, typed action" : "Free text, not checked"),
+      typed ? kv("Agent says · not verified", r.note) : null,
+      typed ? Object.entries(r.typed).filter(([k]) => k !== "currency").map(([k, v]) => kv(k[0].toUpperCase() + k.slice(1), v, "mono")) : null,
+      waiting ? kv("Expires", inWords(r.expires)) : kv("Asked", new Date(r.received).toLocaleString())));
+}
+function grantDetail(g) {
+  const a = st.agents;
+  const kv = (k, v) => h("div", {}, h("span", {}, k), h("span", {}, v));
+  return h("div", { class: "req" },
+    h("div", { class: "reqmain" },
+      h("div", { class: "from" }, h("span", { class: "tile sm sq c-neutral", "aria-hidden": "true" }, icon("agents")), `${g.agent} may`),
+      h("div", { class: "amt" }, g.max_cents == null ? "Ask, no payments" : `Pay up to ${amt(g.max_cents)}`, h("small", {}, g.scopes.join(" · "))),
+      a.approver ? h("div", { class: "do" },
+        h("button", { class: "btn", type: "button", onclick: () => openGrantForm(g.agent) }, "Change"),
+        h("button", { class: "btn danger", type: "button", onclick: async () => { try { await invoke("revoke", { name: g.agent }); toast(`${g.agent}'s grant removed. Approvals already given live until they expire.`); st.agentSel = null; await refresh(); } catch (e) { toast(String(e)); } } }, "Revoke")) : null),
+    h("div", { class: "kv2" },
+      kv("Per request", g.max_cents == null ? "No money" : `Up to ${amt(g.max_cents)}`),
+      kv("Without asking", g.auto_below_cents ? `Up to ${amt(g.auto_below_cents)}` : "Always asks you"),
+      kv("Per 24 hours", g.daily_cents == null ? "No cap" : amt(g.daily_cents)),
+      kv("Rate", `${g.per_hour} requests an hour`),
+      kv("Typed actions only", g.typed_only ? "Yes, free text is refused" : "No, free text is marked unchecked"),
+      kv("Ends", new Date(g.expires).toLocaleDateString())));
+}
+const LOG_WORDS = { request: ["asked", "Asked", ""], approved: ["was allowed", "Allowed", ""], denied: ["was denied", "Denied", "no"], grant: ["was given a grant", "Granted", ""], revoke: ["lost its grant", "Revoked", "no"] };
+function activityLog() {
+  const a = st.agents;
+  const rows = a.log_ok === false
+    ? [h("div", { class: "status bad", role: "alert" }, h("b", {}, "The activity log failed its check."), h("span", {}, "An entry was edited, removed or reordered on this computer. Decisions still work; the log is not shown."))]
+    : a.log_ok == null ? [h("p", { class: "note" }, "The activity log is kept on your main device.")]
+    : !a.log.length ? [h("p", { class: "note" }, "Nothing yet. Requests, decisions and grants are added here, signed and chained.")]
+    : a.log.slice(0, 40).map((e) => {
+      const [verb, res, cls] = LOG_WORDS[e.event] || [e.event, e.event, ""];
+      return h("div", { class: "logrow" }, h("span", {}, when(e.ts)), h("span", {}, `${e.agent} ${verb}`, e.detail ? h("span", { class: "mono det" }, " " + e.detail.replace(/ (\d+)$/, (_, n) => " " + amt(Number(n)))) : null),
+        h("span", { class: "h", title: e.hash }, `${e.hash.slice(0, 4)}…${e.hash.slice(-4)}`), h("span", { class: "res" + (cls ? " " + cls : "") }, res));
+    });
+  return [h("span", { class: "cap logcap" }, "Activity · hash-chained, no message content"), ...rows];
+}
 function agentsMain() {
-  const a = st.agents, w = a.requests.filter((r) => r.status === "waiting"), done = a.requests.filter((r) => r.status !== "waiting");
-  const grant = (g) => h("section", { class: "card" }, h("h2", { class: "eyebrow" }, `What ${g.agent} may do`),
-    h("div", { class: "chips" }, g.scopes.map((s) => h("span", { class: "yes" }, s))),
-    h("dl", { class: "kv" }, h("dt", {}, "Per request"), h("dd", {}, g.max_cents == null ? "no money allowed" : `up to ${g.max_cents} cents; alone up to ${g.auto_below_cents ?? 0}`),
-      h("dt", {}, "Per 24 hours"), h("dd", {}, g.daily_cents == null ? "no cumulative cap" : `${g.daily_cents} cents`), h("dt", {}, "Rate"), h("dd", {}, `${g.per_hour} requests an hour`),
-      h("dt", {}, "Typed only"), h("dd", {}, g.typed_only ? "Yes: free text is refused" : "No: free text is allowed but marked unchecked"), h("dt", {}, "Ends"), h("dd", {}, new Date(g.expires).toLocaleDateString())),
-    a.approver ? h("div", { style: "display:flex;gap:8px" },
-      h("button", { class: "btn", type: "button", onclick: () => { openGrantForm(g.agent); } }, "Change"),
-      h("button", { class: "btn danger", type: "button", onclick: async () => { try { await invoke("revoke", { name: g.agent }); toast(`${g.agent}'s grant removed. Approvals already given live until they expire.`); await refresh(); } catch (e) { toast(String(e)); } } }, "Revoke")) : null);
-  return [h("div", { class: "head" }, h("h1", { style: "flex:none" }, "Agents"), h("span", { class: w.length ? "flag" : "muted", style: "font-size:13px" }, w.length ? `${w.length} waiting for you` : "Nothing waiting"), h("span", { class: "spacer" }), a.approver ? null : h("span", { class: "note" }, "This is not your main device: decisions are forwarded to it")),
-    h("div", { class: "scroll" }, h("div", { class: "page" },
-      w.length || done.length ? [w.map(approvalCard), done.length ? h("h2", { class: "eyebrow", style: "margin:8px 0 0" }, "Decided") : null, done.map(approvalCard)] : (a.grants.length ? h("p", { class: "lead" }, "No requests yet.") : emptyState("No requests yet. Give an agent a standing permission first; its requests then appear here.", "agents")),
-      a.grants.map(grant),
-      a.approver ? h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => openGrantForm(null) }, icon("addperson"), "Give an agent a grant") : null))];
+  const a = st.agents, sel = agentSelection();
+  if (!sel) return [h("div", { class: "scroll" }, h("div", { class: "agpane" },
+    emptyState("No agents yet. Give an agent a standing permission first; its requests then appear here.", "agents"),
+    a.approver ? h("button", { class: "btn primary", style: "align-self:center", type: "button", onclick: () => openGrantForm(null) }, icon("addperson"), "Give an agent a grant") : null,
+    ...activityLog()))];
+  return [h("div", { class: "scroll" }, h("div", { class: "agpane" }, sel.kind === "req" ? requestDetail(sel.r) : grantDetail(sel.g), ...activityLog()))];
 }
 async function openGrantForm(agent) {
   let types = [];
@@ -1174,7 +1293,7 @@ function groupMain() {
   if (d.status === "invited") return inviteScreen();
   const left = d.status !== "joined";
   const head = h("div", { class: "head" }, groupTile(true, d.name), h("span", { class: "who" }, h("b", {}, d.name), h("span", {}, left ? "You are not in this group" : [`${plural(d.members.length, "person", "people")}${d.large ? " · large group" : ""}`, d.unverified ? [" · ", h("span", { class: "flag bad" }, `${d.unverified} not verified`)] : " · end-to-end encrypted"])),
-    findButton(), h("button", { class: "iconbtn", type: "button", "aria-label": "Members and group settings", title: "Members and group settings", onclick: openMembers }, icon("panel")));
+    findButton(), sideButton("Members and group settings"));
   const warn = !left && d.unverified ? h("div", { class: "sysline attention", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
     h("span", { style: "flex:1" }, unverifiedText(d)),
     (() => { const one = unverifiedMembers(d); return one.length === 1 && one[0].contact
@@ -1197,7 +1316,7 @@ function groupMain() {
   const picker = h("input", { type: "file", hidden: true, onchange: async (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) await sendGroupFile(d.id, f, ta.value); } });
   const composer = left ? h("div", { class: "composer" }, h("span", { class: "note" }, d.large ? "You are not in this group. Your history stays on this computer; an admin can invite you again." : "You are not in this group. Your history stays on this computer; nobody can add you back without your OK."))
     : h("div", { class: "composer" }, mention.list, replyStrip(), composerBar(ta, d.large ? null : picker, send, d.large ? `One encrypted copy for all ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}. Files are not available in large groups yet.` : `Encrypted separately for every device of the ${d.members.length - 1} other ${d.members.length === 2 ? "person" : "people"}, and for your own other devices. A file is encrypted once and shared with everyone.`));
-  return [head, findBar(), warn, refusedNote, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState("No messages yet.")), composer].filter(Boolean);
+  return withSide([head, findBar(), warn, refusedNote, h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState("No messages yet.")), composer].filter(Boolean), left ? null : groupSide(d));
 }
 const HISTORY_CHOICES = [["join", "Messages from when they join"], ["week", "The last 7 days"]];
 const historyNote = (v) => v === "week"
@@ -1333,7 +1452,7 @@ function newGroupScreen() {
     } }, "Create group")))];
 }
 
-const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { main: agentsMain }, devices: { main: devicesMain }, settings: { main: settingsMain } };
+const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { list: agentsList, main: agentsMain }, devices: { main: devicesMain }, settings: { main: settingsMain } };
 const SCREENS = { group: groupScreen, newgroup: newGroupScreen, requests: requestsScreen, verify: verifyScreen, add: addScreen, contact: contactScreen, grant: grantScreen, linknew: linkNewScreen };
 
 document.addEventListener("keydown", (e) => {

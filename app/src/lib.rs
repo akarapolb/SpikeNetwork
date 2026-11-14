@@ -411,11 +411,29 @@ pub struct RequestDto {
     pub forwarded: bool,
 }
 
+/// One line of the agents' activity log: what happened, never message content.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct LogDto {
+    pub seq: u64,
+    pub ts: u64,
+    /// `request`, `approved`, `denied`, `grant` or `revoke`.
+    pub event: String,
+    pub agent: String,
+    /// Scope and amount only: e.g. `payments.send 1500`.
+    pub detail: String,
+    /// The entry's hash, which chains it to the one before.
+    pub hash: String,
+}
+
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct AgentsDto {
     pub approver: bool,
     pub grants: Vec<GrantDto>,
     pub requests: Vec<RequestDto>,
+    /// The signed, hash-chained log, newest first (the main device keeps it; empty elsewhere).
+    pub log: Vec<LogDto>,
+    /// Whether the whole chain checked out: `None` on a device that does not keep the log.
+    pub log_ok: Option<bool>,
 }
 
 // -------------------------------------------------------------- lifecycle
@@ -1234,10 +1252,38 @@ impl Session {
                 .cmp(&(b.status != "waiting"))
                 .then(b.received.cmp(&a.received))
         });
+        // The log lives on the main device. It is checked end to end before it is shown.
+        let (log, log_ok) = if approver {
+            match agent::verified_audit(&self.home) {
+                Ok(entries) => (
+                    entries
+                        .into_iter()
+                        .rev()
+                        .take(200)
+                        .map(|e| LogDto {
+                            seq: e.seq,
+                            ts: e.ts,
+                            event: e.event,
+                            agent: self.name_of(&e.agent),
+                            detail: e.detail,
+                            hash: e.hash,
+                        })
+                        .collect(),
+                    Some(true),
+                ),
+                // Only a failed check says "tampered"; anything else (no owner key here) shows no log.
+                Err(e) if e.to_string().contains("tampered") => (Vec::new(), Some(false)),
+                Err(_) => (Vec::new(), None),
+            }
+        } else {
+            (Vec::new(), None)
+        };
         Ok(AgentsDto {
             approver,
             grants,
             requests,
+            log,
+            log_ok,
         })
     }
 
