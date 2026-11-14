@@ -72,6 +72,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -349,7 +350,7 @@ fun ChatsTab(m: AppModel) {
                 )
             }
         }
-        LazyColumn(Modifier.weight(1f).padding(horizontal = 8.dp)) {
+        LazyColumn(Modifier.weight(1f).padding(horizontal = 8.dp).then(if (LocalTwoPane.current) Modifier.navigationBarsPadding() else Modifier)) {
             if (o.requests > 0) {
                 item {
                     Row(
@@ -383,6 +384,7 @@ fun ChatsTab(m: AppModel) {
                     is Item.P -> ChatRow(
                         r.c.name, square = false, verified = r.c.verified, redNote = if (r.c.verified) null else "Not verified",
                         preview = r.c.last ?: if (r.c.verified) "No messages yet" else "", time = listTime(r.c.lastTs), unread = r.c.unread,
+                        on = (m.screen as? Screen.Chat)?.name == r.c.name || (m.screen as? Screen.Verify)?.name == r.c.name,
                     ) { m.open(Screen.Chat(r.c.name)) }
                     is Item.G -> ChatRow(
                         r.g.name, square = true, verified = false, redNote = null,
@@ -392,6 +394,7 @@ fun ChatsTab(m: AppModel) {
                             else -> r.g.last ?: "${r.g.members} people · no messages yet"
                         },
                         previewAmber = r.g.status == "invited", time = listTime(r.g.lastTs), unread = r.g.unread,
+                        on = m.screen.let { it is Screen.GroupChat && it.id == r.g.id || it is Screen.Members && it.id == r.g.id || it is Screen.Invite && it.id == r.g.id },
                     ) { m.open(if (r.g.status == "invited") Screen.Invite(r.g.id) else Screen.GroupChat(r.g.id)) }
                 }
             }
@@ -404,10 +407,11 @@ fun ChatsTab(m: AppModel) {
  *  text at the start of the preview, as in the design, not a badge. */
 private fun ChatRow(
     title: String, square: Boolean, verified: Boolean, redNote: String?, preview: String,
-    time: String, unread: Int, previewAmber: Boolean = false, onClick: () -> Unit,
+    time: String, unread: Int, previewAmber: Boolean = false, on: Boolean = false, onClick: () -> Unit,
 ) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick)
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (on && LocalTwoPane.current) C.Subtle else Color.Transparent)
+            .clickable(onClick = onClick).semantics { selected = on }
             .padding(horizontal = 10.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -492,7 +496,9 @@ fun ConversationScreen(
             Modifier.fillMaxWidth().background(C.Surface).statusBarsPadding().padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Box(Modifier.size(42.dp).clip(CircleShape).clickable { m.open(null) }.semantics { contentDescription = "Back to chats" }, contentAlignment = Alignment.Center) { Ico(Ic.Back) }
+            // Beside the list on a tablet there is nothing to go back to.
+            if (LocalTwoPane.current) Spacer(Modifier.width(10.dp))
+            else Box(Modifier.size(42.dp).clip(CircleShape).clickable { m.open(null) }.semantics { contentDescription = "Back to chats" }, contentAlignment = Alignment.Center) { Ico(Ic.Back) }
             Avatar(title, 34.dp, square)
             Column(Modifier.weight(1f).padding(start = 4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
