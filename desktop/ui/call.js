@@ -398,7 +398,7 @@ function drawCall() {
 
 /** Settings card: where calls may connect, and whether to hide this computer's address from the other person. */
 function callsCard() {
-  const note = h("span", { class: "note" }, "Checking whether your relay offers a TURN server…");
+  const note = h("p", { class: "secsub" }, "Checking whether your relay offers a TURN server…");
   invoke("call_ice_servers").then((s) => {
     note.textContent = s.length
       ? "Your relay offers a TURN server, so calls can connect between different networks. It only forwards encrypted packets."
@@ -409,7 +409,7 @@ function callsCard() {
   box.checked = relayOnly();
   box.addEventListener("change", () => { try { localStorage.setItem("callsRelayOnly", box.checked ? "1" : "0"); } catch (_) {} toast(box.checked ? "Calls will go through the relay's TURN server when it has one." : "Calls may connect directly."); });
   return h("section", { class: "card", id: "calls-card" }, h("h2", { class: "eyebrow" }, "Calls"), note,
-    h("label", { style: "display:flex;gap:10px;align-items:flex-start" }, box, h("span", {}, h("b", { style: "font-weight:600" }, "Always use the relay for calls"), h("span", { class: "note", style: "display:block" }, "The other person then never sees this computer's own address, and your relay's operator sees that a call took place and how much data it carried. Needs a TURN server on the relay."))));
+    h("label", { class: "toggle" }, box, h("span", {}, h("b", {}, "Always use the relay for calls"), h("span", { class: "note", style: "display:block" }, "The other person then never sees this computer's own address, and your relay's operator sees that a call took place and how much data it carried. Needs a TURN server on the relay."))));
 }
 
 window.addEventListener("DOMContentLoaded", () => { callLoop(); });

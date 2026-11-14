@@ -88,7 +88,7 @@ try {
   debug("direct_set_address", { name: "Alice", address: `10.0.2.2:${dd.port}` });
 
   // The screens: the desktop's Settings and the phone's Settings tab show the card.
-  await desk.eval("st.section='settings'; st.screen=null; st.directLoaded=false; render();");
+  await desk.eval("st.section='settings'; st.setSec='direct-card'; st.screen=null; st.directLoaded=false; render();");
   await sleep(1500);
   const settingsText = (await desk.text()).toLowerCase();
   check(settingsText.includes("direct connections") && settingsText.includes("listening."), "the desktop's Settings shows Direct connections, listening");

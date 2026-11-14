@@ -85,7 +85,8 @@ try {
   for (let i = 0; i < 6 && !screenText().includes("Make a backup key"); i++) { sh("input swipe 540 1700 540 700 300"); await sleep(400); }
   await tapText("Make a backup key");
   await sleep(600);
-  const key = (screenText().match(/[0-9A-Z]{5}(?:-[0-9A-Z]{5}){4}/) || [])[0];
+  // The key is shown over several lines (two groups a line): read it across them.
+  const key = ((screenText().match(/[0-9A-Z]{5}(?:[-\s]+[0-9A-Z]{5}){4}/) || [])[0] || "").replace(/\s+/g, "-") || undefined;
   check(!!key, `a backup key is shown (${key})`);
   shot("backup-2-key");
   for (let i = 0; i < 3 && !screenText().includes("Save backup file"); i++) { sh("input swipe 540 1700 540 900 300"); await sleep(400); }

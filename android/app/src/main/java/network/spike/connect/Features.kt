@@ -19,6 +19,8 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -188,15 +190,19 @@ fun LinkNewScreen(m: AppModel) {
     when {
         failed != null -> StepPage({ leave() }, "2 of 2", "Linking stopped", failed, actions = { PrimaryButton("Start again") { tries++ } }) {}
         step == 1 -> StepPage(
-            { leave() }, "2 of 2", "Show this code",
-            "On a device that already uses your identity, open Devices, choose Link a new device, and scan this code or type it in.",
+            { leave() }, "2 of 2", "Link this phone",
+            "On a device you already use, open Devices and choose Link a new device. Then scan this, or type the code under it.",
+            actions = { Muted("Waiting for the other device…", 13.sp, Modifier.fillMaxWidth().padding(bottom = 8.dp)) },
         ) {
-            Box(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(16.dp)).background(C.Subtle).padding(20.dp), contentAlignment = Alignment.Center) {
-                val q = qr
-                if (q != null) QrCode(q, Modifier.size(220.dp)) else Muted("Making your code…")
+            // The code in a white rounded frame (white in dark mode too, so any camera reads it), as in the design.
+            val frame = RoundedCornerShape(18.dp)
+            Box(Modifier.fillMaxWidth().padding(top = 8.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(232.dp).clip(frame).background(Color.White).border(1.dp, C.BorderStrong, frame).padding(14.dp), contentAlignment = Alignment.Center) {
+                    val q = qr
+                    if (q != null) QrCode(q, Modifier.fillMaxSize()) else Muted("Making your code…")
+                }
             }
-            Text(code, fontFamily = Mono, fontSize = 12.sp, color = C.AvatarText)
-            Muted("Waiting for the other device…", 13.sp)
+            Text(code, fontFamily = Mono, fontSize = 11.sp, color = C.Muted, lineHeight = 15.sp)
         }
         step == 2 -> StepPage(
             { leave() }, "2 of 2", "Compare this code", "The device you are linking from shows a code too. Link only if both are the same.",

@@ -83,8 +83,8 @@ async function gate(mode) {
   $("tbsearch").hidden = true; $("tbq").value = ""; st.query = "";
   if (!mode) mode = (await invoke("app_status")).exists ? "unlock" : "create";
   const create = mode === "create";
-  const pass = h("input", { id: "pass", type: "password", autocomplete: create ? "new-password" : "current-password", "aria-describedby": "passHelp" });
-  const pass2 = create ? h("input", { id: "pass2", type: "password", autocomplete: "new-password", "aria-label": "Repeat the passphrase" }) : null;
+  const pass = h("input", { id: "pass", type: "password", autocomplete: create ? "new-password" : "current-password", "aria-describedby": "passHelp", placeholder: create ? "Passphrase" : "" });
+  const pass2 = create ? h("input", { id: "pass2", type: "password", autocomplete: "new-password", "aria-label": "Repeat the passphrase", placeholder: "Passphrase again" }) : null;
   const err = h("div", { class: "err", role: "alert", hidden: true });
   const btn = h("button", { class: "btn primary big", type: "submit" }, create ? "Create my identity" : "Unlock");
   const submit = async (e) => {
@@ -98,12 +98,15 @@ async function gate(mode) {
     h("span", { class: "eyebrow" }, "Spike Connect"),
     h("h1", {}, create ? "Your identity lives on this computer" : "Unlock Spike"),
     h("p", { class: "lead" }, create ? "No phone number, email or account. You are a key that only your devices hold." : "Your keys and history on this computer are sealed with your passphrase."),
-    h("label", { class: create ? "lbl" : "lbl sr", for: "pass", style: "font-weight:600" }, create ? "Choose a passphrase" : "Passphrase"), h("div", { class: "field" }, pass),
-    create ? [h("div", { class: "field" }, pass2), h("div", { class: "note", id: "passHelp" }, "10 characters or more. It encrypts your keys and history here. If you lose it and have no other device, this identity cannot be recovered.")] : h("div", { id: "passHelp", class: "sr" }, ""),
+    h("label", { class: "lbl sr", for: "pass" }, create ? "Choose a passphrase" : "Passphrase"), h("div", { class: "field" }, pass),
+    create ? [h("div", { class: "field" }, pass2), h("div", { class: "note", id: "passHelp" }, "10 characters or more. It cannot be recovered if you lose it and have no other device.")] : h("div", { id: "passHelp", class: "sr" }, ""),
     err, btn,
-    create ? h("label", { class: "toggle" }, h("input", { type: "checkbox", onchange: (e) => { st.linkNew = e.target.checked; } }), h("span", {}, "I already use Spike on another device: link this computer to it after setup")) : null,
-    create ? h("button", { class: "btn", type: "button", onclick: () => restoreGate() }, "Restore from a backup file") : null,
-    h("p", { class: "note" }, "Unreviewed prototype software: do not use it for real secrets yet.")));
+    // As in the design: the two other ways in, as quiet links under the button. Linking still creates this
+    // computer's passphrase first, then goes straight to linking.
+    create ? h("div", { class: "gatelinks" },
+      h("button", { class: "linklike", type: "button", "aria-pressed": "false", onclick: (e) => { st.linkNew = !st.linkNew; e.currentTarget.setAttribute("aria-pressed", String(st.linkNew)); btn.textContent = st.linkNew ? "Create, then link" : "Create my identity"; } }, "I already use Spike on another device"),
+      h("button", { class: "linklike", type: "button", onclick: () => restoreGate() }, "Restore from a backup file")) : null,
+    create ? null : h("p", { class: "note" }, "Unreviewed prototype software: do not use it for real secrets yet.")));
   pass.focus();
 }
 async function openApp() { $("gate").hidden = true; $("gate").replaceChildren(); $("app").hidden = false; st.chat = null; st.group = null; st.screen = null; await refresh(); if (st.linkNew) { st.linkNew = false; st.section = "devices"; st.screen = "linknew"; render(); startLinkNew(); } else syncNow(); st.polling = setInterval(() => { if (!document.hidden) syncNow(); }, 60000); armAutoLock(); }
@@ -999,7 +1002,7 @@ function directCard() {
   const d = st.direct;
   if (!d) return null;
   const set = async (cmd) => { try { st.direct = await invoke(cmd); toast(st.direct.listening ? "Direct connections are on." : "Direct connections are off."); } catch (e) { toast(String(e)); await refreshDirect(); return; } render(); };
-  return h("section", { class: "card", id: "direct-card" }, h("h2", { class: "eyebrow" }, "Direct connections"),
+  return h("section", { class: "card", id: "direct-card" }, ...secHead("Direct connections", "Messages go straight to a contact's device on the same network, without the relay."),
     h("label", { class: "toggle" }, h("input", { id: "direct-toggle", type: "checkbox", checked: d.enabled || null, onchange: (e) => set(e.target.checked ? "direct_enable" : "direct_disable") }),
       h("span", {}, h("b", { style: "font-weight:600" }, "Send and receive directly on this network"), h("div", { class: "note" }, "Messages go straight to your contact's device when it is on the same Wi-Fi, and through the relay otherwise. Turning this on opens a port on this computer; only devices of people you have added can use it. Anyone on the network can see which two devices talk, when, and how much, never what."))),
     d.enabled ? h("div", { class: "status soft", id: "direct-status" }, h("b", {}, d.listening ? "Listening." : "Not listening."),
@@ -1037,76 +1040,92 @@ function appsCard() {
     if (!confirm(`Remove ${x.name}?\n\nIts data stops arriving on this computer, anything waiting for it is deleted, and a program using it is disconnected.`)) return;
     try { st.apps = await invoke("app_remove", { id: x.app }); toast(`${x.name} removed.`); } catch (e) { toast(String(e)); } render();
   };
-  return h("section", { class: "card", id: "apps-card" }, h("h2", { class: "eyebrow" }, "Apps"),
-    h("span", { class: "note" }, "Other apps can send their own data through Spike, encrypted like your messages, without it showing up as chat. An app only gets data meant for it."),
+  return h("section", { class: "card", id: "apps-card" }, ...secHead("Apps", "Programs that send their own data through Spike, encrypted like your messages. Each gets only data meant for it, and none of it shows as chat."),
     h("label", { class: "toggle" }, h("input", { id: "apps-api-toggle", type: "checkbox", checked: a.api || null, onchange: (e) => setApi(e.target.checked) }),
       h("span", {}, h("b", { style: "font-weight:600" }, "Let programs on this computer connect"), h("div", { class: "note" }, "A program asks first, and you allow it here once. Only programs on this computer can ask, and only while Spike is unlocked."))),
     a.api ? h("div", { class: a.error ? "status warn" : "status soft", id: "apps-api-status" }, h("b", {}, a.error ? "Not listening." : "Listening."), h("span", { class: "mono" }, a.error ? a.error : `127.0.0.1:${a.port}`)) : null,
-    a.apps.length ? a.apps.map((x) => h("div", { class: "devrow app-row", style: "flex-wrap:wrap" },
-      h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, x.name), " ", h("span", { class: "mono note" }, x.app), x.connected ? h("span", { class: "pill plain", style: "margin-left:6px" }, "connected") : null,
+    a.apps.length ? a.apps.map((x) => h("div", { class: "devrow app-row" }, h("span", { class: "tile sq c-neutral", "aria-hidden": "true" }, ini2(x.name)),
+      h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:500" }, x.name), " ", h("span", { class: "mono note" }, x.app), x.connected ? h("span", { class: "pill plain", style: "margin-left:6px" }, "connected") : null,
         h("div", { class: "note" }, `Last used ${whenFull(x.last)} · received ${x.received} · sent ${x.sent}`)),
       h("button", { class: "btn danger", type: "button", "aria-label": `Remove ${x.name}`, onclick: () => remove(x) }, "Remove")))
       : h("span", { class: "note", id: "apps-none" }, "No apps are set up on this computer."),
     a.dropped.length ? h("div", { class: "status soft", id: "apps-dropped" }, h("b", {}, "Dropped:"), h("span", {}, "data arrived for apps that are not set up here: ", a.dropped.map((d) => `${d.app} (${d.count})`).join(", "), ".")) : null);
 }
+// A section's head and a setting's row, as in the design: a title and one line under it; then each setting on one
+// line, its name and a short note on the left and the control on the right, hairlines between.
+const secHead = (title, sub) => [h("h2", { class: "eyebrow" }, title), sub ? h("p", { class: "secsub" }, sub) : null];
+function srow(title, note, ...controls) {
+  return h("div", { class: "srow" }, h("div", { class: "t" }, h("b", {}, title), note ? (typeof note === "string" ? h("span", { class: "note" }, note) : note) : null),
+    controls.filter(Boolean).length ? h("div", { class: "c" }, ...controls) : null);
+}
+const fpGroups = (fp) => fp.split(/[-\s]+/).filter(Boolean).join("  ");
 function settingsMain() {
   if (!st.blockedLoaded) { st.blockedLoaded = true; refreshBlocked(); }
   if (!st.appsLoaded) { st.appsLoaded = true; refreshApps(); }
   if (!st.directLoaded) { st.directLoaded = true; refreshDirect(); }
-  const me = st.ov.me, relay = h("input", { "aria-label": "Relay address", value: st.ov.relay, class: "mono" });
+  const me = st.ov.me;
   const caPicker = h("input", { type: "file", accept: ".crt,.pem,.cer", hidden: true, onchange: async (e) => {
     const f = e.target.files[0]; e.target.value = ""; if (!f) return;
     if (f.size > 65536) return toast("That file is too large to be a certificate.");
     try { const n = await invoke("set_relay_ca", { pem: await f.text() }); toast(`Trusting ${n} certificate${n > 1 ? "s" : ""} from ${f.name}.`); await refresh(); syncNow(); } catch (x) { toast(String(x)); } } });
-  // The sections down the left, as in the design. Every section stays on the page (one scroll, so search and the
-  // drivers still see all of it); the list jumps to a section and marks the one you are reading.
+  // The sections down the left, as in the design; the chosen one fills the page.
   const jumps = [["set-identity", "Identity"], ["set-relay", "Home relay"], ["backupCard", "Backup"], ["set-privacy", "Privacy and security"], ["direct-card", "Direct connections"], ["apps-card", "Apps"], ["calls-card", "Calls"], ["set-trust", "Relay trust"], st.blocked.length ? ["set-blocked", "Blocked"] : null, ["set-updates", "Updates"]].filter(Boolean);
-  const cur = st.setSec || "set-identity";
+  const cur = jumps.some(([id]) => id === st.setSec) ? st.setSec : "set-identity";
   const backupDue = st.bk && st.bk.status && (!st.bk.status.last_ms || st.bk.status.stale);
   const nav = h("nav", { class: "setnav", "aria-label": "Settings sections" }, h("strong", {}, "Settings"),
-    jumps.map(([to, label]) => h("a", { href: "#" + to, "aria-current": to === cur ? "true" : null, onclick: (e) => { e.preventDefault(); st.setSec = to; document.getElementById(to)?.scrollIntoView({ behavior: "smooth", block: "start" }); markSection(); } }, label, to === "backupCard" && backupDue ? h("i", { class: "dot wait", title: "No recent backup" }) : null)));
-  const markSection = () => { for (const a of nav.querySelectorAll("a")) a.toggleAttribute("aria-current", a.getAttribute("href") === "#" + st.setSec); };
-  const onScroll = (e) => {
-    const top = e.target.getBoundingClientRect().top + 90; let id = jumps[0][0];
-    for (const [to] of jumps) { const el = document.getElementById(to); if (el && el.getBoundingClientRect().top <= top) id = to; }
-    if (id !== st.setSec) { st.setSec = id; markSection(); }
-  };
-  return [h("div", { class: "setwrap" }, nav, h("div", { class: "scroll setpane", onscroll: onScroll }, h("div", { class: "page flat" },
-    h("section", { class: "card", id: "set-identity" }, h("h2", { class: "eyebrow" }, "Your identity"), h("span", { class: "mono", style: "font-size:16px;overflow-wrap:anywhere" }, me.fingerprint),
-      h("span", { class: "note" }, `${me.devices} device${me.devices > 1 ? "s" : ""}${me.approver ? " · this device approves agent requests" : ""}. Contacts compare this when they verify you.`),
-      h("h2", { class: "eyebrow", style: "margin-top:8px" }, "Your identity card"),
-      h("div", { class: "cardrow" }, cardQr(me.card), h("div", { style: "display:flex;flex-direction:column;gap:8px;min-width:0;flex:1" },
-        h("span", {}, "Give this to someone so they can add you: a phone scans the code, a computer pastes the card."), copyCardButton(),
-        h("details", {}, h("summary", {}, "Show card text"), h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Your identity card", onfocus: (e) => e.target.select() }, me.card))))),
-    h("section", { class: "card", id: "set-relay" }, h("h2", { class: "eyebrow" }, "Home relay"), h("div", { class: "field" }, relay),
-      h("span", { class: "note" }, "Use wss:// for a relay on another computer. Plain ws:// is only accepted for this computer unless you allow it below. A relay sees which devices connect and message sizes, never text or files."),
+    jumps.map(([to, label]) => h("a", { href: "#" + to, "aria-current": to === cur ? "true" : null, onclick: (e) => { e.preventDefault(); st.setSec = to; render(); } },
+      label, to === "backupCard" && backupDue ? h("i", { class: "dot wait", title: "No recent backup" }) : null)));
+  const copyKey = async () => { try { await navigator.clipboard.writeText(me.fingerprint); toast("Identity key copied."); } catch (_) { toast("Select the key and copy it."); } };
+
+  const identity = () => h("section", { class: "card", id: "set-identity" }, ...secHead("Identity", "Who you are to your contacts. It lives on your devices only."),
+    h("div", { class: "idgrid" },
+      h("div", {},
+        srow("Identity key", h("span", { class: "note mono" }, fpGroups(me.fingerprint)), h("button", { class: "btn", type: "button", onclick: copyKey }, "Copy")),
+        srow("Your card", "What others paste or scan to add you.", copyCardButton()),
+        srow("Devices", `${plural(me.devices, "device", "devices")}${me.approver ? " · this one approves agent requests" : ""}. Contacts compare your key when they verify you.`,
+          h("button", { class: "btn", type: "button", onclick: () => go("devices") }, "Manage")),
+        h("details", { class: "cardtext" }, h("summary", {}, "Show card text"), h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Your identity card", onfocus: (e) => e.target.select() }, me.card))),
+      h("div", { class: "idqr" }, cardQr(me.card), h("span", { class: "note" }, "Your code. A phone scans it to add you; scanning in person verifies you both."))));
+
+  const relayHost = (() => { try { return new URL(st.ov.relay).host; } catch (_) { return st.ov.relay; } })();
+  const relayIn = h("input", { "aria-label": "Relay address", value: st.ov.relay, class: "mono" });
+  const relay = () => h("section", { class: "card", id: "set-relay" }, ...secHead("Home relay", "Contacts deliver here while your devices are offline."),
+    srow(relayHost, h("span", { class: "note mono" }, st.ov.relay),
+      h("span", { class: "rstatus" + (st.offline ? " off" : "") }, st.offline ? "Not reachable" : [icon("lock"), "Connected"]),
+      st.relayEdit ? null : h("button", { class: "btn", type: "button", onclick: () => { st.relayEdit = true; render(); } }, "Change")),
+    st.relayEdit ? h("div", { class: "relayedit" }, h("div", { class: "field" }, relayIn),
+      h("span", { class: "note" }, "Use wss:// for a relay on another computer. Plain ws:// is only accepted for this computer unless you allow it under Relay trust."),
       h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
-        h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Relay saved."); await refresh(); syncNow(); } catch (e) { toast(String(e)); } } }, "Save relay"),
-        h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relay.value }); toast("Connecting…"); toast(await invoke("test_relay")); } catch (e) { toast(String(e)); } } }, "Test connection"))),
-    backupCard(),
-    directCard(),
-    appsCard(),
-    callsCard(),
-    h("section", { class: "card", id: "set-trust" }, h("h2", { class: "eyebrow" }, "Trust for a relay you run yourself"),
-      h("span", {}, st.ov.relay_trust.ca_certs ? `${st.ov.relay_trust.ca_certs} extra certificate${st.ov.relay_trust.ca_certs > 1 ? "s are" : " is"} trusted, as well as the usual public ones.` : "Only the usual public certificate authorities are trusted."),
-      h("span", { class: "note" }, "A relay with a self-signed or private certificate needs that certificate trusted here: choose its .crt or .pem file (the certificate, never the private key)."),
-      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, caPicker, h("button", { class: "btn", type: "button", onclick: () => caPicker.click() }, "Choose certificate file…"),
-        st.ov.relay_trust.ca_certs ? h("button", { class: "btn danger", type: "button", onclick: async () => { try { await invoke("set_relay_ca", { pem: null }); toast("Certificate removed."); await refresh(); } catch (e) { toast(String(e)); } } }, "Stop trusting it") : null),
-      h("label", { class: "toggle", style: "margin-top:6px" }, h("input", { type: "checkbox", checked: st.ov.relay_trust.allow_insecure || null, onchange: async (e) => { try { await invoke("set_allow_insecure", { allow: e.target.checked }); await refresh(); } catch (x) { toast(String(x)); await refresh(); } } }),
-        h("span", {}, h("b", { style: "font-weight:600" }, "Allow plain ws:// on a network I trust"), h("div", { class: "note" }, "Messages stay end-to-end encrypted, but anyone on the network can see which devices talk, when, and how much. Use it only on a private network you control; never over the internet."))),
-      st.ov.relay_trust.allow_insecure ? h("div", { class: "status warn", role: "alert" }, h("b", {}, "Plain connections are allowed."), h("span", {}, "Turn this off unless you are on a network you control.")) : null),
-    st.blocked.length ? h("section", { class: "card", id: "set-blocked" }, h("h2", { class: "eyebrow" }, "Blocked people"),
-      h("span", { class: "note" }, "Their messages are dropped when they arrive. (The relay still carries them until then: it cannot tell who sent a message.)"),
-      st.blocked.map((b) => h("div", { class: "devrow" }, h("span", { style: "flex:1;min-width:0" }, h("span", { class: "mono", style: "overflow-wrap:anywhere" }, b.fingerprint), h("div", { class: "note" }, "blocked " + new Date(b.at).toLocaleDateString())),
-        h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("unblock", { owner: b.owner }); toast("Unblocked. Only a new conversation from them will be seen."); await refreshBlocked(); } catch (e) { toast(String(e)); } } }, "Unblock")))) : null,
-    h("section", { class: "card", id: "set-privacy" }, h("h2", { class: "eyebrow" }, "Privacy and security"),
-      h("label", { style: "display:flex;flex-direction:column;gap:4px" }, h("b", { style: "font-weight:600" }, "Lock after no use for"), h("div", { class: "field" }, h("select", { "aria-label": "Auto-lock", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { try { localStorage.setItem("autolock", e.target.value); } catch (_) {} armAutoLock(); toast(Number(e.target.value) ? `Locks after ${e.target.selectedOptions[0].text} without use.` : "Auto-lock is off."); } }, AUTOLOCK_CHOICES.map(([v, l]) => h("option", { value: String(v), selected: v === autoLockMinutes() || null }, l)))),
-        h("span", { class: "note" }, "Locking wipes your keys from memory. While locked, this computer does not receive messages.")),
-      h("label", { style: "display:flex;flex-direction:column;gap:4px;margin-top:6px" }, h("b", { style: "font-weight:600" }, "Notification banners"), h("div", { class: "field" }, h("select", { "aria-label": "Notification banners", style: "border:0;background:transparent;flex:1;min-height:42px", onchange: (e) => { try { localStorage.setItem("banners", e.target.value); } catch (_) {} toast(e.target.value === "off" ? "No banners. The taskbar still flashes." : "Banners on, while Spike Connect is not the window you are using."); } }, BANNER_CHOICES.map(([v, l]) => h("option", { value: v, selected: v === bannerMode() || null }, l)))),
-        h("span", { class: "note" }, "Shown while Spike Connect is not the window you are using. Only \"Show who it is from and the message\" puts a message's text in a banner, with quick reactions and Reply; anyone who can see your screen can read it.")),
-      h("span", { class: "note" }, "The window title, and the taskbar or dock, show how many messages and requests are waiting.")),
-    updatesCard(),
-    h("div", { class: "setfoot" }, h("button", { class: "btn", type: "button", onclick: lockNow }, icon("lock"), "Lock now"), h("span", { class: "note" }, "Unreviewed prototype: do not use it for real secrets yet."))))) ];
+        h("button", { class: "btn primary", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relayIn.value }); toast("Relay saved."); st.relayEdit = false; await refresh(); syncNow(); } catch (e) { toast(String(e)); } } }, "Save relay"),
+        h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relayIn.value }); toast("Connecting…"); toast(await invoke("test_relay")); } catch (e) { toast(String(e)); } } }, "Test connection"),
+        h("button", { class: "btn", type: "button", onclick: () => { st.relayEdit = false; render(); } }, "Cancel"))) : null,
+    h("div", { class: "relaysee" },
+      h("div", {}, h("span", { class: "cap" }, "A relay can see"), h("span", {}, "Which device a message is for"), h("span", {}, "When, and how large"), h("span", {}, "Your network address")),
+      h("div", {}, h("span", { class: "cap" }, "A relay cannot see"), h("span", {}, "What a message says"), h("span", {}, "Who sent it"), h("span", {}, "Your contacts or groups"))));
+
+  const trust = () => h("section", { class: "card", id: "set-trust" }, ...secHead("Relay trust", "For a relay you run yourself, with its own certificate."),
+    srow("Certificates", st.ov.relay_trust.ca_certs ? `${st.ov.relay_trust.ca_certs} extra certificate${st.ov.relay_trust.ca_certs > 1 ? "s are" : " is"} trusted, as well as the usual public ones.` : "Only the usual public certificate authorities are trusted. Choose a relay's .crt or .pem file (the certificate, never the private key).",
+      caPicker, h("button", { class: "btn", type: "button", onclick: () => caPicker.click() }, "Choose file…"),
+      st.ov.relay_trust.ca_certs ? h("button", { class: "btn danger", type: "button", onclick: async () => { try { await invoke("set_relay_ca", { pem: null }); toast("Certificate removed."); await refresh(); } catch (e) { toast(String(e)); } } }, "Stop trusting") : null),
+    h("label", { class: "toggle" }, h("input", { type: "checkbox", checked: st.ov.relay_trust.allow_insecure || null, onchange: async (e) => { try { await invoke("set_allow_insecure", { allow: e.target.checked }); await refresh(); } catch (x) { toast(String(x)); await refresh(); } } }),
+      h("span", {}, h("b", {}, "Allow plain ws:// on a network I trust"), h("div", { class: "note" }, "Messages stay end-to-end encrypted, but anyone on the network can see which devices talk, when, and how much. Never over the internet."))),
+    st.ov.relay_trust.allow_insecure ? h("div", { class: "status warn", role: "alert" }, h("b", {}, "Plain connections are allowed."), h("span", {}, "Turn this off unless you are on a network you control.")) : null);
+
+  const blocked = () => h("section", { class: "card", id: "set-blocked" }, ...secHead("Blocked", "Their messages are dropped when they arrive. The relay still carries them: it cannot tell who sent a message."),
+    st.blocked.map((b) => srow(h("span", { class: "mono" }, fpGroups(b.fingerprint)), "Blocked " + new Date(b.at).toLocaleDateString(),
+      h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("unblock", { owner: b.owner }); toast("Unblocked. Only a new conversation from them will be seen."); await refreshBlocked(); } catch (e) { toast(String(e)); } } }, "Unblock"))));
+
+  const sel = (label, choices, current, onchange) => h("select", { "aria-label": label, class: "ssel", onchange }, choices.map(([v, l]) => h("option", { value: String(v), selected: v === current || null }, l)));
+  const privacy = () => h("section", { class: "card", id: "set-privacy" }, ...secHead("Privacy and security", "What this computer keeps, and what it shows."),
+    srow("Lock after no use for", "Locking wipes your keys from memory. While locked, this computer does not receive messages.",
+      sel("Auto-lock", AUTOLOCK_CHOICES, autoLockMinutes(), (e) => { try { localStorage.setItem("autolock", e.target.value); } catch (_) {} armAutoLock(); toast(Number(e.target.value) ? `Locks after ${e.target.selectedOptions[0].text} without use.` : "Auto-lock is off."); })),
+    srow("Notification banners", "Shown while Spike Connect is not the window you are using. Only the last choice puts a message's text on screen.",
+      sel("Notification banners", BANNER_CHOICES, bannerMode(), (e) => { try { localStorage.setItem("banners", e.target.value); } catch (_) {} toast(e.target.value === "off" ? "No banners. The taskbar still flashes." : "Banners on, while Spike Connect is not the window you are using."); })),
+    srow("Lock now", "The window title and the taskbar show how many messages and requests are waiting.", h("button", { class: "btn", type: "button", onclick: lockNow }, icon("lock"), "Lock now")));
+
+  const pick = { "set-identity": identity, "set-relay": relay, backupCard, "set-privacy": privacy, "direct-card": directCard, "apps-card": appsCard, "calls-card": callsCard, "set-trust": trust, "set-blocked": blocked, "set-updates": updatesCard }[cur];
+  return [h("div", { class: "setwrap" }, nav, h("div", { class: "scroll setpane" }, h("div", { class: "page flat" }, pick(),
+    h("p", { class: "setfoot note" }, "Unreviewed prototype: do not use it for real secrets yet."))))];
 }
 
 /* ---------- backup and recovery (ADR 0029) ---------- */
@@ -1126,17 +1145,17 @@ function backupCard() {
     catch (e) { toast(String(e)); }
     b.busy = false; render();
   };
-  return h("section", { class: "card", id: "backupCard" }, h("h2", { class: "eyebrow" }, "Backup and recovery"),
+  return h("section", { class: "card", id: "backupCard" }, ...secHead("Backup and recovery", "A sealed copy of your identity, in a file you keep. There is no copy on any server."),
     s ? h("div", { class: "status " + (s.stale ? "warn" : "soft"), role: s.stale ? "alert" : "status" }, h("b", {}, s.last_ms ? "Last backup: " + new Date(s.last_ms).toLocaleString() : "No backup yet"), s.stale && s.reason ? h("span", {}, s.reason + " Make a new one and delete the old file.") : null) : null,
-    h("div", { class: "status soft" }, h("span", {}, BACKUP_WARNING)),
-    b.key ? [h("div", { class: "note" }, "Your backup key. It is shown once and is not stored. Write it down and keep it apart from the file:"),
-      h("span", { class: "mono", id: "bkKey", style: "font-size:18px;overflow-wrap:anywhere;user-select:all" }, b.key),
+    b.key ? [h("span", { class: "cap" }, "Your backup key · shown once, not stored"),
+      h("span", { class: "mono keybox", id: "bkKey" }, b.key),
       h("label", { class: "toggle" }, h("input", { id: "bkAck", type: "checkbox", checked: b.ack || null, onchange: (e) => { b.ack = e.target.checked; } }), h("span", {}, "I wrote the key down"))]
       : h("button", { class: "btn", id: "bkMake", style: "align-self:flex-start", type: "button", onclick: makeKey }, "Make a backup key (recommended)"),
     h("div", { class: "field" }, own),
     h("label", { class: "toggle" }, h("input", { id: "bkHist", type: "checkbox", checked: b.history || null, onchange: (e) => { b.history = e.target.checked; } }), h("span", {}, "Include my message history", h("div", { class: "note" }, "Makes the file larger and more valuable to anyone who gets it. Files are not included."))),
     b.saved ? h("div", { class: "status soft", id: "bkSaved", role: "status" }, h("b", {}, "Saved."), h("span", {}, b.saved + ". Move it somewhere safe.")) : null,
-    h("button", { class: "btn primary", id: "bkSave", style: "align-self:flex-start", type: "button", disabled: b.busy || null, onclick: save }, b.busy ? "Sealing…" : "Save backup file"));
+    h("button", { class: "btn primary", id: "bkSave", style: "align-self:flex-start", type: "button", disabled: b.busy || null, onclick: save }, b.busy ? "Sealing…" : "Save backup file"),
+    h("p", { class: "note bkwarn" }, BACKUP_WARNING));
 }
 function restoreGate() {
   const r = { step: "open", file: null, summary: null, busy: false, err: "" };
@@ -1207,7 +1226,7 @@ function updatesCard() {
   auto.checked = st.updateAuto !== false;
   auto.addEventListener("change", async () => { try { await invoke("update_set_auto", { on: auto.checked }); st.updateAuto = auto.checked; toast(auto.checked ? "Spike will check for updates in the background." : "Automatic update checks are off."); } catch (e) { auto.checked = !auto.checked; toast(String(e)); } });
   return h("section", { class: "card", id: "set-updates" }, h("h2", { class: "eyebrow" }, "Updates"),
-    h("label", { style: "display:flex;gap:10px;align-items:flex-start" }, auto, h("span", {}, h("b", { style: "font-weight:600" }, "Check for updates automatically"),
+    h("label", { class: "toggle" }, auto, h("span", {}, h("b", { style: "font-weight:600" }, "Check for updates automatically"),
       h("span", { class: "note", id: "update-auto-note", style: "display:block" }, "Spike checks at start-up and every six hours, and downloads a verified update. It installs only when you choose Restart to update. A check tells the update host (GitHub) this computer's address and that it runs Spike."))),
     u && u.error ? h("div", { class: "status bad", role: "alert" }, h("span", {}, u.error)) : null,
     u && u.supported === false ? h("div", { class: "status soft" }, h("span", {}, "This build cannot update itself. Install a newer version from where you got this one.")) : null,

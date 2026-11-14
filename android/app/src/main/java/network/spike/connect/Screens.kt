@@ -971,12 +971,19 @@ fun AddContactScreen(m: AppModel) {
                     }
                 }
                 1 -> {
-                    Muted("Point the camera at your contact's code (their Add a contact, My code). Then compare fingerprints with them once.", 14.sp)
                     if (scanned == null) {
-                        QrScanner(Modifier.fillMaxWidth().height(300.dp)) { text ->
-                            if (text.trim().startsWith("spike2:")) scanned = text.trim()
-                            else m.notice = "That code is not a Spike card."
+                        // As in the design: the camera in a dark rounded panel, a white frame to aim with, the hint under it.
+                        Box(Modifier.fillMaxWidth().height(420.dp).clip(RoundedCornerShape(24.dp)).background(Color(0xFF1B2326)), contentAlignment = Alignment.Center) {
+                            QrScanner(Modifier.fillMaxSize()) { text ->
+                                if (text.trim().startsWith("spike2:")) scanned = text.trim()
+                                else m.notice = "That code is not a Spike card."
+                            }
+                            Box(Modifier.size(210.dp).border(2.dp, Color.White, RoundedCornerShape(28.dp)))
                         }
+                        Text(
+                            "Point at your contact's code: their Add a contact, My code. Then compare fingerprints with them once.",
+                            color = C.Muted, fontSize = 13.5.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth(),
+                        )
                     } else {
                         CardBox {
                             Text("Got a card", fontWeight = FontWeight.SemiBold)

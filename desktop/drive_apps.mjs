@@ -30,6 +30,7 @@ const unb64 = (s) => Buffer.from(s, "base64").toString();
 /** Turn the local API on in Settings, ask from a program, allow it in the window; returns the token. */
 async function connectProgram(p, port, who) {
   await p.click("Settings");
+  await p.eval(`st.setSec='apps-card'; render();`);
   await until(() => p.eval(`return !!document.getElementById('apps-card')`));
   check((await p.eval(`return document.getElementById('apps-none')?.innerText || ''`)).includes("No apps"), `${who}: Settings says no apps are set up yet`);
   await p.eval(`document.getElementById('apps-api-toggle').click()`);
@@ -94,7 +95,7 @@ try {
 
   console.log("-- removing the app");
   await alice.refresh();
-  await alice.eval(`document.getElementById('apps-card').scrollIntoView({ block: "center" })`);
+  await alice.eval(`st.section='settings'; st.setSec='apps-card'; st.screen=null; render();`);
   const counts = await alice.eval(`return document.querySelector('.app-row')?.innerText || ''`);
   check(counts.includes("received 1") && counts.includes("sent 1"), `Settings counts what the app sent and received (${counts.replace(/\n/g, " ")})`);
   await sleep(300);

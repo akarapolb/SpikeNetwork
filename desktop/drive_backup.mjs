@@ -55,7 +55,7 @@ try {
   const fingerprint = (await alice.invoke("overview")).me.fingerprint;
 
   // 1. Alice makes a backup from Settings, as a person would.
-  await alice.eval("st.section='settings'; await refresh(); render();");
+  await alice.eval("st.section='settings'; st.setSec='backupCard'; await refresh(); render();");
   await sleep(600);
   let t = await alice.text();
   check(t.toLowerCase().includes("backup and recovery") && t.includes("No backup yet") && t.includes("copy of your identity"), "settings shows the backup card, the warning and 'no backup yet'");

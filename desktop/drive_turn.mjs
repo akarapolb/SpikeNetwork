@@ -47,7 +47,7 @@ try {
 
   // "Always use the relay for calls", as set on the Settings screen.
   for (const p of [alice, bob]) {
-    await p.eval(`st.section='settings'; st.screen=null; render();`);
+    await p.eval(`st.section='settings'; st.setSec='calls-card'; st.screen=null; render();`);
     await sleep(700);
     check(await until(() => p.eval(`return document.getElementById('calls-card') && document.getElementById('calls-card').innerText.includes('offers a TURN server')`), `${p.name}'s Settings says the relay has TURN`, 8000), `${p.name}'s Settings says the relay offers TURN`);
     await p.eval(`const b=document.getElementById('calls-relay-only'); b.checked=true; b.dispatchEvent(new Event('change'));`);

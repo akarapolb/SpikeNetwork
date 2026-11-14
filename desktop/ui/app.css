@@ -777,4 +777,45 @@ button { padding: 0; }
 .head .iconbtn[aria-pressed="true"] { background: var(--panel-2); color: var(--text); }
 @media (max-width: 1100px) { .withside { grid-template-columns: minmax(0, 1fr); } .withside > .side { display: none; } }
 .main .scroll:has(> .agpane), .main .scroll:has(> .devpane) { background: var(--panel); }
+/* Settings, as in the design: one section at a time, its title and one line, then a row per setting. */
+.setpane .page.flat { max-width: 860px; }
+.setpane .page.flat > section.card { border-bottom: 0; margin: 0; padding: 0 0 18px; gap: 0; }
+.setpane .card > .eyebrow:first-child { margin: 0 0 2px; }
+.secsub { margin: 0 0 14px; color: var(--muted); font-size: 13.5px; }
+.srow { display: flex; gap: 24px; align-items: center; padding: 13px 0; border-top: 1px solid var(--line); }
+.srow .t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.srow .t b { font-weight: 500; }
+.srow .t .mono { overflow-wrap: anywhere; }
+.srow .c { display: flex; gap: 8px; align-items: center; flex: none; }
+.setpane .toggle { border-top: 1px solid var(--line); padding: 13px 0 !important; }
+.setpane .toggle > span > b { font-weight: 500; display: block; }
+.setpane .card > .status, .setpane .card > .field, .setpane .card > .btn, .setpane .card > .note, .setpane .card > .cap, .setpane .card > .keybox, .setpane .card > .devrow, .setpane .card > .relayedit { margin-top: 10px; }
+.ssel { min-height: 32px; border: 1px solid var(--line-2); background: var(--panel); border-radius: 8px; padding: 0 8px; font: inherit; font-size: 13px; color: var(--text); }
+.idgrid { display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 40px; align-items: start; }
+.idqr { display: flex; flex-direction: column; gap: 10px; }
+.idqr img.qrimg { width: 190px; height: 190px; padding: 12px; background: #fff; border: 1px solid var(--line-2); border-radius: 18px; }
+.cardtext { padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--text-2); }
+.cardtext summary { cursor: pointer; }
+.cardtext .cardbox { margin-top: 8px; }
+.rstatus { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; margin-right: 6px; }
+.rstatus svg.i { width: 14px; height: 14px; color: var(--good); }
+.rstatus.off { color: var(--warn-ink); }
+.relayedit { display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; }
+.relaysee { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding-top: 14px; border-top: 1px solid var(--line); }
+.relaysee > div { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.cap, .relaysee .cap { font: 500 11px/1 "Geist Mono", ui-monospace, Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.keybox { display: block; text-align: center; font-size: 22px; letter-spacing: .08em; padding: 18px 16px; border-radius: 14px; background: var(--panel-2); user-select: all; overflow-wrap: anywhere; }
+.bkwarn { margin-top: 14px !important; }
+.setpane .app-row .tile { width: 34px; height: 34px; border-radius: 10px; background: var(--panel-2); color: var(--text-2); font-size: 12px; }
+.setfoot { margin-top: 18px; }
+@media (max-width: 1100px) { .idgrid { grid-template-columns: minmax(0, 1fr); } }
+/* First run: the other two ways in sit side by side under the button, as in the design. */
+.gatelinks { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.gatelinks .linklike { padding: 4px 0; font-size: 13.5px; color: var(--text-2); }
+.gatelinks .linklike[aria-pressed="true"] { color: var(--text); font-weight: 600; }
+/* Find in a conversation: a filled field, as in the design. */
+.findbar .field { background: var(--panel-2); border-color: transparent; border-radius: 10px; box-shadow: none; }
+.findbar .field input { background: transparent; }
 
+.gatelinks .linklike { width: auto !important; flex: none; display: inline-block; min-height: 0; }
+.gatebox:has(.gatelinks) { width: min(424px, 100%); }

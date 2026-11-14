@@ -12,6 +12,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.em
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Checkbox
@@ -82,66 +87,71 @@ fun BackupCard(m: AppModel) {
         }
     }
 
+    // As in the design: where the backup stands; then, once a key is made, "Write this key down" with the key large
+    // on a sunken panel, the tick, and Save at the bottom. The file's warning stays, once, in plain words.
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Backup and recovery", fontWeight = FontWeight.SemiBold)
-        CardBox {
-            val s = status
+        val s = status
+        val k = key
+        val f = ready
+        if (k == null && f == null) {
+            Text("Backup and recovery", fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 20.sp)
             if (s != null) {
                 val last = if (s.isNull("last_ms")) null else s.getLong("last_ms")
-                Text(if (last == null) "No backup yet" else "Last backup: ${stamp(last)}", fontWeight = FontWeight.Medium)
-                if (s.optBoolean("stale") && !s.isNull("reason")) {
-                    Text(s.getString("reason") + " Make a new one and delete the old file.", fontSize = 13.sp, color = C.AmberText)
-                }
+                Text(if (last == null) "No backup yet" else "Last backup: ${stamp(last)}", fontWeight = FontWeight.Medium, color = if (last == null) C.AmberText else C.Text)
+                if (s.optBoolean("stale") && !s.isNull("reason")) Text(s.getString("reason") + " Make a new one and delete the old file.", fontSize = 13.sp, color = C.AmberText)
             }
             Muted(BACKUP_WARNING, 12.5.sp)
-            val f = ready
-            if (f != null) {
-                Text("Your backup is sealed. Choose where to keep it.", fontWeight = FontWeight.Medium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlineButton("Save to…", small = true) { saveTo.launch(EXPORT_NAME) }
-                    OutlineButton("Share…", small = true) {
-                        val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f)
-                        val send = Intent(Intent.ACTION_SEND).setType("application/octet-stream")
-                            .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        ctx.startActivity(Intent.createChooser(send, "Share backup").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    }
-                    OutlineButton("Discard", small = true, danger = true) { f.delete(); ready = null }
-                }
-            } else {
-                val k = key
-                if (k != null) {
-                    Muted("Your backup key. It is shown once and is not stored. Write it down and keep it apart from the file:", 13.sp)
-                    Text(k, fontFamily = Mono, fontSize = 18.sp)
-                    // The whole row ticks the box: the words are the easiest thing to tap.
-                    Row(
-                        Modifier.fillMaxWidth().toggleable(value = ack, role = androidx.compose.ui.semantics.Role.Checkbox) { ack = it },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(ack, null, colors = CheckboxDefaults.colors(checkedColor = C.Accent))
-                        Text("I wrote the key down", fontSize = 14.sp)
-                    }
-                } else {
-                    OutlineButton("Make a backup key (recommended)", small = true) {
-                        m.run { key = Bridge.call("backup_new_key") as String; ack = false }
-                    }
-                }
-                Field(null, own, { own = it }, password = true, placeholder = "or type your own passphrase (14+ characters)")
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Include my message history", fontSize = 14.sp)
-                        Muted("Makes the file larger and more valuable to anyone who gets it. Files are not included.", 12.5.sp)
-                    }
-                    Switch(history, { history = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
-                }
-                val pass = own.ifEmpty { key ?: "" }
-                PrimaryButton("Save backup file", enabled = !m.busy && pass.isNotEmpty() && (own.isNotEmpty() || ack)) {
-                    m.run {
-                        val out = File(backupDir(ctx), EXPORT_NAME)
-                        Bridge.call("backup_export", args("path" to out.absolutePath, "passphrase" to pass, "history" to history))
-                        ready = out
-                        key = null; own = ""; ack = false
-                        status = Bridge.obj("backup_status")
-                    }
+        }
+        if (f != null) {
+            H1("Your backup is sealed", 26.sp)
+            Text("Choose where to keep it: somewhere only you can reach, apart from the key.", color = C.AvatarText, fontSize = 14.sp)
+            PrimaryButton("Save to…") { saveTo.launch(EXPORT_NAME) }
+            OutlineButton("Share…", Modifier.fillMaxWidth()) {
+                val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f)
+                val send = Intent(Intent.ACTION_SEND).setType("application/octet-stream")
+                    .putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                ctx.startActivity(Intent.createChooser(send, "Share backup").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+            TextLink("Discard", danger = true) { f.delete(); ready = null }
+            return@Column
+        }
+        if (k != null) {
+            H1("Write this key down", 26.sp)
+            Text("It opens your backup file. It is shown once and not stored.", color = C.AvatarText, fontSize = 14.sp, lineHeight = 19.6.sp)
+            Text(
+                k.split("-").chunked(2).joinToString("\n") { it.joinToString("-") }, fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 22.sp,
+                letterSpacing = 0.08.em, lineHeight = 32.sp, textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(16.dp)).background(C.Subtle).padding(vertical = 22.dp, horizontal = 12.dp),
+            )
+            // The whole row ticks the box: the words are the easiest thing to tap.
+            Row(
+                Modifier.fillMaxWidth().toggleable(value = ack, role = androidx.compose.ui.semantics.Role.Checkbox) { ack = it },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(ack, null, colors = CheckboxDefaults.colors(checkedColor = C.Accent))
+                Text("I wrote the key down, apart from the file", fontSize = 14.sp)
+            }
+        } else {
+            PrimaryButton("Make a backup key (recommended)") { m.run { key = Bridge.call("backup_new_key") as String; ack = false } }
+            Field(null, own, { own = it }, password = true, placeholder = "or type your own passphrase (14+ characters)")
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text("Include my message history", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Muted("A larger file, worth more to anyone who gets it. Files are not included.", 12.5.sp)
+            }
+            Switch(history, { history = it }, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+        }
+        val pass = own.ifEmpty { k ?: "" }
+        if (k != null || own.isNotEmpty()) {
+            Muted("Anyone with the file and the key can act as you.", 13.sp, Modifier.padding(top = 8.dp))
+            PrimaryButton("Save backup file", enabled = !m.busy && pass.isNotEmpty() && (own.isNotEmpty() || ack)) {
+                m.run {
+                    val out = File(backupDir(ctx), EXPORT_NAME)
+                    Bridge.call("backup_export", args("path" to out.absolutePath, "passphrase" to pass, "history" to history))
+                    ready = out
+                    key = null; own = ""; ack = false
+                    status = Bridge.obj("backup_status")
                 }
             }
         }
