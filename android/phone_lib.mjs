@@ -56,6 +56,11 @@ export function createPhone(D) {
         const w = ns.find((n) => n.text === "Wait");
         if (w) { console.log(`   (a system dialog: ${last.slice(0, 60)}; tapping Wait)`); tap(w.cx, w.cy); }
       }
+      // After `pm clear` the app asks for the notification permission over its first screen.
+      if (last.includes("to send you notifications")) {
+        const a = ns.find((n) => n.text === "Allow");
+        if (a) { console.log("   (the notification permission dialog; tapping Allow)"); tap(a.cx, a.cy); }
+      }
       await sleep(500);
     }
     console.log(`   (waited for "${sub}"; the phone shows: ${last.slice(0, 300)})`);

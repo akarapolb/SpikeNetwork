@@ -22,7 +22,10 @@ try {
   await sleep(1000);
   adb("install", "-r", APK);
   sh(`pm clear ${PKG}`);
+  sh(`pm grant ${PKG} android.permission.POST_NOTIFICATIONS`); // its dialog would cover the first screen
   adb("reverse", `tcp:${PORT}`, `tcp:${PORT}`);
+  // The default relay port must not reach a relay: the first link offer below should fail at once.
+  try { adb("reverse", "--remove", "tcp:8787"); } catch (_) {}
   sh("settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0");
   // Debug ports no other driver uses (9341/9342 are drive_call's too): a clash attaches to another run's window.
   const desk = await D.launch("desktop", 9491);
@@ -37,8 +40,6 @@ try {
   sh(`am start -n ${PKG}/.MainActivity`);
   await waitText("Your identity lives on this phone");
   await sleep(1500);
-  // The phone's link code names its relay: this driver's own, not the default port.
-  debug("set_relay", { url: `ws://127.0.0.1:${PORT}` });
   // The welcome screen offers it first; the passphrase for this phone is asked on the next screen.
   await tapText("I already use Spike on another device");
   await waitText("Passphrase for this phone");
@@ -47,6 +48,12 @@ try {
   await tapText("Continue to linking");
   // with a fingerprint enrolled the phone offers fingerprint unlock here too
   if (await waitText("Turn on fingerprint unlock", 6000)) touch();
+  // The link code names the phone's relay, and the phone's settings can only change once this step has opened
+  // them (before, the app is locked). The first offer uses the default port, where nothing listens, so it stops
+  // at once: point the phone at this driver's relay and start again.
+  await waitText("Linking stopped", 100000);
+  debug("set_relay", { url: `ws://127.0.0.1:${PORT}` });
+  await tapText("Start again");
   check(await waitText("Waiting for the other device", 30000), "the phone shows a link code and waits");
   shot("l1-code");
   const code = nodes().map((n) => n.text).filter((x) => x.length > 40).sort((a, b) => b.length - a.length)[0];

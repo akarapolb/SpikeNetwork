@@ -32,15 +32,13 @@ const cli = (...a) =>
     encoding: "utf8", env: { ...process.env, SPIKE_PASSPHRASE: "bob test passphrase", SPIKE_RELAY: RELAY },
   });
 
-/** Type into a field of the phone's screen and close the keyboard. */
-async function fill(index, text) { await tapField(index); typeText(text); hideKeyboard(); }
-
 try {
   console.log("-- setting up: relay on this PC, clean install on the emulator");
   D.start(join(D.root, "target", "debug", "spike-relay.exe"), ["--listen", `127.0.0.1:${PORT}`], {});
   await sleep(1000);
   adb("install", "-r", APK);
   sh(`pm clear ${PKG}`);
+  sh(`pm grant ${PKG} android.permission.POST_NOTIFICATIONS`); // its dialog would cover the first screen
   // A file left by an earlier run would make the picker save under another name. (Right after a boot the
   // shell may not reach /sdcard yet; the save step below checks the file itself.)
   try { sh(`rm -f /sdcard/Download/${FILE}`); } catch (e) { console.log(`   (could not remove an old backup file: ${e.message.split("\n")[1] || e.message})`); }
@@ -49,7 +47,7 @@ try {
   sh(`am start -n ${PKG}/.MainActivity`);
 
   console.log("-- 1 · identity, and a contact to talk to");
-  check(await waitText("Your identity lives on this phone"), "the phone shows the create screen");
+  check(await waitText("Your identity lives on this phone", 60000), "the phone shows the create screen");
   // The welcome screen asks first what you want; the passphrase is on the next screen.
   await tapText("Create my identity"); await waitText("Passphrase for this phone");
   // On a slow emulator Back (closing the keyboard) can also leave the passphrase screen: open it again and
@@ -89,7 +87,12 @@ try {
   check(await waitText("No backup yet"), "and says there is no backup yet");
   shot("backup-1-settings");
   // The card is below the relay settings: scroll to it.
-  for (let i = 0; i < 6 && !screenText().includes("Make a backup key"); i++) { sh("input swipe 540 1700 540 700 300"); await sleep(400); }
+  for (let i = 0; i < 6 && !screenText().includes("Include my message history"); i++) { sh("input swipe 540 1700 540 700 300"); await sleep(400); }
+  // History is left out unless asked for; this backup should bring it back. The switch is at the row's right end.
+  const hist = nodes().find((n) => (n.text || "") === "Include my message history");
+  check(!!hist, "the backup offers to include the message history");
+  tap(960, hist.cy + 25);
+  await sleep(500);
   await tapText("Make a backup key");
   await sleep(600);
   // The key is shown over several lines (two groups a line): read it across them.
@@ -127,8 +130,9 @@ try {
   console.log("-- 3 · total loss, then restore from the file");
   // Messages that arrive while the phone is gone wait in the old device's mailbox; Bob sends one.
   sh(`pm clear ${PKG}`);
+  sh(`pm grant ${PKG} android.permission.POST_NOTIFICATIONS`);
   sh(`am start -n ${PKG}/.MainActivity`);
-  check(await waitText("Restore from a backup file", 20000), "a clean install offers 'Restore from a backup file'");
+  check(await waitText("Restore from a backup file", 60000), "a clean install offers 'Restore from a backup file'");
   await tapText("Restore from a backup file");
   check(await waitText("Choose backup file"), "the restore screen opens");
   await tapText("Choose backup file");
@@ -148,7 +152,7 @@ try {
   }
   check(pickedFile, "the backup file is chosen in the system picker");
   check(await waitText("File:", 15000), "the restore screen shows the chosen file");
-  await fill(0, "WRONG-KEY-WRONG-KEY-WRONG");
+  await setField(0, "WRONG-KEY-WRONG-KEY-WRONG");
   await tapText("Open backup");
   check(await waitText("wrong backup passphrase", 20000), "a wrong key is refused with a plain message");
   // Clear the field and type the real key, lower case and without dashes (as a person might). The field is
@@ -156,9 +160,10 @@ try {
   check(await setField(0, key.toLowerCase().replaceAll("-", "")), "the field holds the whole key as typed");
   await tapText("Open backup");
   check(await waitText("1 contact", 30000), "the summary shows what the backup holds");
+  check(/[1-9]\d* messages?/.test(screenText()), "and that it holds the message history");
   shot("backup-7-summary");
-  await fill(1, NEW_PASS);
-  await fill(2, NEW_PASS);
+  // Field 0 is the relay; the button stays disabled until both passphrases match, so type them verified.
+  check(await setField(1, NEW_PASS) && await setField(2, NEW_PASS), "both new passphrase fields hold the whole passphrase");
   await tapText("Restore my identity");
   check(await waitText("Bob", 40000), "the restored phone opens with Bob in the chat list");
   shot("backup-8-restored");
