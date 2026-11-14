@@ -410,6 +410,7 @@ async fn fan_out(
             .any(|(d, _, own, _)| !*own && !sessions.has_session(d))
     {
         env.intro = Some(home.identity_card()?);
+        env.intro_name = home.profile_name()?;
     }
     let plaintext = env.to_bytes();
     let mut pool = Pool {

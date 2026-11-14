@@ -41,6 +41,8 @@ data class Me(
     val deviceList: List<DeviceInfo>,
     val listVersion: Long,
     val approver: Boolean,
+    /** The name offered to people you write to first (ADR 0038); empty when none. */
+    val name: String = "",
 )
 
 data class Overview(
@@ -59,7 +61,7 @@ fun parseOverview(o: JSONObject): Overview {
             me.getJSONArray("device_list").mapObjects {
                 DeviceInfo(it.getString("id"), it.getBoolean("this"), it.getBoolean("approver"))
             },
-            me.getLong("list_version"), me.getBoolean("approver"),
+            me.getLong("list_version"), me.getBoolean("approver"), me.optString("name", ""),
         ),
         contacts = o.getJSONArray("contacts").mapObjects {
             Contact(
@@ -157,12 +159,14 @@ fun parseGroup(o: JSONObject) = GroupDetail(
 
 data class Held(val ts: Long, val body: String, val file: String?)
 
-data class MsgRequest(val id: String, val fingerprint: String, val received: Long, val held: List<Held>)
+/** [name] is what they call themselves (ADR 0038): a suggestion only, empty when none. */
+data class MsgRequest(val id: String, val fingerprint: String, val received: Long, val held: List<Held>, val name: String = "")
 
 fun parseRequests(a: JSONArray): List<MsgRequest> = a.mapObjects { r ->
     MsgRequest(
         r.getString("id"), r.getString("fingerprint"), r.getLong("received"),
         r.getJSONArray("held").mapObjects { Held(it.getLong("ts"), it.getString("body"), it.str("file")) },
+        r.optString("name", ""),
     )
 }
 

@@ -5,6 +5,11 @@
 //! file's *name* as associated data, so a file cannot be silently swapped for
 //! another vault file or modified. This protects against theft of the disk or a
 //! backup; it does not protect a running, unlocked device.
+//!
+//! Changing the passphrase does not re-encrypt anything: the header is
+//! rewritten to hold the same vault key, sealed under a key stretched from
+//! the new passphrase (version 2). Version 1 headers, where the vault key *is*
+//! the stretched passphrase, still unlock.
 
 use crate::{Error, Result};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -20,6 +25,9 @@ const MAGIC: &[u8; 4] = b"SPK1";
 const CHECK_NAME: &str = "vault-check";
 const CHECK_PLAINTEXT: &[u8] = b"spike-vault-ok";
 const VERSION: u32 = 1;
+/// The vault key is sealed under the passphrase key (`wrapped`), so the passphrase can change.
+const VERSION_WRAPPED: u32 = 2;
+const WRAP_NAME: &str = "vault-key";
 /// Refuse absurd parameters read from disk (denial of service on unlock).
 const MAX_MEMORY_KIB: u32 = 1024 * 1024;
 const MAX_ITERATIONS: u32 = 20;
@@ -61,6 +69,9 @@ pub struct VaultHeader {
     kdf: KdfParams,
     /// A known plaintext sealed with the key, to detect a wrong passphrase.
     check: String,
+    /// Version 2: the vault key, sealed under the key stretched from the passphrase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wrapped: Option<String>,
 }
 
 impl VaultHeader {
@@ -91,23 +102,58 @@ impl Vault {
             salt: hex::encode(salt),
             kdf,
             check: hex::encode(vault.seal(CHECK_NAME, CHECK_PLAINTEXT)?),
+            wrapped: None,
         };
         Ok((vault, header))
     }
 
     pub fn unlock(passphrase: &str, header: &VaultHeader) -> Result<Vault> {
-        if header.version != VERSION {
-            return Err(Error::Corrupted);
-        }
         let salt = hex::decode(&header.salt)?;
-        let vault = Vault {
+        let stretched = Vault {
             key: derive(passphrase, &salt, header.kdf)?,
+        };
+        let vault = match (header.version, &header.wrapped) {
+            (VERSION, None) => stretched,
+            (VERSION_WRAPPED, Some(w)) => {
+                let mut key = stretched
+                    .open(WRAP_NAME, &hex::decode(w)?)
+                    .map_err(|_| Error::WrongPassphrase)?;
+                let vault = Vault {
+                    key: key.as_slice().try_into().map_err(|_| Error::Corrupted)?,
+                };
+                zeroize::Zeroize::zeroize(&mut key);
+                vault
+            }
+            _ => return Err(Error::Corrupted),
         };
         let check = hex::decode(&header.check)?;
         match vault.open(CHECK_NAME, &check) {
             Ok(p) if p == CHECK_PLAINTEXT => Ok(vault),
             _ => Err(Error::WrongPassphrase),
         }
+    }
+
+    /// A new header that opens this same vault with `new_passphrase` and no longer with the old one.
+    /// Everything sealed so far stays readable, and index tags do not change, because the vault key
+    /// stays the same. `old_passphrase` must open `current`: the caller proves it knows it.
+    pub fn change_passphrase(
+        old_passphrase: &str,
+        new_passphrase: &str,
+        current: &VaultHeader,
+    ) -> Result<VaultHeader> {
+        let vault = Vault::unlock(old_passphrase, current)?;
+        let mut salt = [0u8; 16];
+        OsRng.fill_bytes(&mut salt);
+        let kek = Vault {
+            key: derive(new_passphrase, &salt, current.kdf)?,
+        };
+        Ok(VaultHeader {
+            version: VERSION_WRAPPED,
+            salt: hex::encode(salt),
+            kdf: current.kdf,
+            check: hex::encode(vault.seal(CHECK_NAME, CHECK_PLAINTEXT)?),
+            wrapped: Some(hex::encode(kek.seal(WRAP_NAME, &vault.key)?)),
+        })
     }
 
     pub fn seal(&self, name: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
@@ -224,6 +270,46 @@ mod tests {
         assert!(v
             .open("sessions.json", &sealed[..sealed.len() - 1])
             .is_err());
+    }
+
+    #[test]
+    fn changing_the_passphrase_keeps_the_data_and_retires_the_old_one() {
+        let (v, h) = make("first passphrase");
+        let sealed = v.seal("contacts.enc", b"alice and bob").unwrap();
+        let tag = v.index_tag("conv", b"bob");
+
+        assert!(matches!(
+            Vault::change_passphrase("not the passphrase", "second", &h),
+            Err(Error::WrongPassphrase)
+        ));
+        let h2 = Vault::change_passphrase("first passphrase", "second passphrase", &h).unwrap();
+        let h2 = VaultHeader::from_json(&h2.to_json().unwrap()).unwrap();
+        assert!(matches!(
+            Vault::unlock("first passphrase", &h2),
+            Err(Error::WrongPassphrase)
+        ));
+        let v2 = Vault::unlock("second passphrase", &h2).unwrap();
+        assert_eq!(v2.open("contacts.enc", &sealed).unwrap(), b"alice and bob");
+        assert_eq!(v2.index_tag("conv", b"bob"), tag, "index tags survive");
+
+        // And again, from a version 2 header.
+        let h3 = Vault::change_passphrase("second passphrase", "third passphrase", &h2).unwrap();
+        assert!(Vault::unlock("second passphrase", &h3).is_err());
+        let v3 = Vault::unlock("third passphrase", &h3).unwrap();
+        assert_eq!(v3.open("contacts.enc", &sealed).unwrap(), b"alice and bob");
+
+        // A tampered wrapped key is refused, not half-opened.
+        let mut bad = VaultHeader::from_json(&h3.to_json().unwrap()).unwrap();
+        let w = bad.wrapped.clone().unwrap();
+        let flip = if w.ends_with('0') { "1" } else { "0" };
+        bad.wrapped = Some(format!("{}{flip}", &w[..w.len() - 1]));
+        assert!(Vault::unlock("third passphrase", &bad).is_err());
+        // A version 2 header without its wrapped key is corrupted.
+        bad.wrapped = None;
+        assert!(matches!(
+            Vault::unlock("third passphrase", &bad),
+            Err(Error::Corrupted)
+        ));
     }
 
     #[test]

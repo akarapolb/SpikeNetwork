@@ -91,6 +91,11 @@ pub struct Envelope {
     /// Only trusted after it is checked against the device that sent the message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intro: Option<String>,
+    /// The name the sender offers, sent only with `intro` (ADR 0038). A suggestion for the
+    /// recipient, who names their contacts themselves; inside the encrypted envelope, so the relay
+    /// never sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intro_name: Option<String>,
     /// The group this message belongs to (ADR 0024). When set, `to` is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
@@ -106,6 +111,17 @@ pub struct Envelope {
 
 /// Longest introduction accepted: a card with a generous number of devices.
 pub const MAX_INTRO: usize = 16 * 1024;
+/// Longest offered name, in characters.
+pub const MAX_INTRO_NAME: usize = 64;
+
+/// Whether `name` may be offered as a name: not empty, at most [`MAX_INTRO_NAME`] characters,
+/// no control characters, no surrounding spaces.
+pub fn valid_intro_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.trim() == name
+        && name.chars().count() <= MAX_INTRO_NAME
+        && !name.chars().any(char::is_control)
+}
 
 impl Envelope {
     pub fn text(body: &str) -> Result<Self> {
@@ -126,6 +142,7 @@ impl Envelope {
             to: None,
             attachment: None,
             intro: None,
+            intro_name: None,
             group: None,
             gstate: None,
             reply_to: None,
@@ -274,6 +291,11 @@ impl Envelope {
                 && matches!(e.kind, Kind::Text | Kind::GroupState)
                 && !c.chars().any(char::is_control)
         });
+        // A name comes only with an introduction.
+        let intro_name_ok = e
+            .intro_name
+            .as_deref()
+            .is_none_or(|n| e.intro.is_some() && valid_intro_name(n));
         let hex_of = |s: &str, n: usize| {
             s.len() == n
                 && s.bytes()
@@ -368,6 +390,7 @@ impl Envelope {
             || !to_ok
             || !att_ok
             || !intro_ok
+            || !intro_name_ok
             || !group_ok
             || !target_ok
             || !shape_ok
@@ -585,6 +608,26 @@ mod tests {
             empty.body.clear();
             assert!(Envelope::from_bytes(&empty.to_bytes()).is_err());
         }
+    }
+
+    #[test]
+    fn an_offered_name_comes_only_with_an_introduction() {
+        let mut e = Envelope::text("hi").unwrap();
+        assert!(!String::from_utf8(e.to_bytes()).unwrap().contains("intro_name"));
+        e.intro_name = Some("Alice".into());
+        assert!(Envelope::from_bytes(&e.to_bytes()).is_err(), "no intro, no name");
+        e.intro = Some("spike2:abcd".into());
+        assert_eq!(
+            Envelope::from_bytes(&e.to_bytes()).unwrap().intro_name.as_deref(),
+            Some("Alice")
+        );
+        for bad in ["".to_string(), " Alice".into(), "A
+B".into(), "x".repeat(MAX_INTRO_NAME + 1)] {
+            e.intro_name = Some(bad.clone());
+            assert!(Envelope::from_bytes(&e.to_bytes()).is_err(), "{bad:?} accepted");
+        }
+        e.intro_name = Some("ก".repeat(MAX_INTRO_NAME));
+        assert!(Envelope::from_bytes(&e.to_bytes()).is_ok(), "counted in characters");
     }
 
     #[test]

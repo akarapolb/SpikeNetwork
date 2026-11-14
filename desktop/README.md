@@ -55,3 +55,5 @@ Calls, search, Windows Hello, a tray icon and desktop notification banners (the 
 - Calls and the installer have only been exercised on Windows. Linux packages (deb, AppImage) are built under WSL on WebKitGTK 4.1, but calls are not wired up there: WebKitGTK denies the microphone unless the app answers its permission request. macOS is not built.
 
 **Backup and recovery** (ADR 0029): Settings makes an encrypted backup file in Downloads (a generated key or your own passphrase; history optional), and the create screen has "Restore from a backup file", which brings the identity back as a new device and signs out the others. `node desktop/drive_backup.mjs` drives two real windows through losing the only computer and restoring.
+
+**Your name and passphrase** (ADR 0038, ADR 0003): Settings > Identity has **Name** (offered to people you write to first, inside the encrypted introduction; a request's Accept suggests it, and each contact can rename you) and **Passphrase · Change** (re-seals this computer's keys; other devices keep their own). `node desktop/drive_identity.mjs` drives both through two real windows.

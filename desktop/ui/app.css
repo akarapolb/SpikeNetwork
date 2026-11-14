@@ -787,6 +787,7 @@ button { padding: 0; }
 .srow .t b { font-weight: 500; }
 .srow .t .mono { overflow-wrap: anywhere; }
 .srow .c { display: flex; gap: 8px; align-items: center; flex: none; }
+.srow .field.sname { width: 220px; }
 .setpane .toggle { border-top: 1px solid var(--line); padding: 13px 0 !important; }
 .setpane .toggle > span > b { font-weight: 500; display: block; }
 .setpane .card > .status, .setpane .card > .field, .setpane .card > .btn, .setpane .card > .note, .setpane .card > .cap, .setpane .card > .keybox, .setpane .card > .devrow, .setpane .card > .relayedit { margin-top: 10px; }
