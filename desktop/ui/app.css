@@ -868,3 +868,18 @@ button { padding: 0; }
 .orgjoin .btn.push { justify-content: center; height: 44px; }
 .orgjoin .btn.link { background: none; border: 0; color: var(--text-2); justify-content: center; }
 @media (max-width: 980px) { .orgtwo { grid-template-columns: minmax(0, 1fr); } .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .stats > div:nth-child(3) { border-left: 0; padding-left: 0; } }
+/* ---------- command bar: the title-bar field's list of people, chats, messages and actions ---------- */
+.cmdscrim { position: fixed; inset: var(--tb-h) 0 0 0; z-index: 35; background: rgba(8, 12, 13, .38); display: grid; justify-items: center; align-items: start; padding: 8px 16px 0; }
+.pal { width: min(520px, 100%); max-height: min(460px, calc(100vh - var(--tb-h) - 40px)); overflow-y: auto; background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); padding-bottom: 6px; }
+.pal .cap { display: block; padding: 12px 16px 6px; font: 500 11px/1 "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.pi { display: flex; gap: 10px; align-items: center; padding: 7px 10px; margin: 0 6px; border-radius: 8px; color: var(--text); cursor: default; min-width: 0; font-size: 13.5px; }
+.pi.on { background: var(--panel-2); }
+.pi .pl { white-space: nowrap; flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.pi .s { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pi kbd { margin-left: auto; padding-left: 8px; font: 500 11px "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); white-space: nowrap; flex: none; }
+.pi > svg.i { width: 18px; height: 18px; color: var(--text-2); margin: 0 4px; flex: none; }
+.pi .tile.sm { width: 26px; height: 26px; border-radius: 13px; font-size: 10.5px; flex: none; }
+.pi .tile.sm.sq { border-radius: 8px; }
+.pi .tile.sm svg.i { width: 14px; height: 14px; }
+.pi .vtick { margin-left: -4px; }
+.pempty { padding: 14px 16px 8px; color: var(--muted); font-size: 13px; }
