@@ -39,6 +39,8 @@ class AppModel(private val scope: CoroutineScope) {
     var requests by mutableStateOf<List<MsgRequest>>(emptyList())
     var agents by mutableStateOf<Agents?>(null)
     var busy by mutableStateOf(false)
+    /** Which tab Add a contact opens on (0 my code, 1 scan, 2 paste, 3 share). */
+    var addTab by mutableStateOf(0)
 
     /** Whether the last talk to the relay worked: the chip on the chat list. */
     var relayOk by mutableStateOf<Boolean?>(null)

@@ -646,3 +646,77 @@ button { padding: 0; }
 .row:has(.dot) .line1 b { font-weight: 600; }
 .row:has(.dot) .preview { color: var(--text); }
 .head .who .flag.bad { color: var(--bad); }
+/* Ringing: a card over the top right of the chat, as in the design; the rest of the window stays usable. */
+.callov.ringing { inset: auto; top: calc(var(--tb-h) + 64px); right: 22px; width: 300px; background: transparent; color: var(--text); display: block; }
+.ringcard { background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; padding: 14px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 12px; }
+.ringcard .who { display: flex; gap: 12px; align-items: center; }
+.ringcard .tile { width: 40px; height: 40px; border-radius: 20px; background: var(--panel-2); color: var(--text-2); display: grid; place-items: center; font-weight: 600; font-size: 13px; flex: none; }
+.ringcard .who > div { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.ringcard b { font-weight: 600; font-size: 15px; display: flex; gap: 5px; align-items: center; }
+.ringcard .vt { color: var(--good); display: inline-grid; } .ringcard .vt svg.i { width: 16px; height: 16px; }
+.ringcard .sub { font-size: 13px; color: var(--muted); }
+.ringcard .nv { font-size: 12.5px; color: var(--bad); }
+.ringcard .do { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ringcard .do .btn { min-height: 40px; border-radius: 10px; }
+.ringcard .do .decline { color: var(--bad); }
+.callbox .facts .warn { color: #E9B45B; font-weight: 500; }
+/* Devices, as in the design: the list and the identity key on the left, linking in a panel beside it. */
+.devpane { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 44px; padding: 26px 40px 40px; max-width: 1120px; align-items: start; }
+.devmain h1 { margin: 0 0 2px; font-size: 20px; letter-spacing: -.025em; font-weight: 600; }
+.devmain > .lead { margin-bottom: 14px; }
+.devmain .devrow { gap: 12px; padding: 13px 0; border-bottom: 0; border-top: 1px solid var(--line); }
+.devmain .devrow .tile { width: 34px; height: 34px; background: var(--panel-2); color: var(--text-2); }
+.devmain .devrow .t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.devmain .devrow .t b { font-weight: 500; }
+.devmain .devrow .here { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.devmain .devrow .btn.danger { color: var(--bad); }
+.wiz { display: flex; flex-direction: column; gap: 12px; padding: 18px; border-radius: 14px; background: var(--bg); border: 1px solid var(--line); position: sticky; top: 0; }
+.wiz .lsteps { display: flex; gap: 8px; font-size: 12px; color: var(--muted); }
+.wiz .lsteps b { font-weight: 500; } .wiz .lsteps b.on { color: var(--text); }
+.wiz .wh { font-weight: 600; font-size: 15px; }
+.wiz .cardbox { min-height: 84px; font-size: 12px; border-radius: 10px; }
+.wiz .codebig { font-size: 22px; letter-spacing: .1em; text-align: center; padding: 16px 0; border-radius: 12px; background: var(--panel-2); font-variant-numeric: tabular-nums; }
+.wiz .option { padding: 10px 12px; }
+.wiz .option b { font-weight: 500; }
+.linklike { background: none; border: 0; padding: 6px; color: var(--text-2); font-size: 13px; text-align: center; cursor: pointer; }
+.linklike.bad { color: var(--bad); }
+@media (max-width: 980px) { .devpane { grid-template-columns: minmax(0, 1fr); gap: 24px; padding: 22px 24px; } .wiz { position: static; } }
+/* Message actions, as in the design: a small toolbar on the bubble's top corner when you point at it (or tab to it),
+   reactions as a pill that overlaps the bubble's bottom edge, and only the time under the message. */
+.msg { position: relative; width: fit-content; }
+.msgtools { position: absolute; top: -30px; right: -8px; z-index: 3; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; opacity: 0; pointer-events: none; transition: opacity .1s; }
+.msg.out .msgtools { right: auto; left: -8px; align-items: flex-start; }
+.msg:has(.quote) .msgtools, .msg:has(.sender) .msgtools { top: -12px; }
+.msg:hover .msgtools, .msg:focus-within .msgtools, .msgtools.open { opacity: 1; pointer-events: auto; }
+.hov { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--shadow); color: var(--text-2); }
+.hov button { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: inherit; font-size: 14px; line-height: 1; cursor: pointer; }
+.hov button:hover, .hov button[aria-expanded="true"] { background: var(--panel-2); color: var(--text); }
+.hov svg.i { width: 15px; height: 15px; }
+.msgtools .picker { position: static; }
+.msgmenu { display: flex; flex-direction: column; min-width: 150px; padding: 4px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-2); box-shadow: var(--shadow); }
+.msgmenu button { text-align: left; border: 0; background: transparent; padding: 7px 10px; border-radius: 7px; font-size: 13px; color: var(--text); cursor: pointer; }
+.msgmenu button:hover { background: var(--panel-2); }
+.msgmenu button.bad { color: var(--bad); }
+.reacts { position: relative; z-index: 1; margin: -11px 8px 0; }
+.react { height: 20px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--panel); font-size: 11.5px; color: var(--text-2); }
+.react.mine { background: var(--panel-2); border-color: var(--text); }
+.react span { font-size: 11px; }
+.msg .confirm { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
+.msg .confirm .linklike { padding: 2px 4px; font-size: 12px; }
+/* A quoted reply sits inside the reply's bubble, as in the design: a thin bar in the text colour, the name, one line. */
+.bubble .quote { display: flex; flex-direction: column; align-items: flex-start; gap: 0; width: 100%; margin: 1px 0 5px; padding: 0 0 0 8px; border: 0; border-left: 2px solid currentColor; border-radius: 0; background: none; color: inherit; opacity: .72; font-size: 12px; line-height: 1.35; text-align: left; white-space: normal; }
+.msg.out .bubble .quote { align-items: flex-start; border-right: 0; border-left: 2px solid currentColor; text-align: left; }
+.bubble .quote b { color: inherit; font-weight: 600; }
+.bubble .quote span { color: inherit; max-width: 420px; }
+.bubble .quote:hover { opacity: 1; }
+/* The conversation never scrolls sideways (the message toolbar may reach past a bubble's edge). */
+.scroll:has(.thread) { overflow-x: hidden; }
+/* Verify: the safety number as a grid of groups under a small caption, as in the design, flat on the page. */
+.safety { display: flex; flex-direction: column; gap: 12px; padding: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.safety .cap { font: 500 11px/1 "Geist Mono", ui-monospace, Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.safety .groups { display: grid; grid-template-columns: repeat(3, max-content); gap: 10px 36px; font-size: 20px; }
+/* The reaction pill sits on the bubble's far corner and only overlaps its padding, never the text. */
+.reacts { margin-top: -7px; }
+.msg:not(.out) .reacts { align-self: flex-end; justify-content: flex-end; }
+.msg.out .reacts { align-self: flex-start; justify-content: flex-start; }
+

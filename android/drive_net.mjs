@@ -44,7 +44,7 @@ function phoneStats() {
   const m = all[all.length - 1];
   return m ? { rx: +m[1], energy: +m[2], tx: +m[3], code: m[4], vrx: +m[5] } : null;
 }
-const codeOf = (t) => (/Call code (\d{4})/.exec(t) || [])[1];
+const codeOf = (t) => (/Call code (\d{4})/.exec(t) || /(\d{4}) \| Not verified yet/.exec(t) || [])[1];
 
 let relay = null;
 try {
@@ -85,7 +85,7 @@ try {
   console.log("-- desktop calls the phone, then the phone's Wi-Fi is switched off and on");
   await desk.click("Phone");
   await desk.eval(`document.querySelector('[aria-label="Voice call Phone"]').click()`);
-  check(await waitText("Alice is calling", 40000), "the phone rings");
+  check(await waitText("Incoming voice call", 40000), "the phone rings");
   await tapText("Answer", true);
   check(await until(async () => /\d+:\d\d/.test(await overlay(desk)) && !(await overlay(desk)).includes("Connecting"), 30000), "the call connects");
   await sleep(4000);

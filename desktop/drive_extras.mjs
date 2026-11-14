@@ -53,7 +53,7 @@ try {
   await bob.invoke("send", { name: "Alice", text: "Sushi, definitely" });
   await until(async () => (await alice.text()).includes("Sushi, definitely"));
   const inMsg = `[...document.querySelectorAll('.msg')].find(x=>x.innerText.includes('Sushi, definitely'))`;
-  await alice.eval(`[...${inMsg}.querySelectorAll('button')].find(b=>b.innerText==='Reply').click()`);
+  await alice.eval(`[...${inMsg}.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Reply').click()`);
   await sleep(300);
   check((await alice.eval(`return document.querySelector('.replystrip')?.innerText || ''`)).includes("Replying to Bob"), "Reply shows who you are replying to above the message box");
   await alice.eval(`const ta=document.querySelector('.composer textarea'); ta.value='Sushi it is'; ta.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));`);
@@ -67,7 +67,7 @@ try {
 
   console.log("-- reactions");
   const bobMsg = `[...document.querySelectorAll('.msg')].find(x=>x.innerText.includes('Sushi it is'))`;
-  await bob.eval(`[...${bobMsg}.querySelectorAll('button')].find(b=>b.innerText==='React').click()`);
+  await bob.eval(`[...${bobMsg}.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='React').click()`);
   await sleep(300);
   check(await bob.eval(`return document.querySelectorAll('.picker button').length`) === 6, "React offers six quick reactions");
   await bob.eval(`document.querySelector('.picker button[aria-label="React 👍"]').click()`);

@@ -341,6 +341,24 @@ function drawCall() {
   if (!cs) { r.hidden = true; r.replaceChildren(); callEls.remote = callEls.self = null; return; }
   r.hidden = false;
   const c = cs;
+  // Ringing, as in the design: a small card over the chat (who, how they are calling, Decline and Answer), not the
+  // whole window. The sentence for screen readers stays "<name> is calling".
+  r.classList.toggle("ringing", c.status === "ringing");
+  if (c.status === "ringing") {
+    callEls.remote = callEls.self = null;
+    r.replaceChildren(h("div", { class: "ringcard", role: "alertdialog", "aria-label": `${c.name} is calling` },
+      h("span", { class: "sr" }, `${c.name} is calling. `),
+      h("div", { class: "who" },
+        h("span", { class: "tile", "aria-hidden": "true" }, ini(c.name)),
+        h("div", {},
+          h("b", {}, c.name, c.verified ? h("span", { class: "vt", title: "Verified" }, icon("shield")) : null),
+          h("span", { class: "sub" }, c.video ? "Incoming video call" : "Incoming voice call"),
+          c.verified ? null : h("span", { class: "nv" }, "Not verified yet"))),
+      h("div", { class: "do" },
+        h("button", { class: "btn decline", type: "button", "aria-label": "Decline", onclick: declineCall }, "Decline"),
+        h("button", { class: "btn primary", type: "button", "aria-label": "Answer", onclick: answerCall }, "Answer"))));
+    return;
+  }
   const remote = h("video", { class: "remote", autoplay: "", playsinline: "" });
   const self = h("video", { class: "self", autoplay: "", playsinline: "", muted: "" });
   self.muted = true;
@@ -354,7 +372,7 @@ function drawCall() {
     : c.status === "calling" ? "Ringing on all of their devices"
     : c.connectedAt ? connLine(c) : "Connecting";
   const facts = [
-    h("span", { class: "ok" }, icon("shield"), c.verified ? `${c.name} is a verified contact` : `${c.name} is not verified yet`),
+    c.verified ? h("span", { class: "ok" }, icon("shield"), `${c.name} is a verified contact`) : h("span", { class: "warn" }, `${c.name} is not verified yet`),
     c.code ? h("span", { class: c.verified ? "" : "warn" }, `Call code ${c.code}${c.verified ? "" : ": read it to each other; it must match"}`) : null,
     c.path ? h("span", {}, c.path) : null,
     c.sharing ? h("span", { class: "warn" }, "You are sharing your screen") : null,

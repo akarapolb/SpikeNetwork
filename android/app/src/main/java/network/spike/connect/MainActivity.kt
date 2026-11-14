@@ -172,6 +172,8 @@ private fun Root() {
         LaunchedEffect(CallManager.ui == null) { if (CallManager.ui == null) act?.callEnded() }
         LaunchedEffect(CallManager.message) { CallManager.message?.let { m.notice = it; CallManager.message = null } }
         m.notice?.let { text ->
+            // A notice is a short confirmation: it clears itself after a few seconds (or at once with OK).
+            LaunchedEffect(text) { kotlinx.coroutines.delay(6000); if (m.notice == text) m.notice = null }
             Row(
                 Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp).clip(RoundedCornerShape(14.dp))
                     .background(C.Text).padding(start = 16.dp, end = 4.dp),

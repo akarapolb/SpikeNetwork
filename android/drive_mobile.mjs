@@ -147,7 +147,7 @@ try {
 
   console.log("-- 4 · verify (the phone's fingerprint screen)");
   await tapText("Details", true);
-  check(await waitText("fingerprint"), "the verify screen shows fingerprints");
+  check(await waitText("Read the codes aloud"), "the verify screen shows both keys");
   shot("8-verify");
   check(screenText().includes("They don't match") && screenText().includes("Type the code instead"), "the verify screen offers match buttons and typing the code");
   await tapText("They match", true);
@@ -161,9 +161,9 @@ try {
   check(await waitText("Invite", 25000), "the phone shows the invitation in its chat list");
   shot("9-chats-invite");
   await tapText("Org");
-  check(await waitText("Join the group"), "the invite screen asks for consent");
+  check(await waitText("Join Org"), "the invite screen asks for consent");
   shot("10-invite");
-  await tapText("Join the group");
+  await tapText("Join Org");
   check(await waitText("Org", 25000), "the phone is in the group");
   await sleep(2500); // let the phone's listener subscribe to the new mailbox
   const groups = (await desk.invoke("overview")).groups;
@@ -185,6 +185,30 @@ try {
   check((await waitText("Large")) || (await waitText("MLS")), "the members screen says it is a large group");
   shot("12-members");
   back(); await sleep(500); back(); await sleep(500);
+
+  console.log("-- a new group, from the chat list (screen only: nothing is created)");
+  await tapText("New group", true);
+  check(await waitText("MEMBERS · 0 OF"), "the New group screen opens from the chat list");
+  await tapField(0);
+  typeText("Pilot team");
+  hideKeyboard();
+  await tapText("Alice");
+  check(await waitText("MEMBERS · 1 OF"), "picking a contact counts them as a member");
+  shot("12b-new-group");
+  back(); await sleep(600);
+
+  console.log("-- a message request from someone the phone has not added");
+  const stranger = await D.launch("stranger", 9343);
+  await stranger.invoke("add_contact", { name: "Phone", card: phoneCard });
+  await stranger.invoke("send", { name: "Phone", text: "hello, we met at the meetup" });
+  check(await waitText("message request", 25000), "the chat list shows the message request");
+  await tapText("message request");
+  check(await waitText("Hidden until you accept"), "the requests screen opens");
+  check(await waitText("1 message, hidden"), "the request says what is hidden without showing it");
+  shot("12c-requests");
+  await tapText("Decline", true);
+  await sleep(800);
+  back(); await sleep(600);
 
   console.log("-- files, both ways (one-to-one)");
   await tapText("Alice", true);
@@ -239,11 +263,11 @@ try {
   await sleep(300);
   await tapText("Continue", true);
   const safetyDesk = await waiting;
-  check(await waitText("Same code on both screens"), "the phone shows a safety code to compare");
+  check(await waitText("Compare this code"), "the phone shows a safety code to compare");
   check(screenText().replace(/\s/g, "").includes(safetyDesk.replace(/\s/g, "")), "the phone and the new device show the same safety code");
   shot("16-link-compare");
-  await tapText("Same code", true);
-  check(await waitText("What should the new device bring"), "the phone offers what history to bring");
+  await tapText("The codes match", true);
+  check(await waitText("What should it receive"), "the phone offers what history to bring");
   shot("17-link-history");
   const received = desk2.invoke("link_receive");
   await tapText("Link device", true);

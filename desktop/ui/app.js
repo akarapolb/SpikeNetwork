@@ -48,6 +48,9 @@ const PATHS = {
   panel: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M15 5v14"/>',
   down: '<path d="M6 9l6 6 6-6"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  smile: '<circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8"/><path d="M9 9.5h.01M15 9.5h.01"/>',
+  reply: '<path d="M10 7L5 12l5 5"/><path d="M5 12h9a5 5 0 0 1 5 5v1"/>',
+  dots: '<path d="M6 12h.01M12 12h.01M18 12h.01"/>',
   newgroup: '<circle cx="8" cy="8" r="3"/><path d="M2.5 19c.7-3 3-4.8 5.5-4.8s4.8 1.8 5.5 4.8"/><circle cx="15" cy="9" r="2.3"/><path d="M19 13v6M16 16h6"/>',
 };
 function icon(name) { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("class", "i"); s.setAttribute("aria-hidden", "true"); s.innerHTML = PATHS[name]; return s; }
@@ -353,12 +356,10 @@ function contactRow(c) {
       h("span", { class: "preview" }, c.verified || c.agent ? (c.last || "No messages yet") : [notVerified(), c.last ? ` · ${c.last}` : ""])),
     h("span", { class: "meta" }, c.last_ts ? when(c.last_ts) : "", c.unread ? h("i", { class: "dot", role: "img", "aria-label": `${c.unread} unread` }) : null));
 }
-function ownActions(m) {
-  const link = (label, fn) => h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0 0 0 8px;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: fn }, label);
-  if (st.confirmDelete === m.id) return [" · Delete for everyone? ", link("Yes, delete", async () => { st.confirmDelete = null; try { await invoke("delete_message", { id: m.id }); await refresh(); } catch (e) { toast(String(e)); render(); } }), link("Cancel", () => { st.confirmDelete = null; render(); })];
-  // Edit and Delete show when you point at the message (or tab to it), so the thread stays calm.
-  const own = (el) => { el.classList.add("own"); return el; };
-  return [m.body ? own(link("Edit", () => { st.editing = m.id; st.confirmDelete = null; render(); $("main").querySelector(".editbox textarea")?.focus(); })) : null, own(link("Delete", () => { st.confirmDelete = m.id; render(); }))];
+/** Delete for everyone, asked in the line under the message. */
+function deleteConfirm(m) {
+  const link = (label, fn, bad) => h("button", { class: "linklike" + (bad ? " bad" : ""), type: "button", onclick: fn }, label);
+  return h("span", { class: "confirm" }, "Delete for everyone?", link("Yes, delete", async () => { st.confirmDelete = null; try { await invoke("delete_message", { id: m.id }); await refresh(); } catch (e) { toast(String(e)); render(); } }, true), link("Cancel", () => { st.confirmDelete = null; render(); }));
 }
 function editBox(m) {
   const ta = h("textarea", { "aria-label": "Edit message", rows: "2", style: "width:100%;min-width:280px;border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--panel);color:var(--text)" }, m.body);
@@ -479,14 +480,27 @@ function quoteOf(m) {
 function reactionsOf(m) {
   if (m.deleted) return null;
   const chips = (m.reactions || []).map((r) => h("button", { class: "react" + (r.mine ? " mine" : ""), type: "button", title: r.mine ? "Take your reaction back" : `React ${r.emoji}`, "aria-label": `${r.emoji} ${r.count}${r.mine ? ", yours" : ""}`, onclick: () => react(m, r.emoji) }, r.emoji, r.count > 1 ? h("span", {}, String(r.count)) : null));
-  const picker = st.reacting === m.id ? h("div", { class: "picker", role: "group", "aria-label": "Choose a reaction" }, QUICK.map((e) => h("button", { type: "button", "aria-label": `React ${e}`, onclick: () => react(m, e) }, e))) : null;
-  return chips.length || picker ? h("div", { class: "reacts" }, chips, picker) : null;
+  return chips.length ? h("div", { class: "reacts" }, chips) : null;
 }
-// Reply and React show when you point at a message (or tab to it), like Edit and Delete.
-function msgActions(m, inGroup) {
-  if (m.deleted || (typeof m.id === "string" && m.id.startsWith("call-"))) return null;
-  const btn = (label, fn) => h("button", { class: "linkish own", type: "button", style: "border:0;background:none;padding:0 0 0 8px;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: fn }, label);
-  return [btn("Reply", () => startReply(m, inGroup)), btn("React", () => { st.reacting = st.reacting === m.id ? null : m.id; render(); })];
+// As in the design: pointing at a message (or tabbing to it) shows a small toolbar on its top corner: a quick 👍, the
+// reaction picker, Reply, and More (Edit, Delete for your own; Copy for any). The thread itself stays calm.
+function msgTools(m, inGroup) {
+  if (m.deleted || st.editing === m.id || (typeof m.id === "string" && m.id.startsWith("call-"))) return null;
+  const open = st.reacting === m.id || st.msgMenu === m.id;
+  const tool = (label, content, fn, extra = {}) => h("button", { type: "button", "aria-label": label, title: label, onclick: fn, ...extra }, content);
+  const copy = async () => { st.msgMenu = null; render(); try { await navigator.clipboard.writeText(m.body || ""); toast("Copied."); } catch (_) { toast("Select the text and copy it."); } };
+  const menu = st.msgMenu === m.id ? h("div", { class: "msgmenu", role: "menu", "aria-label": "More actions" },
+    m.body ? h("button", { type: "button", role: "menuitem", onclick: copy }, "Copy text") : null,
+    m.out && m.body ? h("button", { type: "button", role: "menuitem", onclick: () => { st.msgMenu = null; st.editing = m.id; st.confirmDelete = null; render(); $("main").querySelector(".editbox textarea")?.focus(); } }, "Edit") : null,
+    m.out ? h("button", { type: "button", role: "menuitem", class: "bad", onclick: () => { st.msgMenu = null; st.confirmDelete = m.id; render(); } }, "Delete") : null) : null;
+  const picker = st.reacting === m.id ? h("div", { class: "picker", role: "group", "aria-label": "Choose a reaction" }, QUICK.map((e) => h("button", { type: "button", "aria-label": `React ${e}`, onclick: () => { st.reacting = null; react(m, e); } }, e))) : null;
+  return h("div", { class: "msgtools" + (open ? " open" : "") },
+    h("div", { class: "hov", role: "toolbar", "aria-label": "Message actions" },
+      tool("React 👍", "👍", () => react(m, "👍"), { class: "emoji" }),
+      tool("React", icon("smile"), () => { st.reacting = st.reacting === m.id ? null : m.id; st.msgMenu = null; render(); }, { "aria-expanded": String(st.reacting === m.id) }),
+      tool("Reply", icon("reply"), () => startReply(m, inGroup)),
+      tool("More", icon("dots"), () => { st.msgMenu = st.msgMenu === m.id ? null : m.id; st.reacting = null; render(); }, { "aria-haspopup": "menu", "aria-expanded": String(st.msgMenu === m.id) })),
+    picker, menu);
 }
 
 function threadItems(inGroup) {
@@ -500,13 +514,15 @@ function threadItems(inGroup) {
     const nx = st.msgs[i + 1], mid = !!nx && dayOf(nx.ts) === d && nx.out === m.out && nx.from === m.from && nx.ts - m.ts < 300000;
     const hit = hits.includes(m.id);
     items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") + (mid ? " mid" : "") + (hit ? " hit" : "") + (hit && m.id === current ? " current" : ""), "data-id": m.id },
-      quoteOf(m),
+      m.body && !m.deleted && st.editing !== m.id ? null : quoteOf(m),
       inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "flag bad", style: "margin-left:6px" }, "Not verified")) : null,
-      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, hit ? marked(m.body) : mentioned(m.body)) : null),
+      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, quoteOf(m), hit ? marked(m.body) : mentioned(m.body)) : null),
       imageThumb(m),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       reactionsOf(m),
-      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : "", st.editing !== m.id ? msgActions(m, inGroup) : null, m.out && !m.deleted && st.editing !== m.id ? ownActions(m) : null)));
+      h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : ""),
+      st.confirmDelete === m.id ? deleteConfirm(m) : null,
+      msgTools(m, inGroup)));
   }
   return items;
 }
@@ -607,7 +623,8 @@ function verifyScreen() {
   const done = st.verifyDone;
   return [header(`Verify ${c.name}`, () => { st.screen = st.verifyFor ? "group" : null; st.verifyFor = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
     h("p", { class: "lead" }, `Compare this with ${first} in person or on a call you trust, reading it aloud. If it matches on both sides, nobody is in the middle.`),
-    h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Safety number"), h("div", { class: "mono", style: "font-size:20px;overflow-wrap:anywhere;padding:10px;background:var(--panel-2);border-radius:12px;text-align:center" }, c.fingerprint)),
+    h("section", { class: "safety", "aria-label": "Safety number " + c.fingerprint }, h("span", { class: "cap" }, "Safety number"),
+      h("div", { class: "groups mono", "aria-hidden": "true" }, c.fingerprint.split(/[-\s]+/).filter(Boolean).map((g) => h("span", {}, g)))),
     c.verified && !done ? h("div", { class: "status soft" }, h("b", {}, `${c.name} is verified.`), h("span", {}, "If this number ever changes, you will be warned.")) : null,
     done === "match" ? h("div", { class: "status good", role: "status" }, h("b", {}, `${c.name} is verified.`)) : null,
     done === "nomatch" ? h("div", { class: "status bad", role: "status" }, h("b", {}, "Do not trust this conversation yet."), h("span", {}, `Someone may be in the middle. Ask ${first} to show their number in person.`)) : null,
@@ -740,7 +757,7 @@ function agentsMain() {
       h("button", { class: "btn danger", type: "button", onclick: async () => { try { await invoke("revoke", { name: g.agent }); toast(`${g.agent}'s grant removed. Approvals already given live until they expire.`); await refresh(); } catch (e) { toast(String(e)); } } }, "Revoke")) : null);
   return [h("div", { class: "head" }, h("h1", { style: "flex:none" }, "Agents"), h("span", { class: w.length ? "flag" : "muted", style: "font-size:13px" }, w.length ? `${w.length} waiting for you` : "Nothing waiting"), h("span", { class: "spacer" }), a.approver ? null : h("span", { class: "note" }, "This is not your main device: decisions are forwarded to it")),
     h("div", { class: "scroll" }, h("div", { class: "page" },
-      w.length || done.length ? [w.map(approvalCard), done.length ? h("h2", { class: "eyebrow", style: "margin:8px 0 0" }, "Decided") : null, done.map(approvalCard)] : h("div", { class: "status plain" }, h("b", {}, "No requests yet"), h("span", { class: "note" }, "Give an agent a standing permission first; its requests then appear here.")),
+      w.length || done.length ? [w.map(approvalCard), done.length ? h("h2", { class: "eyebrow", style: "margin:8px 0 0" }, "Decided") : null, done.map(approvalCard)] : (a.grants.length ? h("p", { class: "lead" }, "No requests yet.") : emptyState("No requests yet. Give an agent a standing permission first; its requests then appear here.", "agents")),
       a.grants.map(grant),
       a.approver ? h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => openGrantForm(null) }, icon("addperson"), "Give an agent a grant") : null))];
 }
@@ -777,16 +794,47 @@ function grantScreen() {
 }
 
 /* ---------- devices and linking ---------- */
+// As in the design: the list on the left (each device, then the identity key with Copy), and linking a new device in
+// a panel beside it, step by step, instead of a separate screen.
 function devicesMain() {
   const me = st.ov.me;
-  return [h("div", { class: "head" }, h("h1", {}, "Devices"), h("button", { class: "btn primary small", type: "button", disabled: !me.approver || null, title: me.approver ? "" : "Link new devices from your main device", onclick: () => { st.screen = "linkold"; st.linkStep = 1; st.linkErr = ""; st.linkCode = ""; render(); } }, "Link a new device")),
-    h("div", { class: "scroll" }, h("div", { class: "page flat" },
-      h("p", { class: "lead" }, "Contacts encrypt every message separately for each of these. Signed device list ", h("b", {}, "v" + me.list_version), "."),
-      h("section", { class: "card", style: "gap:0;padding-top:4px;padding-bottom:4px" }, me.device_list.map((d) => h("div", { class: "devrow" }, h("span", { class: "tile sm sq c-neutral" }, icon("devices")),
-        h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, d.this ? "This computer" : "Another device"), h("div", { class: "note mono" }, d.id + (d.relay ? " · " + d.relay : "")), d.approver ? h("div", { class: "note" }, "Main device: decides agent requests and links new devices") : null),
-        d.this ? h("span", { class: "pill neutral" }, "You are here") : (me.approver ? h("button", { class: "btn danger", type: "button", onclick: () => removeDevice(d) }, "Remove") : null)))),
-      h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Your identity"), h("span", { class: "mono", style: "font-size:16px;overflow-wrap:anywhere" }, me.fingerprint), h("span", { class: "note" }, "Contacts compare this when they verify you. It signs your device list; it never signs messages.")),
-      h("div", { class: "status soft" }, h("b", {}, "Losing every device."), h("span", {}, "Keep another device linked, or make an encrypted backup file in Settings: with neither, if you lose every device and the passphrase, the identity is gone.")))) ];
+  const copyKey = async () => { try { await navigator.clipboard.writeText(me.fingerprint); toast("Identity key copied."); } catch (_) { toast("Select the key and copy it."); } };
+  return [h("div", { class: "scroll" }, h("div", { class: "devpane" },
+    h("div", { class: "devmain" },
+      h("h1", {}, "Devices"),
+      h("p", { class: "lead" }, "Contacts encrypt every message separately for each of these."),
+      me.device_list.map((d) => h("div", { class: "devrow" }, h("span", { class: "tile sq c-neutral" }, icon("devices")),
+        h("span", { class: "t" }, h("b", {}, d.this ? "This computer" : "Another device"),
+          h("span", { class: "note" }, (d.approver ? "Main device · " : "") + d.id + (d.relay ? " · " + d.relay : ""))),
+        d.this ? h("span", { class: "here" }, "You are here") : (me.approver ? h("button", { class: "btn small danger", type: "button", onclick: () => removeDevice(d) }, "Remove") : null))),
+      h("div", { class: "devrow" }, h("span", { class: "t" }, h("b", {}, "Identity key"), h("span", { class: "note mono", style: "overflow-wrap:anywhere" }, me.fingerprint)),
+        h("button", { class: "btn small", type: "button", onclick: copyKey }, "Copy")),
+      h("p", { class: "note", style: "margin-top:16px" }, `Contacts compare the identity key when they verify you. It signs your device list (now v${me.list_version}); it never signs messages. Keep another device linked or an encrypted backup: with neither, losing every device and the passphrase loses the identity.`)),
+    linkPanel(me)))];
+}
+function linkPanel(me) {
+  const steps = h("div", { class: "lsteps" }, ["1 Paste code", "2 Compare", "3 History"].map((t, i) => h("b", { class: i + 1 === (st.linkStep || 1) ? "on" : "" }, t)));
+  if (!me.approver) return h("aside", { class: "wiz" }, h("b", { class: "wh" }, "Link a new device"), h("span", { class: "note" }, "New devices are linked from your main device."));
+  const cancel = async () => { try { await invoke("link_cancel"); } catch (_) {} st.linkStep = 1; st.linkErr = ""; render(); };
+  const step = st.linkStep || 1;
+  const err = st.linkErr ? h("div", { class: "status bad", role: "alert" }, h("span", {}, st.linkErr)) : null;
+  if (step === 1) {
+    const box = h("textarea", { class: "cardbox mono", "aria-label": "Code from the new device", placeholder: "Paste the code the new device shows" });
+    return h("aside", { class: "wiz", "aria-label": "Link a new device" }, steps, h("b", { class: "wh" }, "Link a new device"), err,
+      h("span", { class: "note" }, "On the new device choose “I already use Spike on another device”. It shows a code: paste it here."), box,
+      h("button", { class: "btn primary", type: "button", onclick: async () => { st.linkErr = ""; try { st.linkSafety = await invoke("link_begin", { code: box.value }); st.linkStep = 2; } catch (e) { st.linkErr = String(e); } render(); } }, "Continue"));
+  }
+  if (step === 2) return h("aside", { class: "wiz", "aria-label": "Link a new device" }, steps, h("b", { class: "wh" }, "Compare this code"), err,
+    h("span", { class: "note" }, "The new device shows a code too. Link only if both are the same."),
+    h("div", { class: "codebig mono" }, st.linkSafety),
+    h("button", { class: "btn primary", type: "button", onclick: () => { st.linkStep = 3; render(); } }, "The codes match"),
+    h("button", { class: "linklike bad", type: "button", onclick: cancel }, "They differ, cancel"));
+  const modes = [["all", "All text, recent attachments", "Older attachments stay here and open on demand"], ["recent", "Last 30 days", "Messages and attachments from the past month"], ["none", "Start fresh", "Nothing is copied"]];
+  return h("aside", { class: "wiz", "aria-label": "Link a new device" }, steps, h("b", { class: "wh" }, "What should it receive?"), err,
+    h("div", { role: "radiogroup", "aria-label": "History to copy", style: "display:flex;flex-direction:column;gap:8px" }, modes.map(([v, t, d]) => h("button", { class: "option", type: "button", role: "radio", "aria-checked": String(st.linkMode === v), onclick: () => { st.linkMode = v; render(); } }, h("span", { class: "radio" }), h("span", {}, h("b", {}, t), h("div", { class: "note" }, d))))),
+    h("span", { class: "note" }, "Sent encrypted, straight to the new device. Deleted and expired messages are never copied."),
+    h("button", { class: "btn primary", type: "button", onclick: async () => { try { toast("Linking…"); const r = await invoke("link_finish", { history: st.linkMode, days: 30 }); st.linkErr = ""; st.linkStep = 1; await refresh(); toast(`Linked. Device list v${r.version}; ${r.contacts} contacts and ${r.messages} messages sent, encrypted to the new device.`); } catch (e) { st.linkErr = String(e); render(); } } }, "Link device"),
+    h("button", { class: "linklike", type: "button", onclick: cancel }, "Cancel"));
 }
 async function removeDevice(d) {
   if (!confirm("Remove this device from your identity?\n\nIt keeps what it already has but will receive nothing new, and your contacts stop sending to it. Link it again later if you change your mind.")) return;
@@ -824,25 +872,6 @@ function linkNewScreen() {
     st.linkErr ? h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => { st.screen = null; st.linking = false; render(); } }, "Back") : null,
     done ? h("div", { class: "status good" }, "Linked.") : null))];
 }
-// EXISTING device: paste the code, compare, choose history.
-function linkOldScreen() {
-  const modes = [["all", "All text, recent attachments", "Recommended. Older attachments stay here and open on demand."], ["recent", "Last 30 days only", "Messages and attachments from the past month."], ["none", "Start fresh", "No history. New messages only."]];
-  const cancel = async () => { try { await invoke("link_cancel"); } catch (_) {} st.screen = null; render(); };
-  const box = h("textarea", { class: "cardbox mono", "aria-label": "Code from the new device", placeholder: "Paste the code the new device shows" });
-  return [header("Link a new device", cancel), h("div", { class: "scroll" }, h("div", { class: "page narrow" },
-    h("div", { class: "steps" }, ["1 · Paste code", "2 · Compare", "3 · History"].map((t, i) => h("span", { class: i + 1 === st.linkStep ? "on" : i + 1 < st.linkStep ? "done" : "" }, t))),
-    st.linkErr ? h("div", { class: "status bad", role: "alert" }, h("span", {}, st.linkErr)) : null,
-    st.linkStep === 1 ? [h("p", { class: "lead" }, "On the new device choose “I already use Spike on another device”. It shows a code. Paste it here."), box,
-      h("button", { class: "btn primary big", type: "button", onclick: async () => { st.linkErr = ""; try { st.linkSafety = await invoke("link_begin", { code: box.value }); st.linkStep = 2; } catch (e) { st.linkErr = String(e); } render(); } }, "Continue")] : null,
-    st.linkStep === 2 ? [h("p", { class: "lead" }, "Both screens must show the same code. If they differ, someone is in the middle: cancel and try again."),
-      h("div", { class: "code mono", style: "font-size:26px;text-align:center;letter-spacing:3px;padding:14px;background:var(--panel-2);border-radius:12px" }, st.linkSafety),
-      h("div", { style: "display:grid;grid-template-columns:1fr 1fr;gap:10px" }, h("button", { class: "btn big", type: "button", onclick: cancel }, "Different: cancel"), h("button", { class: "btn primary big", type: "button", onclick: () => { st.linkStep = 3; render(); } }, "Same code"))] : null,
-    st.linkStep === 3 ? [h("p", { class: "lead" }, "What should the new device bring?"),
-      h("div", { role: "radiogroup", "aria-label": "History to copy", style: "display:flex;flex-direction:column;gap:8px" }, modes.map(([v, t, d]) => h("button", { class: "option", type: "button", role: "radio", "aria-checked": String(st.linkMode === v), onclick: () => { st.linkMode = v; render(); } }, h("span", { class: "radio" }), h("span", {}, h("b", { style: "font-weight:600" }, t), h("div", { class: "note" }, d))))),
-      h("button", { class: "btn primary big", type: "button", onclick: async () => { try { toast("Linking…"); const r = await invoke("link_finish", { history: st.linkMode, days: 30 }); st.linkErr = ""; st.screen = null; await refresh(); toast(`Linked. Device list v${r.version}; ${r.contacts} contacts and ${r.messages} messages sent, encrypted to the new device.`); } catch (e) { st.linkErr = String(e); render(); } } }, "Link device"),
-      h("span", { class: "note", style: "text-align:center" }, "Sent encrypted to the new device only. Deleted and expired messages are never copied.")] : null))];
-}
-
 /* ---------- settings ---------- */
 async function refreshBlocked() { try { st.blocked = await invoke("blocked"); } catch (_) { st.blocked = []; } render(); }
 async function refreshDirect() { try { st.direct = await invoke("direct_status"); } catch (_) { st.direct = null; } render(); }
@@ -1147,8 +1176,10 @@ function groupMain() {
   const head = h("div", { class: "head" }, groupTile(true, d.name), h("span", { class: "who" }, h("b", {}, d.name), h("span", {}, left ? "You are not in this group" : [`${plural(d.members.length, "person", "people")}${d.large ? " · large group" : ""}`, d.unverified ? [" · ", h("span", { class: "flag bad" }, `${d.unverified} not verified`)] : " · end-to-end encrypted"])),
     findButton(), h("button", { class: "iconbtn", type: "button", "aria-label": "Members and group settings", title: "Members and group settings", onclick: openMembers }, icon("panel")));
   const warn = !left && d.unverified ? h("div", { class: "sysline attention", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
-    h("span", { style: "flex:1" }, `${unverifiedText(d)} Messages from them are marked.`),
-    h("button", { class: "btn", type: "button", onclick: openMembers }, "Review")) : null;
+    h("span", { style: "flex:1" }, unverifiedText(d)),
+    (() => { const one = unverifiedMembers(d); return one.length === 1 && one[0].contact
+      ? h("button", { class: "btn", type: "button", onclick: () => { st.verifyFor = one[0].name; st.verifyDone = null; st.screen = "verify"; render(); } }, `Verify ${one[0].name.split(" ")[0]}`)
+      : h("button", { class: "btn", type: "button", onclick: openMembers }, "Review"); })()) : null;
   const refusedNote = !left && d.large && d.refused ? h("div", { class: "sysline", style: "align-self:stretch;max-width:none;margin:12px 20px 0" },
     h("span", { style: "flex:1" }, `${plural(d.refused, "change was", "changes were")} refused because ${d.refused === 1 ? "it" : "they"} broke the group's rules, and skipped. Latest: ${d.refused_why || "unknown"}.`)) : null;
   const items = threadItems(true);
@@ -1172,10 +1203,15 @@ const HISTORY_CHOICES = [["join", "Messages from when they join"], ["week", "The
 const historyNote = (v) => v === "week"
   ? "When someone joins, they ask whoever added them for the last 7 days of messages and files. That person shares it: nobody can prove who wrote those messages, so they are marked as shared. Deleted messages are not included."
   : "Earlier messages stay with the people who were here. This is the default.";
+const unverifiedMembers = (d) => d.members.filter((m) => !m.you && !m.verified);
+/** The group's warning line, as in the design: who is not verified, by name when there are one or two. */
 function unverifiedText(d) {
+  const names = unverifiedMembers(d).map((m) => m.name);
+  if (names.length === 1) return `${names[0]} is not verified. Their messages are marked.`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are not verified. Their messages are marked.`;
   const others = d.members.length - 1;
-  if (d.unverified === others) return others === 1 ? "The other person is not verified." : `None of the other ${others} people are verified.`;
-  return `${d.unverified} of the other ${others} ${d.unverified === 1 ? "is" : "are"} not verified.`;
+  if (d.unverified === others) return `None of the other ${others} people are verified. Their messages are marked.`;
+  return `${d.unverified} of the other ${others} are not verified. Their messages are marked.`;
 }
 function inviteScreen() {
   const d = st.gdetail, back = () => { st.group = null; st.gdetail = null; st.screen = null; render(); };
@@ -1298,7 +1334,7 @@ function newGroupScreen() {
 }
 
 const SECTIONS = { chats: { list: chatsList, main: chatMain }, agents: { main: agentsMain }, devices: { main: devicesMain }, settings: { main: settingsMain } };
-const SCREENS = { group: groupScreen, newgroup: newGroupScreen, requests: requestsScreen, verify: verifyScreen, add: addScreen, contact: contactScreen, grant: grantScreen, linkold: linkOldScreen, linknew: linkNewScreen };
+const SCREENS = { group: groupScreen, newgroup: newGroupScreen, requests: requestsScreen, verify: verifyScreen, add: addScreen, contact: contactScreen, grant: grantScreen, linknew: linkNewScreen };
 
 document.addEventListener("keydown", (e) => {
   if (!(MAC ? e.metaKey : e.ctrlKey) || e.altKey || $("app").hidden) return;

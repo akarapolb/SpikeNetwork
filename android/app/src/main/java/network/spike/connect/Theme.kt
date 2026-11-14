@@ -15,6 +15,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.semantics.selected
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -311,7 +317,7 @@ fun FramedBox(waiting: Boolean = false, modifier: Modifier = Modifier, content: 
 
 /** The title row used by every sub-screen: a 44dp back button and the title. */
 @Composable
-fun TopBar(title: String, onBack: (() -> Unit)?, trailing: @Composable () -> Unit = {}) {
+fun TopBar(title: String, onBack: (() -> Unit)?, sub: String? = null, trailing: @Composable () -> Unit = {}) {
     Row(
         Modifier.fillMaxWidth().background(C.Surface).statusBarsPadding().padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -321,10 +327,85 @@ fun TopBar(title: String, onBack: (() -> Unit)?, trailing: @Composable () -> Uni
                 Ico(Ic.Back)
             }
         }
-        Text(title, fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, modifier = Modifier.weight(1f), maxLines = 1)
+        Column(Modifier.weight(1f)) {
+            Text(title, fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, maxLines = 1)
+            if (sub != null) Text(sub, color = C.Muted, fontSize = 12.5.sp, maxLines = 1)
+        }
         trailing()
     }
     Box(Modifier.fillMaxWidth().size(1.dp).background(C.Border))
+}
+
+/** A screen that is one step of a flow, as in the design: a back button and "2 of 3" on a borderless top row, a large
+ *  heading and one sentence, the step's content, and the actions pinned to the bottom. */
+@Composable
+fun StepPage(
+    onBack: () -> Unit, count: String? = null, title: String? = null, body: String? = null,
+    actions: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {},
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    Column(Modifier.fillMaxSize().background(C.Surface).statusBarsPadding().navigationBarsPadding()) {
+        Row(Modifier.fillMaxWidth().padding(start = 6.dp, end = 20.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onBack).semantics { contentDescription = "Back" }, contentAlignment = Alignment.Center) {
+                Ico(Ic.Back, C.AvatarText)
+            }
+            Spacer(Modifier.weight(1f))
+            if (count != null) Text(count, color = C.Muted, fontSize = 12.5.sp)
+        }
+        Column(
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (title != null) H1(title, 26.sp)
+            if (body != null) Text(body, color = C.AvatarText, fontSize = 14.sp, lineHeight = 19.6.sp)
+            content()
+        }
+        Column(Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { actions() }
+    }
+}
+
+/** A centred text action under a primary button ("They differ, cancel", "Decline"). */
+@Composable
+fun TextLink(text: String, danger: Boolean = false, onClick: () -> Unit) {
+    Text(
+        text, color = if (danger) C.Danger else C.AvatarText, fontSize = 13.5.sp, textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 12.dp),
+    )
+}
+
+/** A label and its value on one line, with a hairline above, as in the design's key-value lists. */
+@Composable
+fun KvRow(label: String, value: String) {
+    Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
+    Row(Modifier.fillMaxWidth().padding(vertical = 9.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, color = C.Muted, fontSize = 13.sp)
+        Text(value, fontSize = 13.sp, textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+    }
+}
+
+/** A choice among a few, as a bordered row with a radio dot; the chosen one gets an ink border. */
+@Composable
+fun OptionRow(title: String, desc: String, on: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Row(
+        Modifier.fillMaxWidth().clip(shape).border(if (on) 2.dp else 1.dp, if (on) C.Text else C.BorderStrong, shape)
+            .clickable(onClick = onClick).semantics { selected = on }.padding(horizontal = 14.dp, vertical = 11.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.padding(top = 1.dp).size(18.dp).clip(CircleShape).border(if (on) 5.dp else 1.5.dp, if (on) C.Text else C.BorderStrong, CircleShape))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+            Text(desc, color = C.Muted, fontSize = 12.5.sp)
+        }
+    }
+}
+
+/** A code to compare, large and spaced on a sunken panel. */
+@Composable
+fun CodePanel(code: String) {
+    Box(Modifier.fillMaxWidth().padding(top = 10.dp).clip(RoundedCornerShape(16.dp)).background(C.Subtle).padding(vertical = 22.dp), contentAlignment = Alignment.Center) {
+        Text(code, fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 30.sp, letterSpacing = 0.12.em, textAlign = TextAlign.Center)
+    }
 }
 
 /** Small text with a leading icon, for list items such as "End-to-end encrypted. ..." */

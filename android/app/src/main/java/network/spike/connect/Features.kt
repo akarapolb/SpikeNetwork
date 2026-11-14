@@ -152,28 +152,6 @@ fun QrScanner(modifier: Modifier = Modifier, onResult: (String) -> Unit) {
 
 private fun spaced(code: String) = code.chunked(4).joinToString(" ")
 
-@Composable
-private fun Steps(step: Int) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-        for ((i, label) in listOf("Scan code", "Compare", "History").withIndex()) {
-            val on = step == i + 1
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Box(Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(if (step >= i + 1) C.Accent else C.Border))
-                Text("${i + 1} · $label", fontSize = 12.sp, color = if (on) C.Text else C.Muted, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal)
-            }
-        }
-    }
-}
-
-@Composable
-private fun Compare(safety: String, whoLabel: String) {
-    CardBox {
-        Muted("Same code on both screens:", 13.sp)
-        Text(safety, fontFamily = Mono, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
-        Muted(whoLabel, 13.sp)
-    }
-}
-
 /** This phone is the new device: it shows a code, the existing device enters it, both show a safety code. */
 @Composable
 fun LinkNewScreen(m: AppModel) {
@@ -206,33 +184,24 @@ fun LinkNewScreen(m: AppModel) {
     }
     fun leave() { m.run { try { Bridge.call("link_cancel") } catch (_: Exception) {}; m.open(null) } }
 
-    Page {
-        TopBar("Link this phone", { leave() })
-        Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+    // The second step after the passphrase ("1 of 2"), in the design's step layout.
+    when {
+        failed != null -> StepPage({ leave() }, "2 of 2", "Linking stopped", failed, actions = { PrimaryButton("Start again") { tries++ } }) {}
+        step == 1 -> StepPage(
+            { leave() }, "2 of 2", "Show this code",
+            "On a device that already uses your identity, open Devices, choose Link a new device, and scan this code or type it in.",
         ) {
-            Steps(step)
-            if (failed != null) {
-                CardBox {
-                    Text("Linking stopped", fontWeight = FontWeight.SemiBold)
-                    Muted(failed!!, 13.sp)
-                }
-                PrimaryButton("Start again") { tries++ }
-            } else if (step == 1) {
-                Muted("On a device that already uses your identity, open Devices, choose Link a new device, and scan this code or type it in.", 14.sp)
-                CardBox {
-                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        val q = qr
-                        if (q != null) QrCode(q, Modifier.size(220.dp)) else Muted("Making your code…")
-                    }
-                    Text(code, fontFamily = Mono, fontSize = 12.sp)
-                }
-                Muted("Waiting for the other device…", 13.sp)
-            } else if (step == 2) {
-                Muted("Check that both devices show the same code. If they differ, someone may be in the middle: do not continue.", 14.sp)
-                Compare(safety, "The device you are linking from shows the same code.")
-                PrimaryButton("Same code", enabled = !m.busy) {
+            Box(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(16.dp)).background(C.Subtle).padding(20.dp), contentAlignment = Alignment.Center) {
+                val q = qr
+                if (q != null) QrCode(q, Modifier.size(220.dp)) else Muted("Making your code…")
+            }
+            Text(code, fontFamily = Mono, fontSize = 12.sp, color = C.AvatarText)
+            Muted("Waiting for the other device…", 13.sp)
+        }
+        step == 2 -> StepPage(
+            { leave() }, "2 of 2", "Compare this code", "The device you are linking from shows a code too. Link only if both are the same.",
+            actions = {
+                PrimaryButton("The codes match", enabled = !m.busy) {
                     m.run {
                         step = 3
                         val r = Bridge.obj("link_receive")
@@ -241,11 +210,10 @@ fun LinkNewScreen(m: AppModel) {
                         m.open(null)
                     }
                 }
-                OutlineButton("Different code", Modifier.fillMaxWidth()) { leave() }
-            } else {
-                Muted("Receiving your identity and history…", 14.sp)
-            }
-        }
+                TextLink("They differ, cancel", danger = true) { leave() }
+            },
+        ) { CodePanel(safety) }
+        else -> StepPage({ leave() }, "2 of 2", "Receiving", "Your identity and history are arriving, encrypted, from your other device.") {}
     }
 }
 
@@ -271,60 +239,48 @@ fun LinkOldScreen(m: AppModel) {
         }
     }
 
-    Page {
-        TopBar("Link a new device", { leave() })
-        Column(
-            Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+    when (step) {
+        1 -> StepPage(
+            { leave() }, "1 of 3", "Scan the new device’s code",
+            "On the new device choose “I already use Spike on another device”. It shows a code: scan it, or type it here.",
+            actions = {
+                if (scanning) OutlineButton("Type the code instead", Modifier.fillMaxWidth()) { scanning = false }
+                else PrimaryButton("Continue", enabled = code.isNotBlank()) { begin(code) }
+            },
         ) {
-            Steps(step)
-            when (step) {
-                1 -> {
-                    Muted("On the new device choose “I already use Spike on another device”. It shows a code: scan it, or type it here.", 14.sp)
-                    if (scanning) {
-                        QrScanner(Modifier.fillMaxWidth().height(280.dp)) { scanning = false; code = it; begin(it) }
-                        OutlineButton("Type the code instead", Modifier.fillMaxWidth()) { scanning = false }
-                    } else {
-                        PrimaryButton("Scan the code", icon = Ic.Scan) { scanning = true }
-                        Field("Code from the new device", code, { code = it }, singleLine = false, minHeight = 96.dp, maxLines = 4)
-                        OutlineButton("Continue", Modifier.fillMaxWidth()) { if (code.isNotBlank()) begin(code) }
+            if (scanning) {
+                QrScanner(Modifier.fillMaxWidth().height(280.dp).clip(RoundedCornerShape(16.dp))) { scanning = false; code = it; begin(it) }
+            } else {
+                OutlineButton("Scan the code", Modifier.fillMaxWidth()) { scanning = true }
+                Field("Or type the code", code, { code = it }, singleLine = false, minHeight = 96.dp, maxLines = 4)
+            }
+        }
+        2 -> StepPage(
+            { leave() }, "2 of 3", "Compare this code", "Your new device shows a code too. Link only if both are the same.",
+            actions = {
+                PrimaryButton("The codes match", enabled = !m.busy) { step = 3 }
+                TextLink("They differ, cancel", danger = true) { leave() }
+            },
+        ) { CodePanel(safety) }
+        else -> StepPage(
+            { step = 2 }, "3 of 3", "What should it receive?",
+            actions = {
+                Muted("Sent encrypted, straight to the new device. Deleted and expired messages are never copied.", 12.5.sp, Modifier.padding(bottom = 8.dp))
+                PrimaryButton("Link device", enabled = !m.busy) {
+                    m.run {
+                        val r = Bridge.obj("link_finish", args("history" to history, "days" to 30))
+                        m.notice = "Linked. ${r.getInt("contacts")} contacts and ${r.getInt("messages")} messages sent, encrypted to the new device."
+                        m.open(null)
                     }
                 }
-                2 -> {
-                    Muted("Check that both devices show the same code. If they differ, someone may be in the middle: do not continue.", 14.sp)
-                    Compare(safety, "The new device shows the same code.")
-                    PrimaryButton("Same code", enabled = !m.busy) { step = 3 }
-                    OutlineButton("Different code", Modifier.fillMaxWidth()) { leave() }
-                }
-                else -> {
-                    Text("What should the new device bring?", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-                    for ((key, title, desc) in listOf(
-                        Triple("recent", "Last 30 days", "Recent chats, so it is useful right away."),
-                        Triple("all", "Everything", "All contacts, messages and files. Larger and slower."),
-                        Triple("none", "Contacts only", "No old messages; new ones arrive as usual."),
-                    )) {
-                        Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-                                .border(if (history == key) 2.dp else 1.dp, if (history == key) C.Accent else C.Border, RoundedCornerShape(14.dp))
-                                .background(C.Surface).clickable { history = key }.padding(14.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(title, fontWeight = FontWeight.SemiBold)
-                                Muted(desc, 13.sp)
-                            }
-                            if (history == key) Ico(Ic.Check, C.Accent)
-                        }
-                    }
-                    PrimaryButton("Link device", enabled = !m.busy) {
-                        m.run {
-                            val r = Bridge.obj("link_finish", args("history" to history, "days" to 30))
-                            m.notice = "Linked. ${r.getInt("contacts")} contacts and ${r.getInt("messages")} messages sent, encrypted to the new device."
-                            m.open(null)
-                        }
-                    }
-                    Muted("Sent encrypted to the new device only. Deleted and expired messages are never copied.", 12.5.sp)
-                }
+            },
+        ) {
+            Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                for ((key, title, desc) in listOf(
+                    Triple("recent", "Last 30 days", "Recent chats, so it is useful right away"),
+                    Triple("all", "Everything", "All contacts, messages and files. Larger and slower"),
+                    Triple("none", "Contacts only", "No old messages; new ones arrive as usual"),
+                )) OptionRow(title, desc, history == key) { history = key }
             }
         }
     }

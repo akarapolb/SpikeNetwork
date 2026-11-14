@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -47,6 +48,9 @@ import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.foundation.border
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -792,83 +796,110 @@ fun CallScreen(u: CallUi) {
     LaunchedEffect(u.status) {
         if (u.status == "ringing" && CallManager.pendingAnswer) { CallManager.pendingAnswer = false; answerGate() }
     }
-    val dark = Color(0xFF0E1418)
+    // As in the design: flat near-black, the person's initials in a grey circle, their name, one status line, the
+    // identity check stated once (a Verified badge, or the call code to read aloud), and round buttons.
+    val dark = Color(0xFF0A0F11)
+    val ink = Color(0xFFF0F3F3)
+    val ink2 = Color(0xFFA5B0B3)
+    val amber = Color(0xFFE9B45B)
+    val signal = Color(0xFF56CFC1)
     val remote = CallManager.remoteVideo
     val showRemote = u.video && remote != null
-    // A soft teal glow behind the call, as on the desktop.
-    val glow = androidx.compose.ui.graphics.Brush.radialGradient(listOf(Color(0xFF17393E), dark), radius = 1400f, center = androidx.compose.ui.geometry.Offset(540f, 500f))
-    Box(Modifier.fillMaxSize().background(glow)) {
-        if (showRemote) VideoView(remote!!, mirror = false, Modifier.fillMaxSize())
-        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            if (showRemote) Spacer(Modifier.height(8.dp)) else {
-                Spacer(Modifier.weight(1f))
-                val (tbg, tfg) = C.tint(u.name, dark = true)
-                Box(Modifier.size(176.dp).clip(CircleShape).background(Color(0x0D5CC2C9)), contentAlignment = Alignment.Center) {
-                    Box(Modifier.size(152.dp).clip(CircleShape).background(Color(0x1A5CC2C9)), contentAlignment = Alignment.Center) {
-                        Box(Modifier.size(128.dp).clip(CircleShape).background(tbg), contentAlignment = Alignment.Center) {
-                            Text(u.name.take(2).uppercase(), color = tfg, fontSize = 44.sp, fontWeight = FontWeight.SemiBold)
-                        }
+    val ringing = u.status == "ringing"
+    val sub = when (u.status) {
+        "ringing" -> if (u.video) "Incoming video call" else "Incoming voice call"
+        "calling" -> "Ringing"
+        "connected" -> if (u.reconnecting) "Reconnecting…" else ((now - u.connectedAt) / 1000).let { "${it / 60}:${(it % 60).toString().padStart(2, '0')}" } + (if (u.held) " · On hold" else "") + (when (u.quality) { "good" -> " · Good connection"; "fair" -> " · Fair connection"; "poor" -> " · Poor connection"; else -> "" })
+        else -> "Connecting"
+    }
+    val subColor = if (u.reconnecting || u.quality == "poor") amber else ink2
+    val initials = u.name.split(' ', '-', '_').filter { it.isNotEmpty() }.take(2).joinToString("") { it.take(1).uppercase() }.ifEmpty { "?" }
+    Box(Modifier.fillMaxSize().background(dark)) {
+        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
+            if (showRemote) {
+                // Video: the name and status top left, the other person's picture in a rounded panel, your own in its corner.
+                Column(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 6.dp, bottom = 8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(u.name, color = ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        if (u.verified) Ico(Ic.ShieldCheck, signal, 16.dp)
+                    }
+                    Text(sub, color = subColor, fontSize = 12.sp)
+                    if (!u.verified && u.code.isNotEmpty()) Text("Call code ${u.code}: not verified yet, read it to each other", color = amber, fontSize = 12.sp)
+                }
+                Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 10.dp).clip(RoundedCornerShape(16.dp)).background(Color(0xFF1B2326))) {
+                    VideoView(remote!!, mirror = false, Modifier.fillMaxSize())
+                    val mine = CallManager.localVideo
+                    if (!u.camOff && mine != null) {
+                        VideoView(mine, mirror = true, Modifier.align(Alignment.TopEnd).padding(10.dp).size(width = 76.dp, height = 108.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, Color(0x2EFFFFFF), RoundedCornerShape(12.dp)))
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-            }
-            Text(
-                when (u.status) { "ringing" -> "${u.name} is calling"; "calling" -> "Calling ${u.name}"; else -> u.name },
-                color = Color(0xFFE6EDF2), fontSize = 26.sp, fontFamily = Geist, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
-            )
-            val sub = when (u.status) {
-                "ringing" -> if (u.video) "Incoming video call" else "Incoming voice call"
-                "calling" -> "Ringing on all of their devices"
-                "connected" -> if (u.reconnecting) "Reconnecting…" else ((now - u.connectedAt) / 1000).let { "${it / 60}:${(it % 60).toString().padStart(2, '0')}" } + (if (u.held) "  ·  On hold" else "") + (when (u.quality) { "good" -> "  ·  Good connection"; "fair" -> "  ·  Fair connection"; "poor" -> "  ·  Poor connection"; else -> "" })
-                else -> "Connecting"
-            }
-            Text(sub, color = if (u.reconnecting || u.quality == "poor") Color(0xFFF5DDB0) else Color(0xFFC3CED7), fontSize = 15.sp, modifier = Modifier.padding(top = 6.dp))
-            Spacer(Modifier.height(16.dp))
-            Text(
-                if (u.verified) "${u.name} is a verified contact" else "${u.name} is not verified yet",
-                color = if (u.verified) Color(0xFF6FCF97) else Color(0xFFF5DDB0), fontSize = 13.5.sp, textAlign = TextAlign.Center,
-            )
-            if (u.code.isNotEmpty()) Text(
-                "Call code ${u.code}" + if (u.verified) "" else ": read it to each other; it must match",
-                color = if (u.verified) Color(0xFFC3CED7) else Color(0xFFF5DDB0), fontSize = 13.5.sp, textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            Text(
-                "Encrypted between your devices; the keys are checked against the identity you verified",
-                color = Color(0xFF9AA8B4), fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp),
-            )
-            Spacer(Modifier.weight(1f))
-            Row(
-                Modifier.clip(RoundedCornerShape(40.dp)).background(Color(0x0FFFFFFF)).padding(horizontal = 12.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (u.status == "ringing") {
-                    RoundButton("Decline", Color(0xFFD9443A), IcHandset, rotate = true) { CallManager.decline() }
-                    RoundButton("Answer", Color(0xFF1F9D57), IcHandset) { answerGate() }
+            } else {
+                Spacer(Modifier.height(70.dp))
+                Box(Modifier.size(132.dp).clip(CircleShape).background(Color(0x0AFFFFFF)), contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(112.dp).clip(CircleShape).background(Color(0xFF1B2326)), contentAlignment = Alignment.Center) {
+                        Text(initials, color = ink, fontSize = 36.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Text(
+                    u.name, color = ink, fontSize = 26.sp, fontFamily = Geist, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.03).em,
+                    textAlign = TextAlign.Center, modifier = Modifier.padding(top = 22.dp, start = 24.dp, end = 24.dp),
+                )
+                Text(sub, color = subColor, fontSize = 13.5.sp, modifier = Modifier.padding(top = 4.dp))
+                if (u.verified) {
+                    Row(
+                        Modifier.padding(top = 14.dp).clip(RoundedCornerShape(999.dp)).background(Color(0x2456CFC1)).padding(start = 7.dp, end = 9.dp, top = 2.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Ico(Ic.ShieldCheck, signal, 14.dp)
+                        Text("Verified", color = signal, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    }
+                } else if (u.code.isNotEmpty()) {
+                    Column(Modifier.padding(top = 28.dp, start = 24.dp, end = 24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(u.code, color = ink, fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 28.sp, letterSpacing = 0.18.em)
+                        Text("Not verified yet. Read this code to each other.", color = amber, fontSize = 12.5.sp, textAlign = TextAlign.Center)
+                    }
                 } else {
-                    RoundButton(if (u.muted) "Unmute microphone" else "Mute microphone", if (u.muted) Color(0xFFE6EDF2) else Color(0x1FFFFFFF), if (u.muted) IcMicOff else IcMic, tint = if (u.muted) dark else Color.White) { CallManager.toggleMute() }
+                    Text("Not verified yet", color = amber, fontSize = 12.5.sp, modifier = Modifier.padding(top = 14.dp))
+                }
+                Spacer(Modifier.weight(1f))
+                val mine = CallManager.localVideo
+                if (!ringing && u.video && !u.camOff && mine != null) {
+                    VideoView(mine, mirror = true, Modifier.align(Alignment.End).padding(end = 24.dp, bottom = 12.dp).size(width = 104.dp, height = 140.dp).clip(RoundedCornerShape(12.dp)))
+                }
+            }
+            if (ringing) {
+                // Two labelled buttons, far apart: decline on the left, answer on the right.
+                Row(Modifier.padding(bottom = 36.dp, top = 14.dp), horizontalArrangement = Arrangement.spacedBy(64.dp)) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RoundButton("Decline", Color(0xFFD9443A), IcHandset, rotate = true, size = 64.dp) { CallManager.decline() }
+                        Text("Decline", color = ink2, fontSize = 13.sp, modifier = Modifier.clearAndSetSemantics {})
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        RoundButton("Answer", ink, if (u.video) IcVideo else IcHandset, tint = dark, size = 64.dp) { answerGate() }
+                        Text("Answer", color = ink2, fontSize = 13.sp, modifier = Modifier.clearAndSetSemantics {})
+                    }
+                }
+            } else {
+                Row(Modifier.padding(top = 14.dp, bottom = 30.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val off = Color(0x1CFFFFFF)
+                    RoundButton(if (u.muted) "Unmute microphone" else "Mute microphone", if (u.muted) ink else off, if (u.muted) IcMicOff else IcMic, tint = if (u.muted) dark else ink) { CallManager.toggleMute() }
                     val outs = CallAudio.available
                     val cur = CallAudio.route
                     val nextOut = outs[(outs.indexOf(cur) + 1) % outs.size]
                     val loud = cur != CallAudio.Route.Earpiece
                     RoundButton(
                         if (outs.size < 2) "Sound: ${cur.label}" else "Sound: ${cur.label}. Tap for ${nextOut.label}",
-                        if (loud) Color(0xFFE6EDF2) else Color(0x1FFFFFFF),
+                        if (loud) ink else off,
                         when (cur) { CallAudio.Route.Speaker -> IcSpeaker; CallAudio.Route.Bluetooth -> IcBluetooth; CallAudio.Route.Headset -> IcHeadset; else -> IcEarpiece },
-                        tint = if (loud) dark else Color.White,
+                        tint = if (loud) dark else ink,
                     ) { CallManager.cycleAudio() }
                     if (u.video) {
-                        RoundButton(if (u.camOff) "Turn camera on" else "Turn camera off", if (u.camOff) Color(0xFFE6EDF2) else Color(0x1FFFFFFF), if (u.camOff) IcVideoOff else IcVideo, tint = if (u.camOff) dark else Color.White) { CallManager.toggleCamera() }
-                        RoundButton("Switch camera", Color(0x1FFFFFFF), IcFlip) { CallManager.switchCamera() }
+                        RoundButton(if (u.camOff) "Turn camera on" else "Turn camera off", if (u.camOff) off else ink, if (u.camOff) IcVideoOff else IcVideo, tint = if (u.camOff) ink else dark) { CallManager.toggleCamera() }
+                        RoundButton("Switch camera", off, IcFlip, tint = ink) { CallManager.switchCamera() }
                     }
                     RoundButton("Hang up", Color(0xFFD9443A), IcHandset, rotate = true) { CallManager.hangUp() }
                 }
             }
-            Spacer(Modifier.height(24.dp))
-        }
-        val mine = CallManager.localVideo
-        if (u.video && !u.camOff && mine != null) {
-            VideoView(mine, mirror = true, Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 12.dp, bottom = 120.dp).size(width = 100.dp, height = 140.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp)))
         }
     }
 }
@@ -894,11 +925,11 @@ private fun VideoView(track: VideoTrack, mirror: Boolean, modifier: Modifier) {
 }
 
 @Composable
-private fun RoundButton(label: String, bg: Color, icon: ImageVector, tint: Color = Color.White, rotate: Boolean = false, onClick: () -> Unit) {
+private fun RoundButton(label: String, bg: Color, icon: ImageVector, tint: Color = Color.White, rotate: Boolean = false, size: androidx.compose.ui.unit.Dp = 52.dp, onClick: () -> Unit) {
     Box(
-        Modifier.size(56.dp).clip(CircleShape).background(bg).clickable(onClick = onClick).semantics { contentDescription = label },
+        Modifier.size(size).clip(CircleShape).background(bg).clickable(onClick = onClick).semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
-    ) { Ico(icon, tint, 28.dp, if (rotate) Modifier.rotate(135f) else Modifier) }
+    ) { Ico(icon, tint, 22.dp, if (rotate) Modifier.rotate(135f) else Modifier) }
 }
 
 /** Runs while a call is on, so the microphone (and camera) keep working if the person leaves the app. */

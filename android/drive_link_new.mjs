@@ -49,12 +49,12 @@ try {
   check(!!code, "the screen shows the link code as text");
 
   console.log("-- the desktop that has the identity enters the code");
-  const phoneSafety = (async () => await waitText("Same code on both screens", 60000))();
+  const phoneSafety = (async () => await waitText("Compare this code", 60000))();
   const deskSafety = await desk.invoke("link_begin", { code });
   check(await phoneSafety, "the phone shows the safety code");
   check(screenText().replace(/\s/g, "").includes(deskSafety.replace(/\s/g, "")), "the phone and the desktop show the same safety code");
   shot("l2-compare");
-  await tapText("Same code", true);
+  await tapText("The codes match", true);
   const finished = await desk.invoke("link_finish", { history: "all", days: 30 });
   check(finished.contacts >= 1, "the desktop sent its identity and contacts");
   check(await waitText("Chats", 60000), "the phone ends up in the chat list");

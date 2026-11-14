@@ -3,6 +3,7 @@ package network.spike.connect
 import android.content.ClipData
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -17,6 +18,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -311,6 +315,11 @@ fun ChatsTab(m: AppModel) {
                 Box(Modifier.weight(1f)) { H1("Chats", 28.sp) }
                 Box(
                     Modifier.size(34.dp).clip(CircleShape).background(C.Subtle)
+                        .clickable { m.open(Screen.NewGroup) }.semantics { contentDescription = "New group" },
+                    contentAlignment = Alignment.Center,
+                ) { Ico(Ic.Group, C.Text, 18.dp) }
+                Box(
+                    Modifier.size(34.dp).clip(CircleShape).background(C.Subtle)
                         .clickable { m.open(Screen.AddContact) }.semantics { contentDescription = "Add a contact" },
                     contentAlignment = Alignment.Center,
                 ) { Ico(Ic.AddPerson, C.Text, 18.dp) }
@@ -365,11 +374,8 @@ fun ChatsTab(m: AppModel) {
             }
             if (items.isEmpty()) {
                 item {
-                    EmptyState(
-                        if (query.isBlank()) Ic.Chat else Ic.Search,
-                        if (query.isBlank()) "No conversations yet. Add a contact with the button at the top, then say hello."
-                        else "Nothing matches “$query”.",
-                    )
+                    if (query.isBlank()) FirstDay(m, o.me.card)
+                    else EmptyState(Ic.Search, "Nothing matches “$query”.")
                 }
             }
             items(items) { r ->
@@ -678,92 +684,142 @@ private fun Bubble(
         val big = 16.dp; val small = 5.dp
         val shape = if (msg.out) RoundedCornerShape(big, if (cont) small else big, if (mid) small else big, big)
         else RoundedCornerShape(if (cont) small else big, big, big, if (mid) small else big)
-        msg.reply?.let { r ->
-            Column(
-                Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(10.dp)).background(C.Subtle)
-                    .clickable { onQuote(r.id) }.padding(horizontal = 10.dp, vertical = 5.dp)
-                    .semantics { contentDescription = "Replying to ${quoteName ?: ""}: ${if (r.deleted) "Message deleted" else r.text}" },
+        val ctx = LocalContext.current
+        val ink = if (msg.out) C.OnBubbleOut else C.Text
+        if (menu) {
+            // Long press, as in the design: the quick reactions above the message, Reply and Copy in a card below it.
+            Row(
+                Modifier.shadow(10.dp, RoundedCornerShape(26.dp)).clip(RoundedCornerShape(26.dp)).background(C.Surface).padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(quoteName ?: "", color = C.AccentSoftText, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp)
-                Text(if (r.deleted) "Message deleted" else r.text, color = C.Muted, fontSize = 12.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                for (e in QUICK_REACTIONS) {
+                    Box(Modifier.size(42.dp).clip(CircleShape).clickable { onReact(e) }.semantics { contentDescription = "React $e" }, contentAlignment = Alignment.Center) {
+                        Text(e, fontSize = 22.sp)
+                    }
+                }
             }
         }
-        Box(
-            Modifier.widthIn(max = 300.dp).clip(shape)
-                .then(if (msg.deleted || msg.id.startsWith("call-")) Modifier else Modifier.combinedClickable(onClick = { if (menu) onLongPress() }, onLongClick = onLongPress))
-                .background(if (msg.out) C.BubbleOut else C.Subtle)
-                .then(if (current) Modifier.border(2.dp, C.Green, shape) else Modifier)
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (msg.fileName != null && !msg.deleted) {
-                    Row(
-                        Modifier.clickable(onClick = onFile).semantics { contentDescription = "File ${msg.fileName}" },
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Ico(Ic.File, if (msg.out) C.OnBubbleOut else C.AvatarText, 26.dp)
-                        Column {
-                            Text(msg.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (msg.out) C.OnBubbleOut else C.Text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(sizeText(msg.fileSize) + " · tap to open", fontSize = 12.sp, color = if (msg.out) C.OnBubbleOut.copy(alpha = 0.8f) else C.Muted)
+        val rx = msg.reactions.isNotEmpty() && !msg.deleted
+        // The bubble, with any reactions as a small pill overlapping its bottom edge.
+        Box(contentAlignment = if (msg.out) Alignment.BottomStart else Alignment.BottomEnd) {
+            Column {
+                Box(
+                    Modifier.widthIn(max = 300.dp).clip(shape)
+                        .then(if (msg.deleted || msg.id.startsWith("call-")) Modifier else Modifier.combinedClickable(onClick = { if (menu) onLongPress() }, onLongClick = onLongPress))
+                        .background(if (msg.out) C.BubbleOut else C.Subtle)
+                        .then(if (current) Modifier.border(2.dp, C.Green, shape) else Modifier)
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // A quoted reply sits inside the bubble: a thin bar in the text colour, the name and one line.
+                        msg.reply?.let { r ->
+                            Row(
+                                Modifier.widthIn(max = 276.dp).height(androidx.compose.foundation.layout.IntrinsicSize.Min).clickable { onQuote(r.id) }
+                                    .semantics(mergeDescendants = true) { contentDescription = "Replying to ${quoteName ?: ""}: ${if (r.deleted) "Message deleted" else r.text}" },
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Box(Modifier.width(2.dp).fillMaxHeight().background(ink.copy(alpha = 0.72f)))
+                                Column {
+                                    Text(quoteName ?: "", color = ink.copy(alpha = 0.72f), fontWeight = FontWeight.SemiBold, fontSize = 12.sp, lineHeight = 16.sp)
+                                    Text(if (r.deleted) "Message deleted" else r.text, color = ink.copy(alpha = 0.72f), fontSize = 12.sp, lineHeight = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                        if (msg.fileName != null && !msg.deleted) {
+                            Row(
+                                Modifier.clickable(onClick = onFile).semantics { contentDescription = "File ${msg.fileName}" },
+                                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                Ico(Ic.File, if (msg.out) C.OnBubbleOut else C.AvatarText, 26.dp)
+                                Column {
+                                    Text(msg.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    Text(sizeText(msg.fileSize) + " · tap to open", fontSize = 12.sp, color = if (msg.out) C.OnBubbleOut.copy(alpha = 0.8f) else C.Muted)
+                                }
+                            }
+                        }
+                        if (msg.deleted || msg.body.isNotEmpty() || msg.fileName == null) {
+                            Text(
+                                if (msg.deleted) androidx.compose.ui.text.AnnotatedString("Message deleted") else marked(msg.body, mark), fontSize = 14.sp, lineHeight = 19.6.sp,
+                                color = ink,
+                                fontStyle = if (msg.deleted) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
+                            )
+                        }
+                        if (callBack != null) {
+                            Text(
+                                "Call back", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (msg.out) C.OnBubbleOut else C.Accent,
+                                modifier = Modifier.clickable { callBack() }.padding(vertical = 2.dp).semantics { contentDescription = "Call back" },
+                            )
                         }
                     }
                 }
-                if (msg.deleted || msg.body.isNotEmpty() || msg.fileName == null) {
-                    Text(
-                        if (msg.deleted) androidx.compose.ui.text.AnnotatedString("Message deleted") else marked(msg.body, mark), fontSize = 14.sp, lineHeight = 19.6.sp,
-                        color = if (msg.out) C.OnBubbleOut else C.Text,
-                        fontStyle = if (msg.deleted) androidx.compose.ui.text.font.FontStyle.Italic else androidx.compose.ui.text.font.FontStyle.Normal,
-                    )
-                }
-                if (callBack != null) {
-                    Text(
-                        "Call back", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = if (msg.out) C.OnBubbleOut else C.Accent,
-                        modifier = Modifier.clickable { callBack() }.padding(vertical = 2.dp).semantics { contentDescription = "Call back" },
-                    )
+                if (rx) Spacer(Modifier.height(16.dp))
+            }
+            if (rx) {
+                Row(Modifier.padding(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    for (r in msg.reactions) {
+                        Row(
+                            Modifier.height(22.dp).clip(RoundedCornerShape(11.dp)).background(C.Surface)
+                                .border(1.dp, if (r.mine) C.Text else C.BorderStrong, RoundedCornerShape(11.dp))
+                                .clickable { onReact(r.emoji) }.padding(horizontal = 7.dp)
+                                .semantics { contentDescription = "${r.emoji} ${r.count}${if (r.mine) ", yours" else ""}" },
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text(r.emoji, fontSize = 12.sp)
+                            if (r.count > 1) Text("${r.count}", fontSize = 11.sp, color = C.AvatarText)
+                        }
+                    }
                 }
             }
         }
         if (menu) {
-            // Long press: quick reactions and Reply, in one row.
-            Row(
-                Modifier.clip(RoundedCornerShape(22.dp)).background(C.Surface).border(1.dp, C.Border, RoundedCornerShape(22.dp)).padding(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                for (e in QUICK_REACTIONS) {
-                    Box(Modifier.size(40.dp).clip(CircleShape).clickable { onReact(e) }.semantics { contentDescription = "React $e" }, contentAlignment = Alignment.Center) {
-                        Text(e, fontSize = 20.sp)
-                    }
-                }
-                Text(
-                    "Reply", color = C.Accent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
-                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onReply).padding(horizontal = 12.dp, vertical = 8.dp),
-                )
-            }
-        }
-        if (msg.reactions.isNotEmpty() && !msg.deleted) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                for (r in msg.reactions) {
-                    Row(
-                        Modifier.heightIn(min = 30.dp).clip(RoundedCornerShape(15.dp))
-                            .background(if (r.mine) C.AccentSoft else C.Surface)
-                            .border(1.dp, if (r.mine) C.Accent else C.Border, RoundedCornerShape(15.dp))
-                            .clickable { onReact(r.emoji) }.padding(horizontal = 9.dp)
-                            .semantics { contentDescription = "${r.emoji} ${r.count}${if (r.mine) ", yours" else ""}" },
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(r.emoji, fontSize = 15.sp)
-                        if (r.count > 1) Text("${r.count}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = C.AvatarText)
-                    }
-                }
+            val shapeM = RoundedCornerShape(16.dp)
+            Column(Modifier.width(220.dp).shadow(10.dp, shapeM).clip(shapeM).background(C.Surface).padding(vertical = 4.dp)) {
+                MenuItem("Reply", Ic.Reply, onReply)
+                if (msg.body.isNotEmpty()) MenuItem("Copy", Ic.Copy) { copy(ctx, msg.body); onLongPress() }
             }
         }
         if (!mid || msg.edited) Muted(clock(msg.ts) + if (msg.edited) " · edited" else "", 11.5.sp, Modifier.padding(horizontal = 2.dp))
     }
 }
 
+@Composable
+private fun MenuItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 15.sp, modifier = Modifier.weight(1f))
+        Ico(icon, C.AvatarText, 18.dp)
+    }
+}
+
 /** The six quick reactions, the same as the desktop's. */
 val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
 
+
+/** The chat list before anyone is added, as in the design: your own code to be scanned, and a way to scan theirs. */
+@Composable
+private fun FirstDay(m: AppModel, card: String) {
+    var qr by remember { mutableStateOf<List<String>?>(null) }
+    LaunchedEffect(card) {
+        try {
+            val r = Bridge.obj("qr_matrix", args("text" to card))
+            qr = (0 until r.getJSONArray("rows").length()).map { r.getJSONArray("rows").getString(it) }
+        } catch (_: Exception) {}
+    }
+    Column(
+        Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 36.dp, bottom = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        val frame = RoundedCornerShape(18.dp)
+        Box(Modifier.size(150.dp).clip(frame).background(Color.White).border(1.dp, C.BorderStrong, frame).padding(12.dp), contentAlignment = Alignment.Center) {
+            val q = qr
+            if (q != null) QrCode(q, Modifier.fillMaxSize())
+        }
+        Text("Nobody here yet", fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.padding(top = 8.dp))
+        Text("This is your code. Let someone scan it, or scan theirs.", color = C.AvatarText, fontSize = 14.sp, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(4.dp))
+        PrimaryButton("Scan a code") { m.addTab = 1; m.open(Screen.AddContact) }
+        TextLink("Paste a contact card") { m.addTab = 2; m.open(Screen.AddContact) }
+    }
+}
 
 // ---- 4 · verify a contact -----------------------------------------------------------------------------
 
@@ -788,20 +844,26 @@ fun VerifyScreen(m: AppModel, name: String) {
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
-        Scrolling {
-            Muted("Read the first code aloud; if they match, nobody is in the middle.", 14.sp)
-            CardBox {
-                Muted("$name's fingerprint", 12.5.sp)
-                Text(c.fingerprint.replace("-", " "), fontFamily = Mono, fontSize = 17.sp, lineHeight = 26.sp)
+        // As in the design: the codes as a grid of groups under a small caption, and the answer pinned to the bottom.
+        @Composable
+        fun Code(caption: String, fp: String) {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(caption.uppercase(), fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 11.sp, letterSpacing = 0.08.em, color = C.Muted)
+                for (row in fp.split("-", " ").filter { it.isNotBlank() }.chunked(3)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) { for (g in row) Text(g, fontFamily = Mono, fontSize = 18.sp) }
+                }
             }
-            CardBox {
-                Muted("Your fingerprint (they check this one)", 12.5.sp)
-                Text(o.me.fingerprint.replace("-", " "), fontFamily = Mono, fontSize = 17.sp, lineHeight = 26.sp)
-            }
-            CardBox {
-                Text("$name's devices", fontWeight = FontWeight.SemiBold)
-                Muted("${c.devices} ${if (c.devices == 1) "device" else "devices"} on $name's signed device list. Verifying $name's identity key covers every device on it.", 13.sp)
-            }
+        }
+        Column(
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp),
+        ) {
+            Text("Read the codes aloud to each other. If both match, nobody is in the middle.", color = C.AvatarText, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+            Code("$first's key", c.fingerprint)
+            Code("Your key (they check this one)", o.me.fingerprint)
+            Muted("${c.devices} ${if (c.devices == 1) "device" else "devices"} on $first's signed device list. Verifying covers every device on it.", 12.5.sp, Modifier.fillMaxWidth())
+        }
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 24.dp, end = 24.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (c.verified) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Ico(Ic.ShieldCheck, C.Green); Text("You verified $name.", fontWeight = FontWeight.Medium)
@@ -860,7 +922,7 @@ internal fun QrCode(matrix: List<String>, modifier: Modifier = Modifier) {
 fun AddContactScreen(m: AppModel) {
     val o = m.overview ?: return
     val ctx = LocalContext.current
-    var tab by remember { mutableStateOf(0) }
+    var tab by remember { mutableStateOf(m.addTab.also { m.addTab = 0 }) }
     var name by remember { mutableStateOf("") }
     var card by remember { mutableStateOf("") }
     var qr by remember { mutableStateOf<List<String>?>(null) }
@@ -978,42 +1040,58 @@ fun AddContactScreen(m: AppModel) {
 
 @Composable
 fun RequestsScreen(m: AppModel) {
+    // As in the design: one block per sender (who, what is hidden, the three choices), divided by hairlines.
     Page {
-        TopBar("Message requests", { m.open(null) })
-        Scrolling {
-            Muted("People who are not in your contacts. They can't see whether you have read anything until you accept.", 14.sp)
-            if (m.requests.isEmpty()) Muted("No requests right now.", 14.sp)
-            for (r in m.requests) {
+        TopBar("Message requests", { m.open(null) }, sub = "Hidden until you accept")
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            if (m.requests.isEmpty()) Muted("No requests right now.", 14.sp, Modifier.padding(20.dp))
+            for ((i, r) in m.requests.withIndex()) {
                 var naming by remember(r.id) { mutableStateOf(false) }
                 var name by remember(r.id) { mutableStateOf("") }
-                CardBox {
+                if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
+                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Avatar(r.fingerprint.take(2), 40.dp)
-                        Column {
-                            Text("Unknown sender", fontWeight = FontWeight.SemiBold)
-                            Text(r.fingerprint.replace("-", " "), fontFamily = Mono, fontSize = 12.sp, color = C.Muted)
+                        Avatar("?", 42.dp)
+                        Column(Modifier.weight(1f)) {
+                            Text("Unknown sender", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                            Text(r.fingerprint.replace("-", " "), fontFamily = Mono, fontSize = 12.sp, color = C.Muted, maxLines = 1)
                         }
+                        Muted(listTime(r.received), 12.5.sp)
                     }
-                    Muted("Message hidden. Links and attachments stay blocked until you accept.", 13.sp)
-                    if (r.held.isNotEmpty()) Muted("${r.held.size} ${if (r.held.size == 1) "message" else "messages"} waiting", 13.sp)
+                    val n = r.held.size
+                    val files = r.held.count { it.file != null }
+                    Text(
+                        (if (n == 0) "Nothing" else "$n ${if (n == 1) "message" else "messages"}") +
+                            (if (files > 0) " and $files ${if (files == 1) "file" else "files"}" else "") + ", hidden",
+                        color = C.AvatarText, fontSize = 13.sp,
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(C.Subtle).padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
                     if (naming) {
                         Field("A name for them", name, { name = it }, placeholder = "e.g. Evan")
                         PrimaryButton("Accept as $name", enabled = name.isNotBlank()) {
                             m.run { Bridge.call("accept_request", args("id" to r.id, "name" to name.trim())); m.refresh() }
                         }
                     } else {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlineButton("Block", danger = true, small = true) { m.run { Bridge.call("block_request", args("id" to r.id)); m.refresh() } }
-                            OutlineButton("Decline", small = true) { m.run { Bridge.call("decline_request", args("id" to r.id)); m.refresh() } }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Box(
-                                Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent).clickable { naming = true }.padding(horizontal = 16.dp),
+                                Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent).clickable { naming = true }.padding(horizontal = 14.dp),
                                 contentAlignment = Alignment.Center,
-                            ) { Text("Accept", color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+                            ) { Text("Accept", color = C.OnAccent, fontWeight = FontWeight.Medium, fontSize = 13.sp) }
+                            OutlineButton("Decline", small = true) { m.run { Bridge.call("decline_request", args("id" to r.id)); m.refresh() } }
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                "Block", color = C.Danger, fontSize = 13.sp,
+                                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { m.run { Bridge.call("block_request", args("id" to r.id)); m.refresh() } }.padding(horizontal = 8.dp, vertical = 9.dp),
+                            )
                         }
                     }
                 }
             }
-            Muted("Requests are end-to-end encrypted like any message. Accepting adds the person as not verified; compare fingerprints when you can. Blocking drops their messages on your devices as they arrive; the relay cannot tell who sent a message, so it still carries them until then.", 12.5.sp)
+            Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
+            Muted(
+                "Accepting adds them as not verified: compare fingerprints when you can. Blocking drops this sender's messages on your devices. A relay cannot see who sent them.",
+                12.5.sp, Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+            )
         }
     }
 }
@@ -1391,29 +1469,37 @@ fun SettingsTab(m: AppModel) {
 @Composable
 fun InviteScreen(m: AppModel, id: String) {
     val g = m.group
-    Page {
-        TopBar("Group invite", { m.open(null) })
-        Scrolling {
-            if (g == null) {
-                Muted("Loading…")
-            } else {
-                Text("${g.invitedBy ?: "Someone"} invited you to “${g.name}”. Nothing from the group is shown until you accept.")
-                if (g.large) {
-                    CardBox {
-                        Text("A large group", fontWeight = FontWeight.SemiBold)
-                        Muted("You will see who is in it once you join. Large groups are experimental and have not been independently reviewed yet.", 13.sp)
-                    }
+    // As in the design: the group at the top, who invited you and what joining means, and the choice at the bottom.
+    StepPage(
+        { m.open(null) },
+        actions = {
+            if (g != null) {
+                PrimaryButton("Join ${g.name}", enabled = !m.busy) {
+                    m.run { Bridge.call("group_accept", args("id" to id)); m.open(Screen.GroupChat(id)) }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlineButton("Decline", Modifier.weight(1f)) { m.run { Bridge.call("group_decline", args("id" to id)); m.open(null) } }
-                    Box(Modifier.weight(1f)) {
-                        PrimaryButton("Join the group", enabled = !m.busy) {
-                            m.run { Bridge.call("group_accept", args("id" to id)); m.open(Screen.GroupChat(id)) }
-                        }
-                    }
-                }
-                Muted("If you decline, they are not told, and anyone can invite you again.", 12.5.sp)
+                TextLink("Decline") { m.run { Bridge.call("group_decline", args("id" to id)); m.open(null) } }
             }
+        },
+    ) {
+        if (g == null) {
+            Muted("Loading…")
+            return@StepPage
+        }
+        Column(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Avatar(g.name, 64.dp, square = true)
+            Text(g.name, fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, letterSpacing = (-0.02).em, textAlign = TextAlign.Center)
+            Muted(if (g.large) "Large group · up to 500" else "Group · up to 20", 12.5.sp)
+        }
+        Text(
+            "${g.invitedBy ?: "Someone"} invited you. Nothing from the group is shown until you accept." +
+                if (g.large) " You will see who is in it once you join." else "",
+            color = C.AvatarText, fontSize = 13.5.sp, lineHeight = 19.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth(),
+        )
+        Column {
+            KvRow("Invited by", g.invitedBy ?: "Someone")
+            KvRow("You will see", "Messages from now on")
+            KvRow("If you decline", "They are not told")
+            if (g.large) KvRow("Large groups", "Experimental, not yet reviewed")
         }
     }
 }
@@ -1532,42 +1618,67 @@ fun NewGroupScreen(m: AppModel) {
     var large by remember { mutableStateOf(true) }
     val picked = remember { mutableStateListOf<String>() }
     val contacts = m.overview?.contacts ?: emptyList()
+    val ready = name.isNotBlank() && picked.isNotEmpty() && !m.busy
+    fun create() {
+        val members = picked.toList()
+        m.run {
+            val r = if (large) Bridge.obj("group_create_large", args("name" to name, "members" to members))
+            else Bridge.obj("group_create", args("name" to name, "members" to members))
+            m.notice = "Invited ${r.getInt("reached")} of ${r.getInt("people")} people."
+            m.open(Screen.GroupChat(r.getString("group")))
+        }
+    }
+    @Composable
+    fun Caption(text: String) = Text(
+        text.uppercase(), fontFamily = Mono, fontWeight = FontWeight.Medium, fontSize = 11.sp, letterSpacing = 0.08.em, color = C.Muted,
+        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 4.dp),
+    )
+    // As in the design: "Create" in the title row, the name, the members as a checklist, and the group's settings.
     Page {
-        TopBar("New group", { m.open(null) })
-        Scrolling(gap = 12) {
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.AvatarBg).padding(3.dp),
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                for ((isLarge, label) in listOf(false to "Small (up to 20)", true to "Large (up to 500)")) {
-                    Box(
-                        Modifier.weight(1f).heightIn(min = 40.dp).clip(RoundedCornerShape(10.dp))
-                            .background(if (large == isLarge) C.Surface else Color.Transparent).clickable { large = isLarge },
-                        contentAlignment = Alignment.Center,
-                    ) { Text(label, fontWeight = if (large == isLarge) FontWeight.SemiBold else FontWeight.Normal, fontSize = 14.sp) }
-                }
-            }
-            Muted(if (large) "One encrypted copy of each message for everyone. People you add get an invitation and join when they accept. Experimental: not independently reviewed yet." else "Every message is encrypted separately for each member's devices.", 13.sp)
-            Field("Group name", name, { name = it }, placeholder = "e.g. Pilot team")
-            Text("Members", fontWeight = FontWeight.SemiBold)
-            if (contacts.isEmpty()) Muted("Add a contact first: a group is made from your contacts.", 14.sp)
-            CardBox {
-                for (c in contacts) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(c.name in picked, { on -> if (on) picked.add(c.name) else picked.remove(c.name) }, colors = CheckboxDefaults.colors(checkedColor = C.Accent))
-                        Text(c.name, Modifier.weight(1f))
-                        if (!c.verified) Tag("Not verified", TagKind.Amber)
+        TopBar("New group", { m.open(null) }) {
+            Text(
+                "Create", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = if (ready) C.Text else C.Muted,
+                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(enabled = ready) { create() }.padding(horizontal = 10.dp, vertical = 10.dp),
+            )
+        }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Field(null, name, { name = it }, Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp), placeholder = "Group name")
+            Caption("Members · ${picked.size} of ${if (large) 500 else 20}")
+            if (contacts.isEmpty()) Muted("Add a contact first: a group is made from your contacts.", 14.sp, Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+            for ((i, c) in contacts.withIndex()) {
+                val on = c.name in picked
+                if (i > 0) Box(Modifier.padding(horizontal = 20.dp).fillMaxWidth().height(1.dp).background(C.Border))
+                Row(
+                    Modifier.fillMaxWidth().toggleable(on, role = androidx.compose.ui.semantics.Role.Checkbox) { v -> if (v) picked.add(c.name) else picked.remove(c.name) }
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Avatar(c.name, 42.dp)
+                    Column(Modifier.weight(1f)) {
+                        Text(c.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                        if (!c.verified) Text("Not verified", color = C.Danger, fontSize = 12.5.sp)
                     }
+                    Box(
+                        Modifier.size(20.dp).clip(RoundedCornerShape(6.dp)).background(if (on) C.Text else Color.Transparent)
+                            .border(1.5.dp, if (on) C.Text else C.BorderStrong, RoundedCornerShape(6.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) { if (on) Ico(Ic.Check, C.Surface, 13.dp) }
                 }
             }
-            PrimaryButton("Create group", enabled = name.isNotBlank() && picked.isNotEmpty() && !m.busy) {
-                val members = picked.toList()
-                m.run {
-                    val r = if (large) Bridge.obj("group_create_large", args("name" to name, "members" to members))
-                    else Bridge.obj("group_create", args("name" to name, "members" to members))
-                    m.notice = "Invited ${r.getInt("reached")} of ${r.getInt("people")} people."
-                    m.open(Screen.GroupChat(r.getString("group")))
+            Caption("Size")
+            Row(
+                Modifier.fillMaxWidth().toggleable(large, role = androidx.compose.ui.semantics.Role.Switch) { large = it }.padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Large group", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    Muted(
+                        if (large) "Up to 500. One encrypted copy for everyone; people join when they accept. Experimental: not independently reviewed yet."
+                        else "Up to 20. Every message is encrypted separately for each member's devices.",
+                        12.5.sp,
+                    )
                 }
+                Switch(large, null, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
             }
         }
     }

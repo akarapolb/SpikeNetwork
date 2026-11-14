@@ -43,7 +43,7 @@ function phoneStats() {
   const m = all[all.length - 1];
   return m ? { rx: +m[1], energy: +m[2], tx: +m[3], code: m[4], vrx: +m[5] } : null;
 }
-const codeOf = (t) => (/Call code (\d{4})/.exec(t) || [])[1];
+const codeOf = (t) => (/Call code (\d{4})/.exec(t) || /(\d{4}) \| Not verified yet/.exec(t) || [])[1];
 
 let relay = null;
 try {
@@ -86,7 +86,7 @@ try {
   console.log("-- desktop calls the phone");
   await desk.click("Phone");
   await desk.eval(`document.querySelector('[aria-label="Voice call Phone"]').click()`);
-  check(await waitText("Alice is calling", 40000), "the phone rings with the caller's name");
+  check(await waitText("Incoming voice call", 40000) && !!(await waitText("Alice", 2000)), "the phone rings with the caller's name");
   shot("1-phone-ringing");
   await tapText("Answer", true);
   check(await until(async () => /\d+:\d\d/.test(await overlay(desk)) && !(await overlay(desk)).includes("Connecting"), 30000), "the desktop's call connects");
@@ -206,7 +206,7 @@ try {
   check(/mWakefulness=Awake/.test(sh("dumpsys power")), "and turns the screen on");
   shot("6-locked-ringing");
   await sleep(1500);
-  check(await waitText("is calling", 10000), "the phone shows who is calling");
+  check(await waitText("Incoming", 10000), "the phone shows who is calling");
   await tapText("Decline", true);
   await sleep(3000);
   check(!/CallActivity/.test(sh("dumpsys activity activities | grep -E 'ResumedActivity|topResumedActivity'")), "after the call the call window closes by itself");
