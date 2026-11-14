@@ -46,6 +46,16 @@ pub struct Contact {
     pub name: String,
     pub card: String,
     pub verified: bool,
+    /// When (ms) this contact's identity key was replaced by a different one, until it is verified again.
+    /// The apps show "safety number changed" while it is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_changed: Option<u64>,
+    /// When (ms) this contact was last marked verified. Kept across a key change, to say "was verified".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<u64>,
+    /// When (ms) their signed device list last changed (a device added or removed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devices_changed: Option<u64>,
 }
 
 impl Contact {
@@ -91,6 +101,22 @@ pub enum Added {
     Upgraded,
     /// Different owner key, replaced because `force` was given. Must be re-verified.
     Replaced,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+impl Contact {
+    /// Mark verified now: clears a pending key-change warning.
+    pub fn set_verified(&mut self) {
+        self.verified = true;
+        self.verified_at = Some(now_ms());
+        self.key_changed = None;
+    }
 }
 
 /// Run a future that is known not to wait (every `FileStore` operation). A `Store` that does wait would panic
@@ -276,19 +302,27 @@ impl<S: Store> Home<S> {
                 name: name.into(),
                 card: card.trim().into(),
                 verified: false,
+                key_changed: None,
+                verified_at: None,
+                devices_changed: None,
             });
             self.save_contacts_async(&contacts).await?;
             return Ok(Added::New);
         };
         let added = match existing.identity()?.check_update(&new) {
             Ok(Update::Same) => return Ok(Added::AlreadyKnown),
-            Ok(Update::Newer) => Added::Updated { version: new.version() },
+            Ok(Update::Newer) => {
+                existing.devices_changed = Some(now_ms());
+                Added::Updated { version: new.version() }
+            }
             Ok(Update::Upgrade) => {
                 existing.verified = false;
                 Added::Upgraded
             }
             Err(CoreError::KeyChange) if force => {
                 existing.verified = false;
+                existing.key_changed = Some(now_ms());
+                existing.devices_changed = None;
                 Added::Replaced
             }
             Err(CoreError::KeyChange) => bail!(

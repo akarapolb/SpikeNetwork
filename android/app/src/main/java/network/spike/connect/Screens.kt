@@ -71,6 +71,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -92,6 +93,30 @@ private fun sameDay(a: Long, b: Long): Boolean {
 }
 
 /** The chat list's time: the clock today, "Yesterday", a weekday this week, else the date. */
+internal fun shortDate(ms: Long): String =
+    java.text.SimpleDateFormat("d MMM", java.util.Locale.getDefault()).format(java.util.Date(ms))
+
+/** The red line over a chat whose contact's identity key changed and has not been compared since, as in the design. */
+@Composable
+internal fun KeyChangedBanner(name: String, onVerify: () -> Unit) {
+    val first = name.split(" ").first()
+    Row(
+        Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp).clip(RoundedCornerShape(10.dp)).background(C.RedBg)
+            .padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)
+            .semantics { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite },
+        verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("$first's safety number changed.", color = C.Danger, fontWeight = FontWeight.SemiBold, fontSize = 12.5.sp, lineHeight = 17.sp)
+            Text("Usually a new device. Compare the number with $first before you trust this chat.", color = C.Danger, fontSize = 12.5.sp, lineHeight = 17.sp)
+        }
+        Box(
+            Modifier.clip(RoundedCornerShape(8.dp)).background(C.Surface).border(1.dp, C.BorderStrong, RoundedCornerShape(8.dp))
+                .clickable(onClick = onVerify).padding(horizontal = 12.dp, vertical = 6.dp),
+        ) { Text("Verify again", color = C.Text, fontWeight = FontWeight.Medium, fontSize = 12.5.sp) }
+    }
+}
+
 internal fun listTime(ms: Long): String {
     if (ms == 0L) return ""
     val now = System.currentTimeMillis()
@@ -381,8 +406,10 @@ fun ChatsTab(m: AppModel) {
             items(items) { r ->
                 when (r) {
                     is Item.P -> ChatRow(
-                        r.c.name, square = false, verified = r.c.verified, redNote = if (r.c.verified) null else "Not verified",
-                        preview = r.c.last ?: if (r.c.verified) "No messages yet" else "", time = listTime(r.c.lastTs), unread = r.c.unread,
+                        r.c.name, square = false, verified = r.c.verified,
+                        redNote = if (r.c.keyChanged > 0) "Safety number changed" else if (r.c.verified) null else "Not verified",
+                        preview = if (r.c.keyChanged > 0) "" else r.c.last ?: if (r.c.verified) "No messages yet" else "",
+                        time = listTime(maxOf(r.c.lastTs, r.c.keyChanged)), unread = r.c.unread,
                     ) { m.open(Screen.Chat(r.c.name)) }
                     is Item.G -> ChatRow(
                         r.g.name, square = true, verified = false, redNote = null,
@@ -449,6 +476,7 @@ fun ConversationScreen(
     onSend: suspend (String, String?) -> Unit, onInfo: () -> Unit,
     onCall: ((Boolean) -> Unit)? = null,
     attach: (suspend (String, java.io.File) -> Unit)? = null,
+    banner: (@Composable () -> Unit)? = null,
 ) {
     var text by remember { mutableStateOf("") }
     val ctx = LocalContext.current
@@ -542,6 +570,7 @@ fun ConversationScreen(
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
+        banner?.invoke()
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth().padding(horizontal = 14.dp), state = listState,
         ) {
@@ -858,8 +887,20 @@ fun VerifyScreen(m: AppModel, name: String) {
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 20.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
+            if (c.keyChanged > 0) {
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.RedBg).padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text("$first's safety number changed.", color = C.Danger, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
+                    Text(
+                        (if (c.verifiedAt > 0) "Was verified ${shortDate(c.verifiedAt)}. " else "") + "This is the new number: compare it again before you trust the chat.",
+                        color = C.Danger, fontSize = 13.sp,
+                    )
+                }
+            }
             Text("Read the codes aloud to each other. If both match, nobody is in the middle.", color = C.AvatarText, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
-            Code("$first's key", c.fingerprint)
+            Code(if (c.keyChanged > 0) "$first's new key" else "$first's key", c.fingerprint)
             Code("Your key (they check this one)", o.me.fingerprint)
             Muted("${c.devices} ${if (c.devices == 1) "device" else "devices"} on $first's signed device list. Verifying covers every device on it.", 12.5.sp, Modifier.fillMaxWidth())
         }
@@ -927,6 +968,7 @@ fun AddContactScreen(m: AppModel) {
     var card by remember { mutableStateOf("") }
     var qr by remember { mutableStateOf<List<String>?>(null) }
     var scanned by remember { mutableStateOf<String?>(null) }
+    var keyChange by remember { mutableStateOf(false) }
     LaunchedEffect(o.me.card) {
         try {
             val r = Bridge.obj("qr_matrix", args("text" to o.me.card))
@@ -1006,8 +1048,27 @@ fun AddContactScreen(m: AppModel) {
                 }
                 2 -> {
                     Muted("Paste the card your contact shared (it starts with spike2:). Then compare fingerprints with them once.", 14.sp)
-                    Field("Name", name, { name = it }, helper = "Only you see this name.")
-                    Field("Card", card, { card = it }, singleLine = false, minHeight = 96.dp, maxLines = 4)
+                    Field("Name", name, { name = it; keyChange = false }, helper = "Only you see this name.")
+                    Field("Card", card, { card = it; keyChange = false }, singleLine = false, minHeight = 96.dp, maxLines = 4)
+                    if (keyChange) {
+                        // A card with a different identity key under a name you have: taken only when you say so.
+                        Column(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.RedBg).padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text("${name.trim()} already has a different safety number.", color = C.Danger, fontWeight = FontWeight.SemiBold, fontSize = 13.5.sp)
+                            Text("Replace it only if they told you about a new or reinstalled device. They will show as not verified until you compare again.", color = C.Danger, fontSize = 13.sp)
+                        }
+                        OutlineButton("Replace their key", Modifier.fillMaxWidth(), enabled = !m.busy) {
+                            val n = name.trim()
+                            m.run {
+                                m.notice = Bridge.call("replace_contact_key", args("name" to n, "card" to card.trim())).toString()
+                                keyChange = false
+                                m.refresh()
+                                m.open(Screen.Chat(n))
+                            }
+                        }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlineButton("Paste") {
                             val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -1016,8 +1077,12 @@ fun AddContactScreen(m: AppModel) {
                         Box(Modifier.weight(1f)) {
                             PrimaryButton("Add contact", enabled = name.isNotBlank() && card.isNotBlank() && !m.busy) {
                                 m.run {
-                                    Bridge.call("add_contact", args("name" to name.trim(), "card" to card.trim()))
-                                    m.open(null)
+                                    try {
+                                        Bridge.call("add_contact", args("name" to name.trim(), "card" to card.trim()))
+                                        m.open(null)
+                                    } catch (e: BridgeError) {
+                                        if (e.message?.contains("KEY CHANGE") == true) keyChange = true else throw e
+                                    }
                                 }
                             }
                         }

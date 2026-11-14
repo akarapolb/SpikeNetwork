@@ -671,6 +671,15 @@ fn add_contact(state: State<'_, AppState>, name: String, card: String) -> Result
     session(&state)?.add_contact(&name, &card).map_err(err)
 }
 
+#[tauri::command]
+fn replace_contact_key(
+    state: State<'_, AppState>,
+    name: String,
+    card: String,
+) -> Result<String, String> {
+    session(&state)?.replace_contact_key(&name, &card).map_err(err)
+}
+
 /// The call screen turns this on while a call is up, so the page is granted the microphone only then.
 #[tauri::command]
 fn set_media_access(on: bool) {
@@ -1401,6 +1410,7 @@ pub fn run() {
             sync,
             mark_read,
             add_contact,
+            replace_contact_key,
             rename_contact,
             set_media_access,
             mark_verified,

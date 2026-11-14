@@ -206,6 +206,8 @@ private fun Ready(m: AppModel) {
         is Screen.Chat -> {
             val c = o?.contacts?.firstOrNull { it.name == s.name }
             val n = c?.devices ?: 1
+            val banner: (@Composable () -> Unit)? =
+                if ((c?.keyChanged ?: 0) > 0) { { KeyChangedBanner(s.name) { m.open(Screen.Verify(s.name)) } } } else null
             ConversationScreen(
                 m, s.name, "${if (c?.verified == true) "Verified" else "Not verified"} · $n ${if (n == 1) "device" else "devices"}", c?.verified == true, false,
                 if (n == 1) "Encrypted for ${s.name}'s device and your own other devices" else "Encrypted separately for each of ${s.name}'s $n devices and your own other devices",
@@ -213,6 +215,7 @@ private fun Ready(m: AppModel) {
                 { m.open(Screen.Verify(s.name)) },
                 { video -> CallManager.call(s.name, c?.verified == true, video) },
                 { fileName, f -> Bridge.call("send_file", args("name" to s.name, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
+                banner,
             )
         }
         is Screen.GroupChat -> {

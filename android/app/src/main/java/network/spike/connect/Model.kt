@@ -17,6 +17,10 @@ data class Contact(
     val unread: Int,
     val last: String?,
     val lastTs: Long,
+    /** When their identity key changed (ms), until compared again; 0 when it has not. */
+    val keyChanged: Long = 0,
+    /** When you last verified them (ms), kept across a key change; 0 when never. */
+    val verifiedAt: Long = 0,
 )
 
 data class Group(
@@ -66,6 +70,7 @@ fun parseOverview(o: JSONObject): Overview {
                 it.getString("name"), it.getBoolean("verified"), it.getString("fingerprint"),
                 it.getInt("devices"), it.getInt("unread"), it.str("last"),
                 if (it.isNull("last_ts")) 0 else it.getLong("last_ts"),
+                it.optLong("key_changed", 0), it.optLong("verified_at", 0),
             )
         },
         groups = o.getJSONArray("groups").mapObjects {

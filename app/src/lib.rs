@@ -201,6 +201,12 @@ pub struct ContactDto {
     pub agent: bool,
     pub last: Option<String>,
     pub last_ts: Option<u64>,
+    /// Their identity key changed (ms) and has not been verified since: show "safety number changed".
+    pub key_changed: Option<u64>,
+    /// When you last verified them (ms), kept across a key change ("was verified").
+    pub verified_at: Option<u64>,
+    /// When their device list last changed (ms).
+    pub devices_changed: Option<u64>,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -714,6 +720,9 @@ impl Session {
                 unread: unread.get(&c.name).copied().unwrap_or(0),
                 agent: grants.iter().any(|g| g.body.agent == key),
                 verified: c.verified,
+                key_changed: c.key_changed,
+                verified_at: c.verified_at,
+                devices_changed: c.devices_changed,
                 fingerprint: id.fingerprint(),
                 devices: id.devices().len(),
                 last: last.as_ref().map(|m| {
@@ -856,7 +865,13 @@ impl Session {
         if new.owner_hex() == IdentityCard::decode(&self.home.identity_card()?)?.owner_hex() {
             bail!("that is your own card");
         }
-        Ok(match self.home.add_contact(name, card, false)? {
+        let added = match self.home.add_contact(name, card, false) {
+            Err(e) if e.to_string().starts_with("KEY CHANGE") => bail!(
+                "KEY CHANGE: {name} already has a different safety number. Replace it only if they told you about a new key."
+            ),
+            r => r?,
+        };
+        Ok(match added {
             Added::New => format!(
                 "{name} added, not verified. Compare {} with them over a second channel.",
                 new.fingerprint()
@@ -866,8 +881,27 @@ impl Session {
                 format!("Updated {name}'s devices (list v{version}). Verification kept.")
             }
             Added::Upgraded => format!("{name} upgraded to a signed identity. Verify again."),
-            Added::Replaced => format!("{name}'s identity key changed. Verify again."),
+            Added::Replaced => format!("{name}'s safety number changed. Verify again."),
         })
+    }
+
+    /// Replace an existing contact's identity key with the one on `card`: they told you they are on a new key
+    /// (usually a new or reinstalled device). The contact drops to not verified and the apps warn "safety number
+    /// changed" until it is compared again. Refuses an unknown name, a card that is not a new key, and your own.
+    pub fn replace_contact_key(&self, name: &str, card: &str) -> Result<String> {
+        let card = card.trim();
+        let new =
+            IdentityCard::decode(card).map_err(|_| anyhow!("that is not a Spike identity card"))?;
+        if new.owner_hex() == IdentityCard::decode(&self.home.identity_card()?)?.owner_hex() {
+            bail!("that is your own card");
+        }
+        if !self.home.load_contacts()?.iter().any(|c| c.name == name) {
+            bail!("no contact '{name}'");
+        }
+        match self.home.add_contact(name, card, true)? {
+            Added::Replaced => Ok(format!("{name}'s safety number changed. Verify again.")),
+            _ => bail!("that card has the same identity key; nothing to replace"),
+        }
     }
 
     /// Mark a contact verified. `fingerprint` is what the person compared on
@@ -882,7 +916,7 @@ impl Session {
         if actual != fingerprint.trim().to_lowercase() {
             bail!("that fingerprint does not match the stored key; not verified");
         }
-        c.verified = true;
+        c.set_verified();
         self.home.save_contacts(&contacts)?;
         Ok(())
     }

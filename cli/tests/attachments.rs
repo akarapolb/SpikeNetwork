@@ -46,6 +46,9 @@ fn befriend(a: &Dev, name: &str, b: &Dev) {
         name: name.into(),
         card: b.0.identity_card().unwrap(),
         verified: true,
+        key_changed: None,
+        verified_at: None,
+        devices_changed: None,
     });
     a.0.save_contacts(&c).unwrap();
 }

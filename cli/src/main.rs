@@ -892,7 +892,7 @@ async fn run() -> Result<()> {
             if actual != fingerprint.trim().to_lowercase() {
                 bail!("fingerprint does NOT match (stored key is {actual}); not verified");
             }
-            c.verified = true;
+            c.set_verified();
             home.save_contacts(&contacts)?;
             println!("{name} verified");
         }

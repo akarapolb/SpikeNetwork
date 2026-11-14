@@ -64,6 +64,9 @@ impl Dev {
             name: name.into(),
             card: other.card(),
             verified: true,
+            key_changed: None,
+            verified_at: None,
+            devices_changed: None,
         });
         self.home.save_contacts(&c).unwrap();
     }
