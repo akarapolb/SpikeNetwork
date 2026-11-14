@@ -715,6 +715,18 @@ fn rename_contact(state: State<'_, AppState>, old: String, name: String) -> Resu
     session(&state)?.rename_contact(&old, &name).map_err(err)
 }
 
+/// Re-seal this computer's keys under a new passphrase. The session stays unlocked.
+#[tauri::command]
+fn change_passphrase(state: State<'_, AppState>, old: String, new: String) -> Result<(), String> {
+    session(&state)?.change_passphrase(old, new).map_err(err)
+}
+
+/// The name offered to people you write to first (ADR 0038); empty clears it.
+#[tauri::command]
+fn set_profile_name(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    session(&state)?.set_profile_name(&name).map_err(err)
+}
+
 #[tauri::command]
 fn mark_verified(
     state: State<'_, AppState>,
@@ -1533,6 +1545,8 @@ pub fn run() {
             mark_read,
             add_contact,
             rename_contact,
+            change_passphrase,
+            set_profile_name,
             set_media_access,
             mark_verified,
             agents,

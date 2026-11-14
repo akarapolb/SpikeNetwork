@@ -74,6 +74,11 @@ QR code with the emulator's virtual camera; first `node android/make_camera_post
 with `hw.camera.back = virtualscene`). The fingerprint steps of `drive_mobile.mjs` run when a fingerprint is
 enrolled in the emulator (set a PIN, enrol with `adb emu finger touch 1`); `NO_BIOMETRIC=1` skips them.
 
+Settings > Your identity has **Name** (offered to people you write to first, ADR 0038; a request shows it and Accept
+suggests it) and **Passphrase · Change** (ADR 0003). Changing the passphrase also replaces the one kept for the
+background at once and the one kept for fingerprint unlock after one fingerprint check; if that check is declined,
+fingerprint unlock is turned off and the app says so. Driver: `ANDROID_SERIAL=emulator-5554 node android/drive_identity.mjs`.
+
 ## Known limits
 
 - The app listens to the relay while it is on screen, and with "Alerts while the app is closed" on, through a

@@ -75,7 +75,7 @@ const ini2 = (n) => { const w = (n || "").trim().split(/\s+/).filter(Boolean); r
 async function call(cmd, args) { try { return await invoke(cmd, args); } catch (e) { if (e === "locked") { gate("unlock"); } else toast(String(e)); throw e; } }
 
 /* ---------- state ---------- */
-const st = { seenNotes: new Map(), group: null, gdetail: null, verifyFor: null, newGroup: null, picked: [], picking: false, nameMember: null, reqs: [], blocked: [], showReq: {}, naming: null, editing: null, confirmDelete: null, linkNew: false, linking: false, linkStep: 0, linkCode: "", linkSafety: "", linkMode: "all", linkErr: "", grantForm: null, section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
+const st = { seenNotes: new Map(), group: null, gdetail: null, verifyFor: null, newGroup: null, picked: [], picking: false, nameMember: null, reqs: [], blocked: [], showReq: {}, naming: null, editing: null, confirmDelete: null, linkNew: false, linking: false, linkStep: 0, linkCode: "", linkSafety: "", linkMode: "all", linkErr: "", grantForm: null, pw: null, section: "chats", chat: null, screen: null, ov: null, msgs: [], agents: null, offline: false, verifyDone: null, addMsg: null, polling: null, busy: false };
 
 /* ---------- gate ---------- */
 async function gate(mode) {
@@ -260,7 +260,7 @@ function renderRail() {
     h("button", { type: "button", "aria-label": "Switch light or dark", onclick: () => { const r = document.documentElement; const dark = matchMedia("(prefers-color-scheme: dark)").matches; r.dataset.theme = (r.dataset.theme || (dark ? "dark" : "light")) === "dark" ? "light" : "dark"; } }, icon("moon"), h("span", { class: "tip", "aria-hidden": "true" }, "Light or dark")),
     h("button", { type: "button", "aria-label": "Lock", onclick: lockNow }, icon("lock"), h("span", { class: "tip", "aria-hidden": "true" }, `Lock  ${MOD}L`)));
 }
-async function lockNow() { try { await invoke("lock"); } catch (_) {} gate("unlock"); }
+async function lockNow() { st.pw = null; try { await invoke("lock"); } catch (_) {} gate("unlock"); }
 /* render() rebuilds the whole screen. Without this, every sync would send the thread back to the top and empty the
    message box. Remember where you were and what you were typing, and put it back if it is still the same screen. */
 let renderedKey = null;
@@ -1125,13 +1125,38 @@ function settingsMain() {
       label, to === "backupCard" && backupDue ? h("i", { class: "dot wait", title: "No recent backup" }) : null)));
   const copyKey = async () => { try { await navigator.clipboard.writeText(me.fingerprint); toast("Identity key copied."); } catch (_) { toast("Select the key and copy it."); } };
 
+  // The name you offer people you write to first (ADR 0038): saved when the field is left or Enter is pressed.
+  const nameIn = h("input", { id: "profileName", class: "sname", "aria-label": "Your name", placeholder: "No name set", maxlength: "64", value: me.name || "", "data-keep": "profileName",
+    onkeydown: (e) => { if (e.key === "Enter") e.target.blur(); },
+    onchange: async (e) => { const v = e.target.value.trim(); if (v === (me.name || "")) return; try { await invoke("set_profile_name", { name: v }); toast(v ? `People you write to first will see “${v}” as a suggestion.` : "No name is offered now."); await refresh(); } catch (x) { toast(String(x)); } } });
+  // Change passphrase: only this computer's vault is re-sealed; the session stays unlocked.
+  const pw = st.pw;
+  const pwIn = (id, key, label, ac) => h("input", { id, type: "password", autocomplete: ac, "aria-label": label, placeholder: label, value: pw ? pw[key] : "", oninput: (e) => { st.pw[key] = e.target.value; } });
+  const changePw = async () => {
+    if (st.pw.next.length < 10) return toast("Use at least 10 characters for the new passphrase.");
+    if (st.pw.next !== st.pw.again) return toast("The new passphrases do not match.");
+    st.pw.busy = true; render();
+    try { await invoke("change_passphrase", { old: st.pw.old, new: st.pw.next }); st.pw = null; toast("Passphrase changed on this computer. Your other devices keep their own."); }
+    catch (x) { st.pw.busy = false; toast(String(x)); }
+    render();
+  };
   const identity = () => h("section", { class: "card", id: "set-identity" }, ...secHead("Identity", "Who you are to your contacts. It lives on your devices only."),
     h("div", { class: "idgrid" },
       h("div", {},
+        srow("Name", "Shown to people you add. Each contact can rename you.", h("div", { class: "field sname" }, nameIn)),
         srow("Identity key", h("span", { class: "note mono" }, fpGroups(me.fingerprint)), h("button", { class: "btn", type: "button", onclick: copyKey }, "Copy")),
         srow("Your card", "What others paste or scan to add you.", copyCardButton()),
         srow("Devices", `${plural(me.devices, "device", "devices")}${me.approver ? " · this one approves agent requests" : ""}. Contacts compare your key when they verify you.`,
           h("button", { class: "btn", type: "button", onclick: () => go("devices") }, "Manage")),
+        srow("Passphrase", "Protects the keys on this computer.", pw ? null : h("button", { id: "pwChange", class: "btn", type: "button", onclick: () => { st.pw = { old: "", next: "", again: "" }; render(); $("pwOld")?.focus(); } }, "Change")),
+        pw ? h("form", { class: "relayedit", id: "pwForm", onsubmit: (e) => { e.preventDefault(); changePw(); } },
+          h("div", { class: "field" }, pwIn("pwOld", "old", "Current passphrase", "current-password")),
+          h("div", { class: "field" }, pwIn("pwNew", "next", "New passphrase", "new-password")),
+          h("div", { class: "field" }, pwIn("pwAgain", "again", "New passphrase again", "new-password")),
+          h("span", { class: "note" }, "At least 10 characters. Only this computer changes: your other devices keep their own passphrase. Nothing is re-sent, and there is no way to recover a forgotten one except a backup."),
+          h("div", { style: "display:flex;gap:8px" },
+            h("button", { id: "pwSave", class: "btn primary", type: "submit", disabled: pw.busy || null }, pw.busy ? "Changing…" : "Change passphrase"),
+            h("button", { class: "btn", type: "button", onclick: () => { st.pw = null; render(); } }, "Cancel"))) : null,
         h("details", { class: "cardtext" }, h("summary", {}, "Show card text"), h("textarea", { class: "cardbox mono", readonly: true, "aria-label": "Your identity card", onfocus: (e) => e.target.select() }, me.card))),
       h("div", { class: "idqr" }, cardQr(me.card), h("span", { class: "note" }, "Your code. A phone scans it to add you; scanning in person verifies you both."))));
 
@@ -1292,11 +1317,12 @@ function requestsScreen() {
   const back = () => { st.screen = null; render(); };
   const card = (r) => {
     const shown = !!st.showReq[r.id], naming = st.naming === r.id;
-    const input = h("input", { "aria-label": "Name for this person", placeholder: "A name for them", value: "", maxlength: "64" });
+    // The name they offered (ADR 0038) is only a suggestion: you name your contacts yourself.
+    const input = h("input", { "aria-label": "Name for this person", placeholder: "A name for them", value: r.name || "", maxlength: "64" });
     const accept = async () => { try { const n = await invoke("accept_request", { id: r.id, name: input.value }); toast(`Added. ${n} message${n === 1 ? "" : "s"} joined the conversation. They are not verified yet.`); const name = input.value.trim(); st.naming = null; st.screen = null; await refresh(); st.section = "chats"; await openChat(name); } catch (e) { toast(String(e)); } };
     return h("section", { class: "card", "aria-label": "Message request" },
       h("div", { style: "display:flex;gap:12px;align-items:center" }, h("span", { class: "tile sm sq c-neutral", "aria-hidden": "true" }, "?"),
-        h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, "Someone new wants to message you"), h("div", { class: "note" }, `Their code: `, h("span", { class: "mono" }, r.fingerprint)), h("div", { class: "note" }, new Date(r.received).toLocaleString()))),
+        h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, "Someone new wants to message you"), r.name ? h("div", { class: "note reqname" }, "They call themselves ", h("b", {}, r.name), ". Not checked.") : null, h("div", { class: "note" }, `Their code: `, h("span", { class: "mono" }, r.fingerprint)), h("div", { class: "note" }, new Date(r.received).toLocaleString()))),
       shown ? [h("div", { class: "status soft", style: "gap:8px" }, r.held.map((m) => h("div", {}, h("span", { style: "white-space:pre-wrap;overflow-wrap:anywhere" }, m.body), m.file ? h("div", { class: "note" }, `A file named “${m.file}” came with it. Files from people you have not accepted are not kept.`) : null))),
           h("span", { class: "note" }, "Shown as plain text: links are not clickable.")]
         : h("div", { class: "status soft" }, h("span", {}, `${r.held.length} message${r.held.length === 1 ? "" : "s"} hidden until you choose to look. Links and files stay blocked until you accept.`), h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: () => { st.showReq[r.id] = true; render(); } }, "Show the message")),

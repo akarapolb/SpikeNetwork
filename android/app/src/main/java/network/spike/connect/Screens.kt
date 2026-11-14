@@ -1084,13 +1084,15 @@ fun RequestsScreen(m: AppModel) {
             if (m.requests.isEmpty()) Muted("No requests right now.", 14.sp, Modifier.padding(20.dp))
             for ((i, r) in m.requests.withIndex()) {
                 var naming by remember(r.id) { mutableStateOf(false) }
-                var name by remember(r.id) { mutableStateOf("") }
+                // The name they offered is only a suggestion: you name your contacts yourself.
+                var name by remember(r.id) { mutableStateOf(r.name) }
                 if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
                 Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Avatar("?", 42.dp)
                         Column(Modifier.weight(1f)) {
                             Text("Unknown sender", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                            if (r.name.isNotEmpty()) Muted("Calls themselves ${r.name}. Not checked.", 12.5.sp)
                             Text(r.fingerprint.replace("-", " "), fontFamily = Mono, fontSize = 12.sp, color = C.Muted, maxLines = 1)
                         }
                         Muted(listTime(r.received), 12.5.sp)
@@ -1196,6 +1198,54 @@ fun DevicesTab(m: AppModel) {
 // ---- 8/9 · agents: see Agents.kt ---------------------------------------------------------------------------
 
 // ---- 7 · network and privacy (settings) ---------------------------------------------------------------------------
+
+/**
+ * Settings > Your identity > Passphrase. Re-seals this phone's keys under a new passphrase (ADR 0003). A
+ * passphrase this phone keeps for fingerprint unlock or for the background is replaced too: the background copy
+ * at once, the fingerprint copy after one fingerprint check. If that check does not happen, fingerprint unlock is
+ * turned off, and the notice says so.
+ */
+@Composable
+fun PassphraseChange(m: AppModel, act: androidx.fragment.app.FragmentActivity) {
+    var open by remember { mutableStateOf(false) }
+    var old by remember { mutableStateOf("") }
+    var new1 by remember { mutableStateOf("") }
+    var new2 by remember { mutableStateOf("") }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Passphrase", fontWeight = FontWeight.Medium)
+            Muted("Protects the keys on this phone.", 12.5.sp)
+        }
+        if (!open) OutlineButton("Change", small = true) { open = true }
+    }
+    if (!open) return
+    Field("Current passphrase", old, { old = it }, password = true)
+    Field("New passphrase", new1, { new1 = it }, password = true, helper = "At least 10 characters.")
+    Field("New passphrase again", new2, { new2 = it }, password = true,
+        helper = if (new2.isNotEmpty() && new1 != new2) "The new passphrases do not match." else "Only this phone changes: your other devices keep their own.")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlineButton("Cancel", small = true) { open = false; old = ""; new1 = ""; new2 = "" }
+        OutlineButton("Change passphrase", small = true, enabled = old.isNotEmpty() && new1.length >= 10 && new1 == new2) {
+            val (o1, n1) = old to new1
+            m.run {
+                Bridge.call("change_passphrase", args("old" to o1, "new" to n1))
+                open = false; old = ""; new1 = ""; new2 = ""
+                if (BackgroundUnlock.enabled(act)) BackgroundUnlock.enable(act, n1)
+                if (!BioLock.enabled(act)) {
+                    m.notice = "Passphrase changed on this phone."
+                } else {
+                    // The saved copy is the old passphrase: drop it, then seal the new one after one check.
+                    BioLock.disable(act)
+                    m.notice = "Passphrase changed. Confirm with your fingerprint or face to keep fingerprint unlock."
+                    BioLock.enable(act, n1) { err ->
+                        m.notice = if (err == null) "Passphrase changed. Fingerprint unlock uses the new one."
+                        else "Passphrase changed. Fingerprint unlock is now off ($err): turn it on again under Unlocking and alerts."
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun SettingsTab(m: AppModel) {
@@ -1335,6 +1385,16 @@ fun SettingsTab(m: AppModel) {
             }
         }
         if (sec == "phone") CardBox {
+            // ADR 0038: offered to people you write to first; each of them can still rename you.
+            var myName by remember(o.me.name) { mutableStateOf(o.me.name) }
+            Field("Name", myName, { myName = it.take(64) }, placeholder = "No name set", helper = "Shown to people you add. Each contact can rename you.")
+            if (myName.trim() != o.me.name) OutlineButton("Save name", small = true) {
+                val v = myName.trim()
+                m.run { Bridge.call("set_profile_name", args("name" to v)); m.notice = if (v.isEmpty()) "No name is offered now." else "Name saved."; m.refresh() }
+            }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
+            PassphraseChange(m, act)
+            Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
             Text("Your card", fontWeight = FontWeight.Medium)
             Muted("Fingerprint ${o.me.fingerprint}", 12.5.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

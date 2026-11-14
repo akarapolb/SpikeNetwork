@@ -192,6 +192,10 @@ impl Engine {
             "mark_read" => val(rt.block_on(x.mark_read(&s(a, "name")?))?),
             "add_contact" => val(x.add_contact(&s(a, "name")?, &s(a, "card")?)?),
             "mark_verified" => val(x.mark_verified(&s(a, "name")?, &s(a, "fingerprint")?)?),
+            "change_passphrase" => {
+                val(x.change_passphrase(s(a, "old")?, s(a, "new")?)?)
+            }
+            "set_profile_name" => val(x.set_profile_name(&s(a, "name")?)?),
             "rename_contact" => val(x.rename_contact(&s(a, "old")?, &s(a, "name")?)?),
             "set_relay" => val(x.set_relay(&s(a, "url")?)?),
             "set_allow_insecure" => val(x.set_allow_insecure(b(a, "allow")?)?),

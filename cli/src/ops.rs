@@ -585,6 +585,7 @@ async fn deliver_to(
             .any(|(d, _, own)| !*own && !sessions.has_session(d))
     {
         env.intro = Some(home.identity_card()?);
+        env.intro_name = home.profile_name()?;
     }
     let plaintext = env.to_bytes();
     // Live app data is not stored by the relay (ADR 0030).

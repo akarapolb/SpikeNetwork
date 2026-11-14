@@ -33,6 +33,14 @@ const READ: &str = "read.enc";
 const LAST_SYNC: &str = "lastsync.enc";
 const DEVICE_LIST: &str = "devicelist.enc";
 const QUARANTINE: &str = "requests-sessions.enc";
+const PROFILE: &str = "profile.enc";
+
+/// The name you offer to people you write to first (ADR 0038). Sealed like everything else.
+#[derive(Serialize, Deserialize, Default)]
+struct Profile {
+    #[serde(default)]
+    name: Option<String>,
+}
 
 /// An unlocked state: a vault key and the store its sealed files live in. Without a type argument this is the
 /// state directory (`Home<FileStore>`), so existing code reads as before.
@@ -156,6 +164,44 @@ impl<S: Store> Home<S> {
             Err(e) => return Err(e.into()),
         };
         Ok(Self { store, vault })
+    }
+
+    /// Re-seal this device's vault under `new` (ADR 0003): only the header changes, so every file
+    /// stays as it is. `old` must be the current passphrase. Other devices keep their own.
+    pub async fn change_passphrase_async(&self, old: &str, new: &str) -> Result<()> {
+        let Some(header) = self.store.get(HEADER_FILE).await? else {
+            bail!("no state here");
+        };
+        let header = VaultHeader::from_json(
+            std::str::from_utf8(&header).context("the vault header is not text")?,
+        )?;
+        let next = match Vault::change_passphrase(old, new, &header) {
+            Ok(h) => h,
+            Err(CoreError::WrongPassphrase) => bail!("wrong passphrase"),
+            Err(e) => return Err(e.into()),
+        };
+        self.store.put(HEADER_FILE, next.to_json()?.as_bytes()).await
+    }
+
+    /// The name you chose to offer people (ADR 0038), if any.
+    pub async fn profile_name_async(&self) -> Result<Option<String>> {
+        Ok(self.load_json_async::<Profile>(PROFILE).await?.name)
+    }
+
+    /// Set or clear (`""`) the name you offer people. Trimmed; refused when it is too long or
+    /// holds control characters.
+    pub async fn set_profile_name_async(&self, name: &str) -> Result<()> {
+        let name = name.trim();
+        if !name.is_empty() && !spike_core::envelope::valid_intro_name(name) {
+            bail!(
+                "a name is at most {} characters, without control characters",
+                spike_core::envelope::MAX_INTRO_NAME
+            );
+        }
+        let profile = Profile {
+            name: (!name.is_empty()).then(|| name.to_string()),
+        };
+        self.save_json_async(PROFILE, &profile).await
     }
 
     pub async fn load_identity_async(&self) -> Result<Identity> {
@@ -544,6 +590,18 @@ impl Home<FileStore> {
 
     pub fn identity_card(&self) -> Result<String> {
         ready(self.identity_card_async())
+    }
+
+    pub fn change_passphrase(&self, old: &str, new: &str) -> Result<()> {
+        ready(self.change_passphrase_async(old, new))
+    }
+
+    pub fn profile_name(&self) -> Result<Option<String>> {
+        ready(self.profile_name_async())
+    }
+
+    pub fn set_profile_name(&self, name: &str) -> Result<()> {
+        ready(self.set_profile_name_async(name))
     }
 
     pub fn add_contact(&self, name: &str, card: &str, force: bool) -> Result<Added> {

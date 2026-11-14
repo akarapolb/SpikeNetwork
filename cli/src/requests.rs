@@ -49,6 +49,9 @@ pub struct Request {
     pub fingerprint: String,
     pub received: u64,
     pub held: Vec<Held>,
+    /// The name they offered (ADR 0038): a suggestion for when you accept, never trusted as theirs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// A person you blocked: every device key their card listed.
@@ -239,6 +242,7 @@ pub fn on_stranger(home: &Home, me: &mut Identity, blob: &[u8], key: [u8; 32]) -
                 fingerprint: card.fingerprint(),
                 received: now_ms(),
                 held: vec![],
+                name: env.intro_name.clone(),
             });
             all.len() - 1
         }

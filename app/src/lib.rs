@@ -155,6 +155,8 @@ pub struct Me {
     pub approver: bool,
     /// This device was removed from your identity by another device.
     pub removed: bool,
+    /// The name you offer people you write to first (ADR 0038). Empty when none.
+    pub name: String,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -302,6 +304,8 @@ pub struct MessageRequestDto {
     pub fingerprint: String,
     pub received: u64,
     pub held: Vec<HeldDto>,
+    /// The name they offered (ADR 0038), to suggest when accepting. Empty when none.
+    pub name: String,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -492,6 +496,22 @@ impl Session {
             kp_checked: AtomicBool::new(false),
             subs: std::sync::Arc::new(tokio::sync::Notify::new()),
         })
+    }
+
+    /// Re-seal this device's keys under a new passphrase (ADR 0003). The vault key stays the same,
+    /// so nothing else changes and this session stays unlocked. Other devices keep their own.
+    pub fn change_passphrase(&self, old: String, new: String) -> Result<()> {
+        let (old, new) = (Zeroizing::new(old), Zeroizing::new(new));
+        check_passphrase(&new)?;
+        if *old == *new {
+            bail!("the new passphrase is the same as the current one");
+        }
+        self.home.change_passphrase(&old, &new)
+    }
+
+    /// Set (or clear, with an empty string) the name you offer people (ADR 0038).
+    pub fn set_profile_name(&self, name: &str) -> Result<()> {
+        self.home.set_profile_name(name)
     }
 
     pub fn relay(&self) -> String {
@@ -753,6 +773,7 @@ impl Session {
                 list_version: me.version(),
                 approver,
                 removed: !self.home.this_device_is_listed()?,
+                name: self.home.profile_name()?.unwrap_or_default(),
             },
             contacts,
             groups: self.group_rows()?,
@@ -1148,6 +1169,7 @@ impl Session {
         Ok(requests::list(&self.home)?
             .into_iter()
             .map(|r| MessageRequestDto {
+                name: r.name.unwrap_or_default(),
                 id: r.key,
                 fingerprint: r.fingerprint,
                 received: r.received,
