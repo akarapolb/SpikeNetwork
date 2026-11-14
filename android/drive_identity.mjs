@@ -14,7 +14,7 @@ import { createPhone, APK, PKG } from "./phone_lib.mjs";
 const PHONE_PASS = "phone test passphrase";
 const NEW_PASS = "phone passphrase two";
 const NEWER_PASS = "phone passphrase three";
-const PORT = 18803;
+const PORT = 18981;
 const RELAY = `ws://127.0.0.1:${PORT}`;
 
 if (!process.env.ANDROID_SERIAL) {
@@ -78,10 +78,11 @@ try {
   if (await waitText("Turn on fingerprint unlock", 6000)) { if (withBio) touch(); else await tapText("Not now").catch(() => {}); }
   check(await waitText("Chats", 30000), "the identity is created");
   debug("set_relay", { url: RELAY });
+  debug("sync"); // publishes this phone's keys on the relay, so others can write to it
   const phoneCard = debug("overview").me.card;
 
   console.log("-- someone with a name writes to the phone first");
-  const dana = await D.launch("dana", 9421);
+  const dana = await D.launch("dana", 9681);
   await dana.invoke("set_profile_name", { name: "Dana Okafor" });
   await dana.invoke("add_contact", { name: "Phone", card: phoneCard });
   await dana.invoke("send", { name: "Phone", text: "Hello from Dana" });
@@ -112,7 +113,7 @@ try {
   check(debug("overview").me.name === "Pat Lee", "Save name stores it");
   check(await waitText("Name saved."), "the phone says it is saved");
   shot("identity-2-name");
-  const erin = await D.launch("erin", 9422);
+  const erin = await D.launch("erin", 9682);
   debug("add_contact", { name: "Erin", card: (await erin.invoke("overview")).me.card });
   debug("send", { name: "Erin", text: "Hi Erin, this is Pat" });
   const er = await until(async () => { await erin.invoke("sync"); const r = await erin.invoke("message_requests"); return r.length ? r[0] : null; });
@@ -168,7 +169,7 @@ try {
   await setField(0, PHONE_PASS, true);
   await tapText("Unlock", true);
   check(await waitText("wrong passphrase", 10000), "the old passphrase no longer unlocks");
-  if (screenText().includes(" | OK")) await tapText("OK", true);
+  if (screenText().includes(" | OK")) await tapText("OK", true).catch(() => {});
   await setField(0, latest, true);
   await tapText("Unlock", true);
   check(await waitText("Chats", 20000), "the new passphrase unlocks");
@@ -179,7 +180,7 @@ try {
   check(!!got, "messages still arrive after the change");
   shot("identity-5-after");
 } catch (e) {
-  console.log("ERROR", e.message);
+  console.log("ERROR", e.stack || e.message);
   try { shot("error"); } catch (_) {}
   D.fail();
 } finally {

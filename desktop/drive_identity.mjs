@@ -5,7 +5,7 @@
 import { join } from "node:path";
 import { createDrive, sleep } from "./drive_lib.mjs";
 
-const RELAY = "ws://127.0.0.1:18799";
+const RELAY = "ws://127.0.0.1:18991";
 const D = createDrive({ relayUrl: RELAY, shotsDir: process.argv[2] });
 const { root, start, launch, check, pass } = D;
 const NEW_PASS = "a different passphrase for drive";
@@ -19,10 +19,10 @@ const setVal = (p, sel, v) => p.eval(`const i=document.querySelector(${JSON.stri
 const toastText = (p) => p.eval(`return [...document.querySelectorAll('.toast')].map(t=>t.innerText).join(' | ')`);
 
 try {
-  start(join(root, "target", "debug", "spike-relay.exe"), ["--listen", "127.0.0.1:18799"], {});
+  start(join(root, "target", "debug", "spike-relay.exe"), ["--listen", "127.0.0.1:18991"], {});
   await sleep(1000);
-  const alice = await launch("alice", 9411);
-  const bob = await launch("bob", 9412);
+  const alice = await launch("alice", 9691);
+  const bob = await launch("bob", 9692);
   for (const p of [alice, bob]) await p.invoke("sync");
 
   console.log("-- Settings > Identity shows Name and Passphrase");
