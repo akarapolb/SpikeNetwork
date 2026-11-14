@@ -44,7 +44,7 @@ async function until(fn, ms = 25000) {
 const has = (sub) => nodes().some((n) => (n.text || n.desc).includes(sub));
 /** The x centre of the first node that says [sub], to tell which pane it is in. */
 const xOf = (sub) => nodes().find((n) => (n.text || n.desc).includes(sub))?.cx ?? -1;
-const screenWidth = () => Number((sh("wm size").match(/(?:Override|Physical) size: (\d+)x\d+\s*$/m) || [])[1] || 0);
+const screenWidth = () => { const w = sh("wm size"); return Number((w.match(/Override size: (\d+)x/) || w.match(/Physical size: (\d+)x/) || [])[1] || 0); };
 function resetSize() { try { sh("wm size reset"); sh("wm density reset"); } catch (_) {} }
 
 try {
@@ -57,13 +57,17 @@ try {
   adb("reverse", `tcp:${PORT}`, `tcp:${PORT}`);
   sh("settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0");
   sh(`am start -n ${PKG}/.MainActivity`);
+  // A busy emulator can show "… isn't responding" over everything: wait it out.
+  for (let i = 0; i < 6; i++) { const n = nodes().find((x) => x.text === "Wait"); if (!n || !screenText().includes("isn't responding")) break; sh(`input tap ${Math.round(n.cx)} ${Math.round(n.cy)}`); await sleep(2000); }
   check(await waitText("Your identity lives on this phone", 60000), "the phone shows the create screen");
   await tapText("Create my identity");
   // Back (to close the keyboard) can step the create screen back to the welcome screen when the keyboard was already
   // going away, so the fields are typed one after the other without closing it; each try starts from a clean screen.
   for (let attempt = 0; attempt < 4; attempt++) {
     if (!(await waitText("Passphrase for this phone", 5000))) { await tapText("Create my identity").catch(() => {}); await waitText("Passphrase for this phone"); }
-    for (const i of [0, 1]) { await tapField(i); sh("input keyevent KEYCODE_MOVE_END " + "67 ".repeat(40)); typeText(PHONE_PASS); await sleep(300); }
+    try {
+      for (const i of [0, 1]) { await tapField(i); sh("input keyevent KEYCODE_MOVE_END " + "67 ".repeat(40)); typeText(PHONE_PASS); await sleep(300); }
+    } catch (e) { console.log(`   (${e.message}; trying again)`); hideKeyboard(); continue; }
     const lens = nodes().filter((n) => n.cls.endsWith("EditText")).map((n) => (n.text || "").length);
     if (lens.length !== 2 || lens.some((l) => l !== PHONE_PASS.length)) { console.log(`   (the gate fields hold ${lens.join(", ")} characters; typing them again)`); continue; }
     const create = nodes().filter((n) => n.text === "Create my identity").pop();
@@ -82,8 +86,10 @@ try {
     cli("keys");
     debug("add_contact", { name, card: cli("card").match(/spike2:[0-9a-f]+/)[0] });
   }
-  bob("send", "Phone", "Hi! Are we still on for Thursday?");
-  dana("send", "Phone", "Lunch on Friday?");
+  // The phone publishes its prekeys when it first reaches the new relay; until then a first message cannot start a session.
+  for (const [cli, text] of [[bob, "Hi! Are we still on for Thursday?"], [dana, "Lunch on Friday?"]]) {
+    check(await until(() => { debug("sync"); cli("send", "Phone", text); return true; }, 30000), `a peer writes to the phone: ${text}`);
+  }
   check(await until(() => { debug("sync"); const c = debug("overview").contacts; return c.find((x) => x.name === "Bob Tanaka")?.last && c.find((x) => x.name === "Dana Kim")?.last; }),
     "both peers' messages reach the phone");
 
@@ -134,6 +140,8 @@ try {
   check(screenWidth() !== 2560, "the emulator is back to its own size");
   check(await waitText("Bob Tanaka"), "the chat list fills the phone");
   check(!has("Choose a chat to read it here."), "no empty conversation pane on a phone");
+  await sleep(1500); // the activity is recreated for the new size: let it settle before tapping
+  await until(() => has("Bob Tanaka"), 10000);
   await tapText("Bob Tanaka");
   check(await waitText("Yes, Thursday works."), "a chat opens full screen");
   check(has("Back to chats") && !has("Dana Kim"), "with a back button and no list beside it");
