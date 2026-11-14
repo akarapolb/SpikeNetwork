@@ -24,6 +24,15 @@ sealed interface Screen {
 
     /** This phone is the EXISTING device: enter the new device's code. */
     data object LinkOld : Screen
+
+    /** An agent's request, to approve or deny. */
+    data class AgentRequest(val id: String) : Screen
+
+    /** What an agent may do, and stopping it. */
+    data class AgentGrant(val agent: String) : Screen
+
+    /** The signed, hash-chained activity log. */
+    data object AgentLog : Screen
 }
 
 /** What the screens show, and what they ask for. One per app process. */
@@ -82,7 +91,8 @@ class AppModel(private val scope: CoroutineScope) {
             Screen.Requests -> requests = parseRequests(Bridge.arr("message_requests"))
             else -> {}
         }
-        if (screen == null && tab == Tab.Agents) agents = parseAgents(Bridge.obj("agents"))
+        val s = screen
+        if ((s == null && tab == Tab.Agents) || s is Screen.AgentRequest || s is Screen.AgentGrant || s == Screen.AgentLog) agents = parseAgents(Bridge.obj("agents"))
     }
 
     private suspend fun loadGroup(id: String, withMessages: Boolean) {

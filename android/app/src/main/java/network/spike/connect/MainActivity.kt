@@ -238,5 +238,8 @@ private fun Ready(m: AppModel) {
         Screen.Requests -> RequestsScreen(m)
         Screen.LinkNew -> LinkNewScreen(m)
         Screen.LinkOld -> LinkOldScreen(m)
+        is Screen.AgentRequest -> AgentRequestScreen(m, s.id)
+        is Screen.AgentGrant -> AgentGrantScreen(m, s.agent)
+        Screen.AgentLog -> AgentLogScreen(m)
     }
 }

@@ -92,7 +92,7 @@ private fun sameDay(a: Long, b: Long): Boolean {
 }
 
 /** The chat list's time: the clock today, "Yesterday", a weekday this week, else the date. */
-private fun listTime(ms: Long): String {
+internal fun listTime(ms: Long): String {
     if (ms == 0L) return ""
     val now = System.currentTimeMillis()
     return when {
@@ -1149,78 +1149,7 @@ fun DevicesTab(m: AppModel) {
     }
 }
 
-// ---- 8/9 · agents ---------------------------------------------------------------------------------------------
-
-@Composable
-fun AgentsTab(m: AppModel) {
-    val a = m.agents
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        H1("Agents", 30.sp)
-        Muted("Software that acts for you only within limits you set, and asks before anything over them. Every request is signed and shown by what it will do.", 14.sp)
-        if (a == null) Muted("Loading…", 14.sp)
-        else {
-            if (a.requests.isEmpty() && a.grants.isEmpty()) {
-                EmptyState(Ic.Sparkle, "No agents yet. Agents are allowed from the computer app for now; their requests appear here for you to approve.")
-            }
-            for (r in a.requests) {
-                // The request as the design shows it: who asks, the signed action as one large line, its facts as
-                // rows, the agent's own words set apart as unverified, then the decision.
-                FramedBox(waiting = r.status == "waiting") {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Avatar(r.from, 28.dp, square = true)
-                        Text(r.from + if (r.status == "waiting") " asks to" else "", color = C.Muted, fontSize = 13.5.sp, modifier = Modifier.weight(1f))
-                        when (r.status) {
-                            "waiting" -> Text("Waiting", color = C.AmberText, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
-                            "approved" -> Text("Approved", color = C.Green, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
-                            else -> Text("Denied", color = C.Danger, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
-                        }
-                    }
-                    Text(
-                        r.summary ?: "\u201c${r.note}\u201d", fontFamily = Geist, fontWeight = FontWeight.SemiBold,
-                        fontSize = if (r.summary != null) 30.sp else 20.sp, lineHeight = if (r.summary != null) 33.sp else 25.sp,
-                    )
-                    Column {
-                        for ((k, v) in r.typed) {
-                            Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
-                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                                Text(k.replaceFirstChar { it.uppercase() }, color = C.Muted, fontSize = 13.5.sp, modifier = Modifier.weight(1f))
-                                Text(v, fontSize = 13.5.sp, fontFamily = Mono)
-                            }
-                        }
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
-                        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                            Text("Scope", color = C.Muted, fontSize = 13.5.sp, modifier = Modifier.weight(1f))
-                            Text(r.scope, fontSize = 13.5.sp, fontFamily = Mono)
-                        }
-                    }
-                    if (r.summary != null) {
-                        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.Subtle).padding(horizontal = 12.dp, vertical = 10.dp)) {
-                            Text("AGENT SAYS · NOT VERIFIED", fontFamily = Mono, fontSize = 10.5.sp, color = C.Muted, letterSpacing = 0.8.sp)
-                            Text(r.note, fontSize = 13.5.sp, color = C.AvatarText)
-                        }
-                    }
-                    if (r.status == "waiting") {
-                        PrimaryButton("Approve") { m.run { Bridge.call("decide", args("id" to r.id, "approve" to true)); m.refresh() } }
-                        Text(
-                            "Deny", fontWeight = FontWeight.Medium, fontSize = 15.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                                .clickable { m.run { Bridge.call("decide", args("id" to r.id, "approve" to false)); m.refresh() } }.padding(vertical = 10.dp),
-                        )
-                    }
-                }
-            }
-            if (a.grants.isNotEmpty()) {
-                Text("ALLOWED", fontFamily = Mono, fontSize = 11.sp, color = C.Muted, letterSpacing = 0.8.sp, modifier = Modifier.padding(top = 8.dp))
-                for (g in a.grants) {
-                    CardBox {
-                        Text(g.agent, fontWeight = FontWeight.SemiBold)
-                        Muted("Scopes: ${g.scopes.joinToString(", ")}${if (g.typedOnly) " · typed requests only" else ""}", 13.sp)
-                    }
-                }
-            }
-        }
-    }
-}
+// ---- 8/9 · agents: see Agents.kt ---------------------------------------------------------------------------
 
 // ---- 7 · network and privacy (settings) ---------------------------------------------------------------------------
 

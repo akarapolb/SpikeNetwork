@@ -313,6 +313,16 @@ impl Engine {
             }
             "agents" => val(x.agents()?),
             "decide" => val(rt.block_on(x.decide(&s(a, "id")?, b(a, "approve")?))?),
+            // Stop an agent: its standing permission ends; approvals already given live until they expire.
+            "revoke" => val(x.revoke(&s(a, "name")?)?),
+            // Give an agent a standing permission (the phone has no form for it yet; the drivers use it).
+            "grant" => {
+                let req: crate::GrantRequest =
+                    serde_json::from_value(a.get("request").cloned().unwrap_or(Value::Null))
+                        .context("the grant")?;
+                x.grant(req)?;
+                val(true)
+            }
             "remove_device" => val(rt.block_on(x.remove_device(&s(a, "id")?))?),
             // Wait for the relay to say something is waiting (a message, or an entry in a large
             // group), up to `ms`. Returns whether it did. The caller then runs `sync`.
