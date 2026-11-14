@@ -24,7 +24,12 @@ const { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, 
 
 try {
   console.log("-- setting up: relay on this PC, clean install on the emulator");
-  try { execFileSync("taskkill", ["/F", "/IM", "spike-relay.exe"], { stdio: "ignore" }); } catch (_) {}
+  // A relay left over on this driver's port is stopped; never every relay on the PC (other drivers run theirs).
+  try {
+    const pid = execFileSync("netstat", ["-ano", "-p", "TCP"], { encoding: "utf8" })
+      .split("\n").map((l) => l.trim().split(/\s+/)).find((c) => c[1] === "127.0.0.1:8787" && c[3] === "LISTENING")?.[4];
+    if (pid) execFileSync("taskkill", ["/F", "/PID", pid], { stdio: "ignore" });
+  } catch (_) {}
   D.start(join(D.root, "target", "debug", "spike-relay.exe"), ["--listen", "127.0.0.1:8787"], {});
   await sleep(1000);
   adb("install", "-r", APK);

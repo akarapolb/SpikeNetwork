@@ -23,7 +23,7 @@ const FILE = "spike-identity-backup.spikebackup";
 const D = createDrive({ relayUrl: RELAY, shotsDir: process.argv[2] });
 const { check } = D;
 mkdirSync(D.shots, { recursive: true });
-const { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, shot, back, hideKeyboard, debug } = createPhone(D);
+const { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, setField, fieldLength, shot, back, hideKeyboard, debug } = createPhone(D);
 
 // Bob, the contact, is the command-line client with a home of its own.
 const bobHome = join(mkdtempSync(join(tmpdir(), "spike-bob-")), "home");
@@ -50,13 +50,18 @@ try {
   check(await waitText("Your identity lives on this phone"), "the phone shows the create screen");
   // The welcome screen asks first what you want; the passphrase is on the next screen.
   await tapText("Create my identity"); await waitText("Passphrase for this phone");
-  for (let attempt = 0; attempt < 4; attempt++) {
-    await fill(0, PHONE_PASS);
-    await fill(1, PHONE_PASS);
-    const filled = nodes().filter((n) => n.cls.endsWith("EditText") && (n.text || "").length > 0).length;
-    if (filled === 2) break;
-    sh(`am start -n ${PKG}/.MainActivity`);
-    await sleep(1500);
+  // On a slow emulator Back (closing the keyboard) can also leave the passphrase screen: open it again and
+  // retype until both fields hold the whole passphrase.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (!screenText().includes("Passphrase for this phone")) {
+      sh(`am start -n ${PKG}/.MainActivity`);
+      if (await waitText("Create my identity", 5000) && !screenText().includes("Passphrase for this phone")) {
+        await tapText("Create my identity"); await waitText("Passphrase for this phone", 10000);
+      }
+      continue;
+    }
+    try { await setField(0, PHONE_PASS); await setField(1, PHONE_PASS); } catch (_) {}
+    if (screenText().includes("Passphrase for this phone") && fieldLength(0) === PHONE_PASS.length && fieldLength(1) === PHONE_PASS.length) break;
   }
   await tapText("Create my identity");
   check(await waitText("Chats"), "the identity is created and the chat list shows");
@@ -99,12 +104,17 @@ try {
   shot("backup-3-sealed");
   await tapText("Save to");
   // The system "create document" screen: its name field is pre-filled; Save puts it in Downloads.
-  check(await waitText("Save", 15000), "the system file picker opens");
+  // Wait for the picker itself ("Save to" on the app's own screen would match a plain "Save"), and tap its
+  // SAVE until the file is there: on a slow emulator the picker can still be loading at the first tap.
+  check(await waitText("Files in", 30000), "the system file picker opens");
   shot("backup-4-picker");
-  const saveBtn = nodes().filter((n) => (n.text || "").toUpperCase() === "SAVE").pop();
-  if (saveBtn) { tap(saveBtn.cx, saveBtn.cy); await sleep(2000); }
   let saved = "";
-  try { saved = sh(`ls -l /sdcard/Download/${FILE}`); } catch (_) {}
+  for (let i = 0; i < 6 && !saved.includes(FILE); i++) {
+    const saveBtn = nodes().filter((n) => (n.text || "").toUpperCase() === "SAVE").pop();
+    if (saveBtn) tap(saveBtn.cx, saveBtn.cy);
+    await sleep(2500);
+    try { saved = sh(`ls -l /sdcard/Download/${FILE}`); } catch (_) {}
+  }
   check(saved.includes(FILE), "the file is in the phone's Downloads");
   check(await waitText("Last backup", 10000), "Settings now shows the date of the last backup");
   shot("backup-5-saved");
@@ -139,10 +149,9 @@ try {
   await fill(0, "WRONG-KEY-WRONG-KEY-WRONG");
   await tapText("Open backup");
   check(await waitText("wrong backup passphrase", 20000), "a wrong key is refused with a plain message");
-  await tapField(0);
-  // Clear the field and type the real key, lower case and without dashes (as a person might).
-  sh("input keyevent KEYCODE_MOVE_END"); for (let i = 0; i < 30; i++) sh("input keyevent KEYCODE_DEL");
-  typeText(key.toLowerCase().replaceAll("-", "")); hideKeyboard();
+  // Clear the field and type the real key, lower case and without dashes (as a person might). The field is
+  // checked after typing: the emulator's keyboard now and then loses a keystroke.
+  check(await setField(0, key.toLowerCase().replaceAll("-", "")), "the field holds the whole key as typed");
   await tapText("Open backup");
   check(await waitText("1 contact", 30000), "the summary shows what the backup holds");
   shot("backup-7-summary");

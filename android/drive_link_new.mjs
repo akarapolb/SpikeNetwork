@@ -9,19 +9,20 @@ import { createDrive, sleep } from "../desktop/drive_lib.mjs";
 import { createPhone, ADB, APK, PKG } from "./phone_lib.mjs";
 
 const PHONE_PASS = "phone test passphrase";
-const D = createDrive({ relayUrl: "ws://127.0.0.1:8787", shotsDir: process.argv[2] });
+// Its own relay port, and only the relay it started is stopped: other drivers on this PC are left alone.
+const PORT = 8796;
+const D = createDrive({ relayUrl: `ws://127.0.0.1:${PORT}`, shotsDir: process.argv[2] });
 const { check } = D;
 mkdirSync(D.shots, { recursive: true });
 const { touch, adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, shot, hideKeyboard, debug } = createPhone(D);
 
 try {
   console.log("-- setting up: relay, a desktop with an identity, contacts and history");
-  try { execFileSync("taskkill", ["/F", "/IM", "spike-relay.exe"], { stdio: "ignore" }); } catch (_) {}
-  D.start(join(D.root, "target", "debug", "spike-relay.exe"), ["--listen", "127.0.0.1:8787"], {});
+  D.start(join(D.root, "target", "debug", "spike-relay.exe"), ["--listen", `127.0.0.1:${PORT}`], {});
   await sleep(1000);
   adb("install", "-r", APK);
   sh(`pm clear ${PKG}`);
-  adb("reverse", "tcp:8787", "tcp:8787");
+  adb("reverse", `tcp:${PORT}`, `tcp:${PORT}`);
   sh("settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0");
   const desk = await D.launch("desktop", 9341);
   const friend = await D.launch("friend", 9342);
@@ -35,6 +36,8 @@ try {
   sh(`am start -n ${PKG}/.MainActivity`);
   await waitText("Your identity lives on this phone");
   await sleep(1500);
+  // The phone's link code names its relay: this driver's own, not the default port.
+  debug("set_relay", { url: `ws://127.0.0.1:${PORT}` });
   // The welcome screen offers it first; the passphrase for this phone is asked on the next screen.
   await tapText("I already use Spike on another device");
   await waitText("Passphrase for this phone");
