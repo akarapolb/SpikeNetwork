@@ -162,6 +162,8 @@ private fun Root() {
         when (val s = m.screen) {
             is Screen.Members -> m.open(Screen.GroupChat(s.id))
             is Screen.Verify -> m.open(Screen.Chat(s.name))
+            Screen.Directory -> m.open(Screen.NewGrant)
+            is Screen.ReviewListed, Screen.Listers -> m.open(Screen.Directory)
             Screen.LinkNew, Screen.LinkOld -> m.run { try { Bridge.call("link_cancel") } catch (_: Exception) {}; m.open(null) }
             else -> m.open(null)
         }
@@ -329,5 +331,9 @@ private fun ScreenContent(m: AppModel, s: Screen) {
         is Screen.AgentGrant -> AgentGrantScreen(m, s.agent)
         Screen.AgentLog -> AgentLogScreen(m)
         Screen.SendToDevices -> SendToDevicesScreen(m)
+        Screen.NewGrant -> NewGrantScreen(m)
+        Screen.Directory -> DirectoryScreen(m)
+        is Screen.ReviewListed -> ReviewListedScreen(m, s.agent)
+        Screen.Listers -> ListersScreen(m)
     }
 }

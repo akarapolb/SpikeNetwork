@@ -4,6 +4,20 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
+import org.json.JSONArray
+import org.json.JSONObject
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -94,7 +108,8 @@ fun AgentsTab(m: AppModel) {
         Box(Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 10.dp)) { H1("Agents", 28.sp) }
         if (a == null) { Muted("Loading…", 14.sp, Modifier.padding(20.dp)); return@Column }
         if (a.requests.isEmpty() && a.grants.isEmpty()) {
-            EmptyState(Ic.Sparkle, "No agents yet. Agents are allowed from the computer app for now; their requests appear here for you to approve.")
+            EmptyState(Ic.Sparkle, "No agents yet. Give an agent a standing permission first; its requests then appear here for you to approve.")
+            if (a.approver) PrimaryButton("Give an agent a grant", modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) { m.open(Screen.NewGrant) }
             return@Column
         }
         val waiting = a.requests.filter { it.status == "waiting" }
@@ -108,6 +123,10 @@ fun AgentsTab(m: AppModel) {
         Column(Modifier.padding(horizontal = 10.dp)) {
             if (a.grants.isEmpty()) Muted("No agent may ask yet", 13.sp, Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
             for (g in a.grants) AgentRow(g.agent, grantLine(g), false, "", false) { m.open(Screen.AgentGrant(g.agent)) }
+            if (a.approver) Text(
+                "Give an agent a grant", fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { m.open(Screen.NewGrant) }.padding(horizontal = 10.dp, vertical = 12.dp),
+            )
         }
         if (done.isNotEmpty()) {
             Cap("Decided", Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 6.dp))
@@ -184,43 +203,171 @@ fun AgentRequestScreen(m: AppModel, id: String) {
     }
 }
 
-/** What an agent may do, as the design's limits screen, and stopping it. */
+/** How the scopes read on the limits screen; anything else shows as its own name. */
+private val SCOPE_WORDS = mapOf(
+    "payments.send" to "Pay", "files.read" to "Read files", "files.write" to "Write files",
+    "files.delete" to "Delete files", "messages.send" to "Send messages",
+)
+private val KNOWN_SCOPES = SCOPE_WORDS.keys.toList()
+fun scopeWords(s: String) = SCOPE_WORDS[s] ?: s
+
+/** "500", "500.5" or "500.00" as cents; blank is none. The first is false when the text is not an amount. */
+private fun cents(s: String): Pair<Boolean, Long?> {
+    val t = s.trim().replace(",", "")
+    if (t.isEmpty()) return true to null
+    val m = Regex("^(\\d{1,9})(?:\\.(\\d{1,2}))?$").find(t) ?: return false to null
+    return true to (m.groupValues[1].toLong() * 100 + m.groupValues[2].padEnd(2, '0').toLong())
+}
+
+/** A number in a row of the limits screen, right-aligned in the mono face as in the design. */
+@Composable
+private fun NumBox(value: String, onChange: (String) -> Unit, placeholder: String, enabled: Boolean, label: String, decimal: Boolean = true) {
+    Box(
+        Modifier.width(128.dp).clip(RoundedCornerShape(10.dp)).background(C.Surface)
+            .border(1.dp, if (enabled) C.BorderStrong else C.Border, RoundedCornerShape(10.dp)).padding(horizontal = 12.dp, vertical = 9.dp),
+        contentAlignment = Alignment.CenterEnd,
+    ) {
+        BasicTextField(
+            value, onChange, enabled = enabled, singleLine = true,
+            textStyle = TextStyle(fontFamily = Mono, fontSize = 14.sp, color = C.Text, textAlign = TextAlign.End),
+            cursorBrush = SolidColor(C.Accent),
+            keyboardOptions = KeyboardOptions(keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number),
+            modifier = Modifier.fillMaxWidth().semantics { contentDescription = label },
+            decorationBox = { inner ->
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                    if (value.isEmpty()) Text(placeholder, color = C.Muted, fontSize = 13.sp, textAlign = TextAlign.End, maxLines = 1)
+                    inner()
+                }
+            },
+        )
+    }
+}
+
+/** What an agent may do, as the design's "Agent limits": each limit editable in place, saved as a new signed grant.
+ *  With no grant yet it is the same form, empty, ending in "Allow". Off the main device it only shows. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AgentGrantScreen(m: AppModel, agent: String) {
     val a = m.agents
     val g = a?.grants?.firstOrNull { it.agent == agent }
+    val canEdit = a?.approver == true
     var stopping by remember { mutableStateOf(false) }
+    var types by remember { mutableStateOf(KNOWN_SCOPES) }
+    LaunchedEffect(Unit) {
+        runCatching { Bridge.arr("action_types") }.getOrNull()?.let { arr -> types = (0 until arr.length()).map { arr.getJSONObject(it).getString("name") } }
+    }
+    // The form starts from the grant as it is (or empty), and starts again whenever the signed grant changes.
+    val daysLeft = g?.let { (((it.expires - System.currentTimeMillis()) + 86_399_999) / 86_400_000).coerceIn(1, 365) } ?: 30L
+    var scopes by remember(g) { mutableStateOf(g?.scopes ?: emptyList()) }
+    var max by remember(g) { mutableStateOf(g?.maxCents?.let { amt(it) } ?: "") }
+    var auto by remember(g) { mutableStateOf(g?.autoBelowCents?.let { amt(it) } ?: "") }
+    var daily by remember(g) { mutableStateOf(g?.dailyCents?.let { amt(it) } ?: "") }
+    var perHour by remember(g) { mutableStateOf((g?.perHour ?: 10).toString()) }
+    var typedOnly by remember(g) { mutableStateOf(g?.typedOnly ?: true) }
+    var days by remember(g) { mutableStateOf(daysLeft.toString()) }
+    var error by remember(g) { mutableStateOf<String?>(null) }
+    val dirty = g == null || scopes.toSet() != g.scopes.toSet() || max != (g.maxCents?.let { amt(it) } ?: "") ||
+        auto != (g.autoBelowCents?.let { amt(it) } ?: "") || daily != (g.dailyCents?.let { amt(it) } ?: "") ||
+        perHour != g.perHour.toString() || typedOnly != g.typedOnly || days != daysLeft.toString()
+
+    fun save() {
+        val (okMax, maxC) = cents(max)
+        val (okAuto, autoC) = cents(auto)
+        val (okDaily, dailyC) = cents(daily)
+        val ph = perHour.trim().toIntOrNull()
+        val d = days.trim().toLongOrNull()
+        error = when {
+            scopes.isEmpty() -> "Choose at least one thing it may do."
+            !okMax || !okAuto || !okDaily -> "Write amounts as numbers, like 200 or 200.00."
+            maxC == null && (autoC != null || dailyC != null) -> "Set an amount for each request first, or leave all amounts empty for no money."
+            autoC != null && maxC != null && autoC > maxC -> "Without asking cannot be more than each request."
+            dailyC != null && maxC != null && dailyC < maxC -> "In any 24 hours cannot be less than each request."
+            ph == null || ph !in 1..1000 -> "Requests an hour must be between 1 and 1000."
+            d == null || d !in 1L..365L -> "A grant lasts 1 to 365 days."
+            typedOnly && scopes.any { it !in types } -> "Typed actions only works with the listed actions; turn it off to allow ${scopes.first { it !in types }}."
+            else -> null
+        }
+        if (error != null) return
+        m.run {
+            Bridge.call("grant", args("request" to JSONObject().apply {
+                put("agent", agent); put("scopes", JSONArray(scopes)); put("days", d)
+                put("max_cents", maxC ?: JSONObject.NULL); put("auto_below_cents", autoC ?: JSONObject.NULL)
+                put("per_hour", ph); put("daily_cents", dailyC ?: JSONObject.NULL); put("typed_only", typedOnly)
+            }))
+            m.notice = if (g == null) "$agent is allowed." else "Limits saved."
+            m.refresh()
+        }
+    }
+
     Page {
-        TopBar(agent, { m.open(null) }, sub = g?.let { "Allowed until " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it.expires)) })
-        if (g == null) { Muted(if (a == null) "Loading…" else "This agent has no grant any more.", 14.sp, Modifier.padding(20.dp)); return@Page }
+        TopBar(agent, { m.open(null) }, sub = g?.let { "Allowed until " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it.expires)) } ?: "Not allowed yet")
+        if (a == null) { Muted("Loading…", 14.sp, Modifier.padding(20.dp)); return@Page }
+        if (g == null && !canEdit) { Muted("This agent has no grant. Grants are kept on your main device.", 14.sp, Modifier.padding(20.dp)); return@Page }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             @Composable
-            fun Set(label: String, value: String) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                    Text(value, fontSize = 14.sp, color = C.AvatarText, textAlign = TextAlign.End)
+            fun Line() = Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(1.dp).background(C.Border))
+
+            @Composable
+            fun Set(label: String, sub: String?, content: @Composable () -> Unit) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        if (sub != null) Text(sub, fontSize = 12.sp, color = C.Muted)
+                    }
+                    content()
                 }
-                Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(1.dp).background(C.Border))
+                Line()
             }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("May", fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                for (s in g.scopes) Row(
-                    Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, C.BorderStrong, RoundedCornerShape(999.dp)).padding(horizontal = 10.dp, vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) { Ico(Ic.Check, C.Text, 12.dp); Text(s, fontSize = 12.5.sp) }
+            if (g == null) Text(
+                "An agent can do nothing until you set its limits. Choose what it may do; amounts left empty mean no money.",
+                fontSize = 13.5.sp, color = C.AvatarText, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+            )
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("May", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (s in (types + scopes).distinct()) {
+                        val on = s in scopes
+                        Row(
+                            Modifier.clip(RoundedCornerShape(999.dp)).border(1.dp, if (on) C.Text else C.BorderStrong, RoundedCornerShape(999.dp))
+                                .clickable(enabled = canEdit) { scopes = if (on) scopes - s else scopes + s; error = null }
+                                .semantics { selected = on }.padding(horizontal = 11.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            if (on) Ico(Ic.Check, C.Text, 12.dp)
+                            Text(SCOPE_WORDS[s] ?: s, fontSize = 12.5.sp, color = if (on) C.Text else C.AvatarText)
+                        }
+                    }
+                }
             }
-            Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(1.dp).background(C.Border))
-            Set("Each request", g.maxCents?.let { amt(it) } ?: "No money")
-            Set("Without asking", g.autoBelowCents?.let { "Up to ${amt(it)}" } ?: "Always asks")
-            Set("In any 24 hours", g.dailyCents?.let { amt(it) } ?: "No cap")
-            Set("Requests an hour", "${g.perHour}")
-            Set("Typed actions only", if (g.typedOnly) "Yes" else "No")
+            Line()
+            Set("Each request", "Above it, refused") { NumBox(max, { max = it; error = null }, "No money", canEdit, "Each request") }
+            Set("Without asking", "Up to it, it acts alone") { NumBox(auto, { auto = it; error = null }, "Always asks", canEdit, "Without asking") }
+            Set("In any 24 hours", null) { NumBox(daily, { daily = it; error = null }, "No cap", canEdit, "In any 24 hours") }
+            Set("Requests an hour", null) { NumBox(perHour, { perHour = it; error = null }, "10", canEdit, "Requests an hour", decimal = false) }
+            Set("Typed actions only", "Requests the app checks field by field") {
+                Switch(typedOnly, { typedOnly = it; error = null }, enabled = canEdit, colors = SwitchDefaults.colors(checkedTrackColor = C.Accent))
+            }
+            Set("How long", "Days from now") { NumBox(days, { days = it; error = null }, "30", canEdit, "How long", decimal = false) }
+            error?.let {
+                Text(
+                    it, color = C.RedText, fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.RedBg).padding(12.dp),
+                )
+            }
             Muted(
-                "Up to the amount without asking, it acts alone. Above it and up to the request limit, it asks you first. Above the limit it is refused. Limits are changed on the computer app.",
+                if (canEdit) "Up to the amount without asking, it acts alone. Above it and up to each request, it asks you first. Above that it is refused. Saving signs a new grant that replaces this one."
+                else "Up to the amount without asking, it acts alone. Above it, it asks you first. Limits are changed on your main device.",
                 12.5.sp, Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
             )
         }
-        if (a.approver) Box(Modifier.padding(start = 24.dp, end = 24.dp, bottom = 20.dp)) { TextLink("Stop this agent", danger = true) { stopping = true } }
+        if (canEdit) Column(Modifier.navigationBarsPadding().padding(start = 24.dp, end = 24.dp, bottom = 12.dp, top = 4.dp)) {
+            if (g == null) PrimaryButton("Allow $agent", enabled = !m.busy) { save() }
+            else if (dirty) PrimaryButton("Save limits", enabled = !m.busy) { save() }
+            if (g != null) TextLink("Stop this agent", danger = true) { stopping = true }
+        }
     }
     if (stopping) AlertDialog(
         onDismissRequest = { stopping = false },
@@ -229,6 +376,26 @@ fun AgentGrantScreen(m: AppModel, agent: String) {
         confirmButton = { TextButton({ stopping = false; m.run { Bridge.call("revoke", args("name" to agent)); m.notice = "$agent stopped."; m.open(null) } }) { Text("Stop", color = C.Danger) } },
         dismissButton = { TextButton({ stopping = false }) { Text("Cancel", color = C.Text) } },
     )
+}
+
+/** Give a new agent a grant: pick the contact. Agents come first; any contact can be allowed, as on the desktop. */
+@Composable
+fun NewGrantScreen(m: AppModel) {
+    val a = m.agents
+    val granted = a?.grants?.map { it.agent }?.toSet() ?: emptySet()
+    val contacts = (m.overview?.contacts ?: emptyList()).filter { it.name !in granted }.sortedBy { !it.agent }
+    Page {
+        TopBar("Give an agent a grant", { m.open(null) }, sub = "Then set what it may do")
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 8.dp)) {
+            AgentRow("Find an agent", "Listed agents, verified by listers you trust", false, "", false) { m.open(Screen.Directory) }
+            Cap("Your contacts", Modifier.padding(start = 10.dp, end = 10.dp, top = 14.dp, bottom = 6.dp))
+            if (contacts.isEmpty()) {
+                Muted("Add the agent as a contact first: scan or paste its card.", 14.sp, Modifier.padding(10.dp))
+                OutlineButton("Add a contact", Modifier.fillMaxWidth().padding(10.dp)) { m.addTab = 2; m.open(Screen.AddContact) }
+            }
+            for (c in contacts) AgentRow(c.name, if (c.agent) "Agent" else if (c.verified) "Contact · verified" else "Contact", false, "", false) { m.open(Screen.AgentGrant(c.name)) }
+        }
+    }
 }
 
 private val LOG_WORDS = mapOf(

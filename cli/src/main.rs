@@ -189,6 +189,25 @@ enum Cmd {
     AgentStatus,
     /// List the known typed actions and their fields.
     AgentTypes,
+    /// Sign a directory listing (ADR 0036) and print it as one line of JSON. Without --card it
+    /// lists this identity (an agent listing itself, shown as "not verified"); with --card this
+    /// identity vouches, as a lister, for that agent.
+    AgentListing {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        maker: String,
+        #[arg(long, default_value = "")]
+        about: String,
+        /// What the agent asks for, repeatable.
+        #[arg(long = "scope")]
+        scopes: Vec<String>,
+        /// The agent's identity card, when listing another agent.
+        #[arg(long)]
+        card: Option<String>,
+        #[arg(long, default_value_t = 30)]
+        days: u64,
+    },
     /// Agent: package an approved request for the service that will act on it
     /// (prints a presentation; give it to that service, which runs `verify-receipt`).
     AgentPresent {
@@ -1509,6 +1528,25 @@ async fn run() -> Result<()> {
             )
             .await?;
             println!("caught up: {changed} message(s) added or updated (devices that are offline answer when they next run `spike recv`)");
+        }
+        Cmd::AgentListing {
+            name,
+            maker,
+            about,
+            scopes,
+            card,
+            days,
+        } => {
+            let l = spike_cli::directory::sign(
+                &home,
+                card.as_deref(),
+                &name,
+                &maker,
+                &about,
+                scopes,
+                days,
+            )?;
+            println!("{}", serde_json::to_string(&l)?);
         }
         Cmd::RequestFile { id, relay } => {
             let n = ops::request_file(&home, target(relay), &id).await?;
