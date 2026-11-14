@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -111,8 +112,12 @@ fun BackupCard(m: AppModel) {
                 if (k != null) {
                     Muted("Your backup key. It is shown once and is not stored. Write it down and keep it apart from the file:", 13.sp)
                     Text(k, fontFamily = Mono, fontSize = 18.sp)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(ack, { ack = it }, colors = CheckboxDefaults.colors(checkedColor = C.Accent))
+                    // The whole row ticks the box: the words are the easiest thing to tap.
+                    Row(
+                        Modifier.fillMaxWidth().toggleable(value = ack, role = androidx.compose.ui.semantics.Role.Checkbox) { ack = it },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(ack, null, colors = CheckboxDefaults.colors(checkedColor = C.Accent))
                         Text("I wrote the key down", fontSize = 14.sp)
                     }
                 } else {

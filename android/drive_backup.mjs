@@ -48,6 +48,8 @@ try {
 
   console.log("-- 1 · identity, and a contact to talk to");
   check(await waitText("Your identity lives on this phone"), "the phone shows the create screen");
+  // The welcome screen asks first what you want; the passphrase is on the next screen.
+  await tapText("Create my identity"); await waitText("Passphrase for this phone");
   for (let attempt = 0; attempt < 4; attempt++) {
     await fill(0, PHONE_PASS);
     await fill(1, PHONE_PASS);
@@ -74,6 +76,8 @@ try {
 
   console.log("-- 2 · make a backup from Settings");
   await tapText("Settings", true);
+  await waitText("Home relay");
+  await tapText("Backup", true);
   check(await waitText("Backup and recovery"), "Settings shows Backup and recovery");
   check(await waitText("No backup yet"), "and says there is no backup yet");
   shot("backup-1-settings");

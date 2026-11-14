@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -61,7 +62,8 @@ object C {
     var dark by mutableStateOf(false)
     private fun p(light: Long, dark: Long) = Color(if (this.dark) dark else light)
 
-    val Bg get() = p(0xFFF6F7F7, 0xFF0A0D0E)
+    // Phone screens are white in the design (the desktop keeps a grey page behind its panels).
+    val Bg get() = p(0xFFFFFFFF, 0xFF111516)
     val BgChat get() = p(0xFFFFFFFF, 0xFF111516)
     val Surface get() = p(0xFFFFFFFF, 0xFF111516)
     /** Filled inputs, chips, incoming bubbles and the composer. */
@@ -285,12 +287,22 @@ fun Field(
     }
 }
 
-/** A rounded surface card with a hairline border. */
+/** A section of a page: flat, with a hairline under it, as in the design (no boxes inside boxes). */
 @Composable
 fun CardBox(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Column(modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { content() }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
+    }
+}
+
+/** A bordered card, for the one object a screen is about (an agent's request). Amber while it waits for you. */
+@Composable
+fun FramedBox(waiting: Boolean = false, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    val shape = RoundedCornerShape(18.dp)
     Column(
-        modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(C.Surface)
-            .border(1.dp, C.Border, RoundedCornerShape(18.dp)).padding(16.dp),
+        modifier.fillMaxWidth().clip(shape).background(C.Surface)
+            .border(1.dp, if (waiting) C.AmberBorder else C.BorderStrong, shape).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) { content() }
 }

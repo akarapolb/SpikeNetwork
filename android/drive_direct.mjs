@@ -100,6 +100,8 @@ try {
   sh("input swipe 540 1800 540 700 300");
   await sleep(600);
   check(screenText().includes("Direct connections"), "the phone's Settings shows Direct connections");
+  await tapText("Direct connections", true);
+  await sleep(600);
   shot("1-phone-direct-settings");
   sh("input swipe 540 1800 540 700 300");
   await sleep(500);

@@ -36,6 +36,8 @@ try {
   console.log("-- 1 · create identity (the phone's own screens)");
   check(await waitText("Your identity lives on this phone", 60000), "the phone shows the create-identity screen");
   shot("1-onboarding");
+  // The welcome screen asks first what you want; the passphrase is on the next screen.
+  await tapText("Create my identity"); await waitText("Passphrase for this phone");
   // The emulator's keyboard now and then drops or corrects a keystroke, and Back can leave the app when the keyboard
   // was already going away. Each try clears both fields, types them, checks both hold the whole passphrase (as dots),
   // and presses Create; when the app answers "The two passphrases differ", it tries again.
@@ -77,9 +79,10 @@ try {
   await tapText("My code");
   await sleep(800);
   shot("3-add-my-code");
-  await tapText("Paste a card");
-  await tapField(0); typeText("Alice"); hideKeyboard();
   await tapText("Paste", true);
+  await tapField(0); typeText("Alice"); hideKeyboard();
+  // The tab and the clipboard button both say Paste: press the button (the lower one).
+  { const ps = nodes().filter((n) => n.text === "Paste" || n.desc === "Paste"); const p = ps[ps.length - 1]; tap(p.cx, p.cy); }
   await sleep(500);
   shot("4-add-pasted");
   await tapText("Add contact", true);
@@ -218,14 +221,14 @@ try {
     await sleep(900);
     shot(`13-${t.toLowerCase()}`);
   }
-  check(screenText().includes("Network and privacy"), "the Settings tab is the network and privacy screen");
+  check(screenText().includes("Home relay"), "the Settings tab opens on the home relay");
 
   console.log("-- link a second device FROM the phone (the phone is the existing device)");
   const desk2 = await D.launch("desktop2", 9342);
   const code = await desk2.invoke("link_offer");
   await tapText("Devices", true);
   await sleep(600);
-  await tapText("Link a new device");
+  await tapText("Link a device");
   check(await waitText("Scan the code"), "the phone's link screen asks for the new device's code");
   shot("15-link-step1");
   // type the code in chunks (it is long); the field accepts any text
@@ -255,6 +258,8 @@ try {
   console.log("-- alerts while the app is closed (foreground service)");
   await tapText("Settings", true);
   await sleep(600);
+  await tapText("Unlocking and alerts", true);
+  await sleep(600);
   // Settings is longer than one screen: scroll until the row shows.
   let row;
   for (let i = 0; i < 6 && !row; i++) {
@@ -265,7 +270,8 @@ try {
   check(!!row, "the settings screen has the alerts switch");
   tap(920, row.cy + 100);
   await sleep(1500);
-  if ((await waitText("Allow", 4000)) && !screenText().includes("Alerts while")) { shot("19a-permission"); await tapText("Allow", true); await sleep(1500); }
+  // The system asks first: its own "Don't allow" button says the permission prompt is up (the page may still show behind it).
+  if ((await waitText("Allow", 4000)) && nodes().some((n) => /^Don.t allow$/.test(n.text || ""))) { shot("19a-permission"); await tapText("Allow", true); await sleep(1500); }
   shot("19-alerts-on");
   check(sh(`dumpsys activity services ${PKG}`).includes("ListenerService"), "the foreground service is running");
   sh("input keyevent KEYCODE_HOME");
@@ -286,8 +292,8 @@ try {
     await sleep(1500);
     await tapText("Settings", true);
     await sleep(600);
-    sh("input swipe 540 1800 540 600 300");
-    await sleep(500);
+    await tapText("Unlocking and alerts", true);
+    await sleep(600);
     const brow = nodes().find((n) => (n.text || "").includes("Unlock with fingerprint or face"));
     check(!!brow, "Settings offers fingerprint unlock (a fingerprint is enrolled)");
     tap(920, brow.cy + 40); // it was turned on at creation: turn it off ...

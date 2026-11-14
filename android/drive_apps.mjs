@@ -40,7 +40,9 @@ async function openApps() {
   await tapText("Chats", true);
   await sleep(500);
   await tapText("Settings", true);
-  await waitText("Network and privacy");
+  await waitText("Home relay");
+  await tapText("Apps", true);
+  await sleep(500);
   for (let i = 0; i < 8 && !screenText().includes("Programs on a computer connect"); i++) { sh("input swipe 540 1700 540 900 300"); await sleep(400); }
   return screenText();
 }
@@ -55,6 +57,8 @@ try {
   sh("settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0");
   sh(`am start -n ${PKG}/.MainActivity`);
   check(await waitText("Your identity lives on this phone", 60000), "the phone shows the create screen");
+  // The welcome screen asks first what you want; the passphrase is on the next screen.
+  await tapText("Create my identity"); await waitText("Passphrase for this phone");
   for (let attempt = 0; attempt < 4; attempt++) {
     await fill(0, PHONE_PASS);
     await fill(1, PHONE_PASS);

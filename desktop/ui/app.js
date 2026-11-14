@@ -93,9 +93,9 @@ async function gate(mode) {
   };
   $("gate").replaceChildren(h("form", { class: "gatebox", onsubmit: submit },
     h("span", { class: "eyebrow" }, "Spike Connect"),
-    h("h1", {}, create ? "Your identity lives on this computer" : "Welcome back"),
+    h("h1", {}, create ? "Your identity lives on this computer" : "Unlock Spike"),
     h("p", { class: "lead" }, create ? "No phone number, email or account. You are a key that only your devices hold." : "Your keys and history on this computer are sealed with your passphrase."),
-    h("label", { class: "lbl", for: "pass", style: "font-weight:600" }, create ? "Choose a passphrase" : "Passphrase"), h("div", { class: "field" }, pass),
+    h("label", { class: create ? "lbl" : "lbl sr", for: "pass", style: "font-weight:600" }, create ? "Choose a passphrase" : "Passphrase"), h("div", { class: "field" }, pass),
     create ? [h("div", { class: "field" }, pass2), h("div", { class: "note", id: "passHelp" }, "10 characters or more. It encrypts your keys and history here. If you lose it and have no other device, this identity cannot be recovered.")] : h("div", { id: "passHelp", class: "sr" }, ""),
     err, btn,
     create ? h("label", { class: "toggle" }, h("input", { type: "checkbox", onchange: (e) => { st.linkNew = e.target.checked; } }), h("span", {}, "I already use Spike on another device: link this computer to it after setup")) : null,
@@ -631,19 +631,22 @@ function addScreen() {
   const d = st.addDraft || (st.addDraft = { name: "", card: "" });
   const name = h("input", { "aria-label": "Name", placeholder: "Name, e.g. Bob Chen", value: d.name, "data-keep": "addName", oninput: (e) => { d.name = e.target.value; } });
   const card = h("textarea", { class: "cardbox", "aria-label": "Identity card", placeholder: "Paste their identity card (starts with spike2:)", "data-keep": "addCard", oninput: (e) => { d.card = e.target.value; } }, d.card);
-  // Two steps side by side: their card in, your card out. Swapping cards is the whole of adding someone.
-  return [header("Add a contact", () => { st.screen = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page" },
-    h("p", { class: "lead" }, "There is no phone-number or email lookup. You swap cards directly, so no server learns who knows whom."),
-    h("div", { class: "split" },
-      h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "1 · Add their card"),
-        h("label", { style: "font-weight:600" }, "Name"), h("div", { class: "field" }, name),
-        h("label", { style: "font-weight:600" }, "Their identity card"), card,
-        h("button", { class: "btn primary big", type: "button", onclick: addContactFromScreen }, "Add contact"),
-        h("p", { class: "note", style: "margin:0" }, "They arrive as not verified until you compare safety numbers.")),
-      h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "2 · Give them yours"),
-        h("span", { class: "note" }, "A phone scans this code. On a computer, copy your card and send it to them."),
-        cardQr(st.ov.me.card),
-        copyCardButton()))))];
+  // A dialog over the app, as in the design: paste their card, or show yours. Swapping cards is the whole of adding
+  // someone; there is no phone-number or email lookup, so no server learns who knows whom.
+  const close = () => { st.screen = null; render(); };
+  const tab = st.addTab || "paste";
+  const tabs = h("div", { class: "seg", role: "tablist" }, [["code", "My code"], ["paste", "Paste a card"]].map(([k, l]) =>
+    h("button", { type: "button", role: "tab", "aria-selected": String(tab === k), onclick: () => { st.addTab = k; render(); } }, l)));
+  const who = d.name.trim();
+  const body = tab === "paste" ? [
+      h("div", { class: "field" }, name), card,
+      h("p", { class: "note", style: "margin:0" }, `${who || "They"} arrive${who ? "s" : ""} unverified. Compare safety numbers when you next speak.`),
+      h("div", { class: "dlg-do" }, h("button", { class: "btn small", type: "button", onclick: close }, "Cancel"),
+        h("button", { class: "btn primary small", type: "button", onclick: addContactFromScreen }, who ? `Add ${who}` : "Add contact"))]
+    : [h("div", { class: "dlg-code" }, cardQr(st.ov.me.card), h("div", {}, h("p", { style: "margin:0 0 10px" }, "A phone scans this code. On a computer, copy your card and send it to them."), copyCardButton())),
+      h("p", { class: "note", style: "margin:0" }, "Scanning each other in person verifies you both.")];
+  return [h("div", { class: "scrim", onclick: (e) => { if (e.target === e.currentTarget) close(); }, onkeydown: (e) => { if (e.key === "Escape") close(); } },
+    h("div", { class: "dlg", role: "dialog", "aria-modal": "true", "aria-label": "Add a contact" }, h("h2", {}, "Add a contact"), tabs, ...body))];
 }
 async function addContactFromScreen() {
   const d = st.addDraft || { name: "", card: "" };
@@ -709,7 +712,7 @@ function approvalCard(r) {
   const amount = r.amount_cents != null ? (cur ? money(r.amount_cents, cur) : `${r.amount_cents} cents`) : null;
   const sec = h("section", { class: "card" + (r.status === "waiting" ? " attention" : ""), "aria-label": "Request from " + r.from },
     h("span", { class: "eyebrow" }, r.status === "waiting" ? "Needs your approval" : r.status === "approved" ? `Approved${r.by ? " by " + r.by : ""}` : `Denied${r.by ? " by " + r.by : ""}`),
-    h("h2", { style: "margin:0;font-size:22px;line-height:1.2" }, typed && r.summary ? r.summary : `“${r.note}”`),
+    h("h2", { class: typed && r.summary ? "bigline" : "bigline quote" }, typed && r.summary ? r.summary : `“${r.note}”`),
     typed ? h("span", { style: "display:flex;gap:6px;align-items:center;flex-wrap:wrap" }, h("span", { class: "tag neutral" }, "typed action"), h("span", { class: "note" }, "This line comes from the signed fields. The service must match them exactly."))
       : h("div", { class: "status soft", style: "padding:8px 12px;border-radius:10px" }, h("b", {}, "Free text. "), "These are the agent's own words. Only the scope", r.amount_cents ? " and amount" : "", " were checked."),
     h("dl", { class: "kv" }, h("dt", {}, "From"), h("dd", {}, r.from),
@@ -735,7 +738,7 @@ function agentsMain() {
     a.approver ? h("div", { style: "display:flex;gap:8px" },
       h("button", { class: "btn", type: "button", onclick: () => { openGrantForm(g.agent); } }, "Change"),
       h("button", { class: "btn danger", type: "button", onclick: async () => { try { await invoke("revoke", { name: g.agent }); toast(`${g.agent}'s grant removed. Approvals already given live until they expire.`); await refresh(); } catch (e) { toast(String(e)); } } }, "Revoke")) : null);
-  return [h("div", { class: "head" }, h("h1", { style: "flex:none" }, "Agent requests"), h("span", { class: "tag " + (w.length ? "waiting" : "neutral") }, w.length ? `${w.length} waiting` : "nothing waiting"), h("span", { class: "spacer" }), a.approver ? null : h("span", { class: "note" }, "This is not your main device: decisions are forwarded to it")),
+  return [h("div", { class: "head" }, h("h1", { style: "flex:none" }, "Agents"), h("span", { class: w.length ? "flag" : "muted", style: "font-size:13px" }, w.length ? `${w.length} waiting for you` : "Nothing waiting"), h("span", { class: "spacer" }), a.approver ? null : h("span", { class: "note" }, "This is not your main device: decisions are forwarded to it")),
     h("div", { class: "scroll" }, h("div", { class: "page" },
       w.length || done.length ? [w.map(approvalCard), done.length ? h("h2", { class: "eyebrow", style: "margin:8px 0 0" }, "Decided") : null, done.map(approvalCard)] : h("div", { class: "status plain" }, h("b", {}, "No requests yet"), h("span", { class: "note" }, "Give an agent a standing permission first; its requests then appear here.")),
       a.grants.map(grant),
@@ -776,8 +779,8 @@ function grantScreen() {
 /* ---------- devices and linking ---------- */
 function devicesMain() {
   const me = st.ov.me;
-  return [h("div", { class: "head" }, h("h1", {}, "Your devices"), h("button", { class: "btn primary", type: "button", disabled: !me.approver || null, title: me.approver ? "" : "Link new devices from your main device", onclick: () => { st.screen = "linkold"; st.linkStep = 1; st.linkErr = ""; st.linkCode = ""; render(); } }, "Link a new device")),
-    h("div", { class: "scroll" }, h("div", { class: "page" },
+  return [h("div", { class: "head" }, h("h1", {}, "Devices"), h("button", { class: "btn primary small", type: "button", disabled: !me.approver || null, title: me.approver ? "" : "Link new devices from your main device", onclick: () => { st.screen = "linkold"; st.linkStep = 1; st.linkErr = ""; st.linkCode = ""; render(); } }, "Link a new device")),
+    h("div", { class: "scroll" }, h("div", { class: "page flat" },
       h("p", { class: "lead" }, "Contacts encrypt every message separately for each of these. Signed device list ", h("b", {}, "v" + me.list_version), "."),
       h("section", { class: "card", style: "gap:0;padding-top:4px;padding-bottom:4px" }, me.device_list.map((d) => h("div", { class: "devrow" }, h("span", { class: "tile sm sq c-neutral" }, icon("devices")),
         h("span", { style: "flex:1;min-width:0" }, h("b", { style: "font-weight:600" }, d.this ? "This computer" : "Another device"), h("div", { class: "note mono" }, d.id + (d.relay ? " · " + d.relay : "")), d.approver ? h("div", { class: "note" }, "Main device: decides agent requests and links new devices") : null),
@@ -907,10 +910,20 @@ function settingsMain() {
     const f = e.target.files[0]; e.target.value = ""; if (!f) return;
     if (f.size > 65536) return toast("That file is too large to be a certificate.");
     try { const n = await invoke("set_relay_ca", { pem: await f.text() }); toast(`Trusting ${n} certificate${n > 1 ? "s" : ""} from ${f.name}.`); await refresh(); syncNow(); } catch (x) { toast(String(x)); } } });
-  // Links to each part of a long page; anchors, not buttons, so they never shadow a card's own buttons.
-  const jumps = [["set-identity", "Identity"], ["set-relay", "Relay"], ["backupCard", "Backup"], ["direct-card", "Direct connections"], ["apps-card", "Apps"], ["calls-card", "Calls"], ["set-trust", "Relay trust"], ["set-privacy", "Privacy"]];
-  const nav = h("nav", { class: "jumps", "aria-label": "Settings sections" }, jumps.map(([to, label]) => h("a", { href: "#" + to, onclick: (e) => { e.preventDefault(); document.getElementById(to)?.scrollIntoView({ behavior: "smooth", block: "start" }); } }, label)));
-  return [h("div", { class: "head" }, h("h1", {}, "Settings")), h("div", { class: "scroll" }, h("div", { class: "page" }, nav,
+  // The sections down the left, as in the design. Every section stays on the page (one scroll, so search and the
+  // drivers still see all of it); the list jumps to a section and marks the one you are reading.
+  const jumps = [["set-identity", "Identity"], ["set-relay", "Home relay"], ["backupCard", "Backup"], ["set-privacy", "Privacy and security"], ["direct-card", "Direct connections"], ["apps-card", "Apps"], ["calls-card", "Calls"], ["set-trust", "Relay trust"], st.blocked.length ? ["set-blocked", "Blocked"] : null, ["set-updates", "Updates"]].filter(Boolean);
+  const cur = st.setSec || "set-identity";
+  const backupDue = st.bk && st.bk.status && (!st.bk.status.last_ms || st.bk.status.stale);
+  const nav = h("nav", { class: "setnav", "aria-label": "Settings sections" }, h("strong", {}, "Settings"),
+    jumps.map(([to, label]) => h("a", { href: "#" + to, "aria-current": to === cur ? "true" : null, onclick: (e) => { e.preventDefault(); st.setSec = to; document.getElementById(to)?.scrollIntoView({ behavior: "smooth", block: "start" }); markSection(); } }, label, to === "backupCard" && backupDue ? h("i", { class: "dot wait", title: "No recent backup" }) : null)));
+  const markSection = () => { for (const a of nav.querySelectorAll("a")) a.toggleAttribute("aria-current", a.getAttribute("href") === "#" + st.setSec); };
+  const onScroll = (e) => {
+    const top = e.target.getBoundingClientRect().top + 90; let id = jumps[0][0];
+    for (const [to] of jumps) { const el = document.getElementById(to); if (el && el.getBoundingClientRect().top <= top) id = to; }
+    if (id !== st.setSec) { st.setSec = id; markSection(); }
+  };
+  return [h("div", { class: "setwrap" }, nav, h("div", { class: "scroll setpane", onscroll: onScroll }, h("div", { class: "page flat" },
     h("section", { class: "card", id: "set-identity" }, h("h2", { class: "eyebrow" }, "Your identity"), h("span", { class: "mono", style: "font-size:16px;overflow-wrap:anywhere" }, me.fingerprint),
       h("span", { class: "note" }, `${me.devices} device${me.devices > 1 ? "s" : ""}${me.approver ? " · this device approves agent requests" : ""}. Contacts compare this when they verify you.`),
       h("h2", { class: "eyebrow", style: "margin-top:8px" }, "Your identity card"),
@@ -934,7 +947,7 @@ function settingsMain() {
       h("label", { class: "toggle", style: "margin-top:6px" }, h("input", { type: "checkbox", checked: st.ov.relay_trust.allow_insecure || null, onchange: async (e) => { try { await invoke("set_allow_insecure", { allow: e.target.checked }); await refresh(); } catch (x) { toast(String(x)); await refresh(); } } }),
         h("span", {}, h("b", { style: "font-weight:600" }, "Allow plain ws:// on a network I trust"), h("div", { class: "note" }, "Messages stay end-to-end encrypted, but anyone on the network can see which devices talk, when, and how much. Use it only on a private network you control; never over the internet."))),
       st.ov.relay_trust.allow_insecure ? h("div", { class: "status warn", role: "alert" }, h("b", {}, "Plain connections are allowed."), h("span", {}, "Turn this off unless you are on a network you control.")) : null),
-    st.blocked.length ? h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Blocked people"),
+    st.blocked.length ? h("section", { class: "card", id: "set-blocked" }, h("h2", { class: "eyebrow" }, "Blocked people"),
       h("span", { class: "note" }, "Their messages are dropped when they arrive. (The relay still carries them until then: it cannot tell who sent a message.)"),
       st.blocked.map((b) => h("div", { class: "devrow" }, h("span", { style: "flex:1;min-width:0" }, h("span", { class: "mono", style: "overflow-wrap:anywhere" }, b.fingerprint), h("div", { class: "note" }, "blocked " + new Date(b.at).toLocaleDateString())),
         h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("unblock", { owner: b.owner }); toast("Unblocked. Only a new conversation from them will be seen."); await refreshBlocked(); } catch (e) { toast(String(e)); } } }, "Unblock")))) : null,
@@ -945,8 +958,7 @@ function settingsMain() {
         h("span", { class: "note" }, "Shown while Spike Connect is not the window you are using. Only \"Show who it is from and the message\" puts a message's text in a banner, with quick reactions and Reply; anyone who can see your screen can read it.")),
       h("span", { class: "note" }, "The window title, and the taskbar or dock, show how many messages and requests are waiting.")),
     updatesCard(),
-    h("div", { class: "status soft" }, h("b", {}, "Not built in the app yet:"), h("span", {}, "an installer with auto-update. This is an unreviewed prototype.")),
-    h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: lockNow }, icon("lock"), "Lock now")))];
+    h("div", { class: "setfoot" }, h("button", { class: "btn", type: "button", onclick: lockNow }, icon("lock"), "Lock now"), h("span", { class: "note" }, "Unreviewed prototype: do not use it for real secrets yet."))))) ];
 }
 
 /* ---------- backup and recovery (ADR 0029) ---------- */
@@ -1046,7 +1058,7 @@ function updatesCard() {
   const auto = h("input", { type: "checkbox", id: "update-auto", "aria-describedby": "update-auto-note" });
   auto.checked = st.updateAuto !== false;
   auto.addEventListener("change", async () => { try { await invoke("update_set_auto", { on: auto.checked }); st.updateAuto = auto.checked; toast(auto.checked ? "Spike will check for updates in the background." : "Automatic update checks are off."); } catch (e) { auto.checked = !auto.checked; toast(String(e)); } });
-  return h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Updates"),
+  return h("section", { class: "card", id: "set-updates" }, h("h2", { class: "eyebrow" }, "Updates"),
     h("label", { style: "display:flex;gap:10px;align-items:flex-start" }, auto, h("span", {}, h("b", { style: "font-weight:600" }, "Check for updates automatically"),
       h("span", { class: "note", id: "update-auto-note", style: "display:block" }, "Spike checks at start-up and every six hours, and downloads a verified update. It installs only when you choose Restart to update. A check tells the update host (GitHub) this computer's address and that it runs Spike."))),
     u && u.error ? h("div", { class: "status bad", role: "alert" }, h("span", {}, u.error)) : null,

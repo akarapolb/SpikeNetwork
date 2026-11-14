@@ -35,12 +35,12 @@ try {
   sh(`am start -n ${PKG}/.MainActivity`);
   await waitText("Your identity lives on this phone");
   await sleep(1500);
+  // The welcome screen offers it first; the passphrase for this phone is asked on the next screen.
+  await tapText("I already use Spike on another device");
+  await waitText("Passphrase for this phone");
   await tapField(0); typeText(PHONE_PASS); hideKeyboard();
   await tapField(1); typeText(PHONE_PASS); hideKeyboard();
-  // a bare button press with no passphrase says what to do
-  sh("input swipe 540 1800 540 700 300");
-  await sleep(500);
-  await tapText("I already use Spike on another device");
+  await tapText("Continue to linking");
   // with a fingerprint enrolled the phone offers fingerprint unlock here too
   if (await waitText("Turn on fingerprint unlock", 6000)) touch();
   check(await waitText("Waiting for the other device", 30000), "the phone shows a link code and waits");

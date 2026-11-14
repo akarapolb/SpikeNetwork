@@ -502,3 +502,136 @@ details[open] summary { margin-bottom: 8px; }
 .main { background: var(--panel); }
 /* Page screens (settings, devices, agents) keep the grey page behind their cards; conversations stay white. */
 .main:not(:has(.composer)) > .scroll { background: var(--bg); }
+
+/* ---------- page screens: Settings with a section list, flat sections (Settings, Devices) ---------- */
+.setwrap { flex: 1; min-height: 0; display: grid; grid-template-columns: 216px minmax(0, 1fr); }
+.setnav { border-right: 1px solid var(--line); padding: 14px 8px; display: flex; flex-direction: column; gap: 1px; overflow: auto; background: var(--panel); }
+.setnav strong { font-size: 17px; font-weight: 600; letter-spacing: -.02em; padding: 0 10px 10px; }
+.setnav a { display: flex; justify-content: space-between; align-items: center; padding: 7px 10px; border-radius: 8px; color: var(--text-2); text-decoration: none; font-size: 13.5px; }
+.setnav a:hover { background: var(--panel-2); color: var(--text); }
+.setnav a[aria-current] { background: var(--panel-2); color: var(--text); font-weight: 500; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text); flex: none; }
+.dot.wait { background: var(--warn-line); }
+.main .scroll.setpane { padding: 26px 40px 40px; background: var(--panel); }
+.page.flat { max-width: 680px; margin: 0; gap: 0; }
+.page.flat > .lead { margin-bottom: 14px; }
+/* A section: its title, then rows; hairlines between sections, no boxes. */
+.page.flat > .card, .page.flat > section.card { background: none; border: 0; border-radius: 0; box-shadow: none; padding: 0 0 26px; margin: 0 0 26px; border-bottom: 1px solid var(--line); gap: 10px; scroll-margin-top: 12px; }
+.page.flat > .card:last-of-type { border-bottom: 0; }
+.page.flat .card > .eyebrow:first-child { font-size: 18px; font-weight: 600; letter-spacing: -.02em; text-transform: none; color: var(--text); margin: 0 0 2px; }
+.page.flat .card .eyebrow:not(:first-child) { font-size: 13.5px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--text); }
+.page.flat .note { font-size: 12.5px; }
+.page.flat .toggle { flex-direction: row-reverse; justify-content: space-between; align-items: flex-start; gap: 24px; padding: 4px 0; }
+.page.flat .toggle input { margin-top: 2px; }
+.page.flat .toggle b { font-weight: 500 !important; }
+.toggle input { width: 36px; height: 21px; border-radius: 11px; }
+.toggle input::after { top: 2.5px; left: 2.5px; width: 16px; height: 16px; border-radius: 8px; }
+.toggle input:checked::after { left: 17.5px; background: var(--accent-ink); }
+.page.flat .btn { min-height: 32px; padding: 0 14px; border-radius: 8px; font-size: 13.5px; }
+.page.flat .btn.primary { min-height: 32px; }
+.page.flat .field { min-height: 38px; border-radius: 9px; }
+.page.flat .status { border-radius: 10px; padding: 10px 14px; }
+.page.flat .status.soft { background: var(--panel-2); }
+.page.flat .devrow { padding: 12px 0; }
+.page.flat .devrow .tile { width: 34px; height: 34px; }
+.page.flat section.card[style*="gap:0"] { gap: 0 !important; padding-top: 0 !important; }
+.setfoot { display: flex; align-items: center; gap: 14px; padding-top: 4px; }
+.pill.neutral { background: var(--panel-2); font-size: 12px; padding: 3px 10px; }
+
+/* Agent requests: the signed action as one large line, the card bordered (amber while it waits). */
+.card.attention { border: 1px solid var(--warn-line); }
+.bigline { margin: 2px 0 0; font-size: 34px; line-height: 1.08; font-weight: 600; letter-spacing: -.035em; font-variant-numeric: tabular-nums; text-wrap: balance; }
+.bigline.quote { font-size: 22px; letter-spacing: -.02em; }
+.main .page > .card { box-shadow: none; }
+.btn.big { min-height: 44px; border-radius: 12px; font-size: 14.5px; }
+/* Flat page screens (Settings, Devices) sit on white like the design; only card-based pages keep the grey page. */
+.main .scroll:has(> .page.flat) { background: var(--panel); }
+
+/* ---------- exact prototype metrics (measured against the design page, element by element) ---------- */
+body { font-size: 13.5px; line-height: 1.4; }
+button { padding: 0; }
+.btn { padding: 0 16px; }
+/* Title bar: the mark as a bare teal glyph, a 340 x 26 search with no border. */
+.tb-brand { gap: 8px; }
+.tb-mark { width: 14px; height: 14px; border-radius: 0; background: none; }
+.tb-mark::after { inset: 0; background: var(--good); }
+.tb-search { width: 340px; height: 26px; border-radius: 7px; border: 0; padding: 0 10px; }
+.tb-search:focus-within { box-shadow: 0 0 0 1px var(--line-2); }
+/* List header: title, then tabs 10px below, then rows. */
+.listhead { padding: 14px 12px 0 16px; gap: 6px; }
+.listhead h1 { line-height: 1.4; font-family: inherit; }
+.ltabs { padding: 4px 0 10px; }
+.ltabs button { padding: 0; line-height: 1.4; }
+/* Rows: 34 px avatar, two lines at 1.4, no gap: 52 px tall. */
+.row .body { gap: 0; }
+.row .line1 b, .row .preview { line-height: 1.4; }
+.row[aria-current="true"] .preview { color: var(--muted); }
+.tile, .tile.sm { letter-spacing: 0; line-height: 1.4; }
+/* Conversation header. */
+.head { gap: 10px; }
+.head .who { line-height: 1.25; gap: 0; }
+.head .who b { font-size: 13.5px; gap: 5px; line-height: 1.25; }
+.head .who span { line-height: 1.25; }
+.vtick { margin-left: 0; }
+/* Thread. */
+.day { font-weight: 400; }
+.bubble { font-size: 13.5px; line-height: 1.4; }
+.msg .meta { padding: 0; }
+/* Composer: 44 px tall, 6 px inside, 12 px before the text. */
+.composer .bar { padding: 6px 6px 6px 6px; gap: 4px; }
+.composer textarea { height: 32px; padding: 6px 4px; font-size: 13.5px; line-height: 1.4; }
+.tb-search { font-size: 12.5px; }
+.head .who b { min-height: 18px; }
+/* 44 px composer like the design: 6 px padding around 30 px controls, plus the 1 px border. */
+.composer .bar .iconbtn { width: 30px; height: 30px; }
+.composer textarea { height: 30px; padding: 5px 4px; }
+
+/* ---------- second comparison pass ---------- */
+/* The window buttons keep their column even when the search is hidden (unlock, first run). */
+.tb-ctl { grid-column: 3; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Unlock and first run: no card, the mark above the headline, on the plain page. */
+.gate { background: var(--bg); }
+.gatebox { width: min(340px, 100%); background: none; border: 0; box-shadow: none; padding: 0; gap: 12px; }
+.gatebox > .eyebrow:first-child { font-size: 0; width: 44px; height: 44px; border-radius: 14px; background: var(--mark-bg); position: relative; margin-bottom: 6px; }
+.gatebox > .eyebrow:first-child::after { content: ""; position: absolute; inset: 9px; background: var(--mark);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.4' stroke-linecap='round'%3E%3Cpath d='M17.6 6.3A8.2 8.2 0 1 0 17.6 17.7'/%3E%3Ccircle cx='19.6' cy='12' r='3' fill='black' stroke='none'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.4' stroke-linecap='round'%3E%3Cpath d='M17.6 6.3A8.2 8.2 0 1 0 17.6 17.7'/%3E%3Ccircle cx='19.6' cy='12' r='3' fill='black' stroke='none'/%3E%3C/svg%3E") center / contain no-repeat; }
+.gatebox h1 { font-size: 24px; letter-spacing: -.03em; font-weight: 600; margin: 0; }
+.gatebox .lead { color: var(--text-2); font-size: 13.5px; }
+.gatebox .field { min-height: 46px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line-2); }
+.gatebox .field:focus-within { border-color: var(--text); box-shadow: 0 0 0 3px var(--line); }
+.gatebox .btn.big { min-height: 42px; border-radius: 12px; }
+/* Add a contact: a dialog over the dimmed app. */
+.scrim { position: fixed; inset: var(--tb-h) 0 0 0; z-index: 15; background: rgba(8, 12, 13, .38); display: grid; justify-items: center; align-items: start; padding-top: 52px; }
+.dlg { width: min(440px, calc(100vw - 32px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; box-shadow: var(--shadow); padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+.dlg h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.02em; }
+.dlg .seg { margin: 0; } .dlg .seg button { min-height: 32px; font-size: 13px; font-weight: 500; }
+.dlg .field { min-height: 40px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-2); }
+.dlg .cardbox { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; min-height: 84px; border: 0; border-radius: 10px; }
+.dlg-do { display: flex; justify-content: flex-end; gap: 8px; }
+.dlg-code { display: flex; gap: 16px; align-items: flex-start; }
+.dlg-code img.qrimg { width: 150px; height: 150px; flex: none; }
+/* Calls: flat near-black, the facts on one line, a smaller control pill. */
+.callov { background: #0A0D0E; }
+.callbox .big { width: 96px; height: 96px; border-radius: 48px; background: #191E20; color: #F0F3F3; font-size: 30px; box-shadow: 0 0 0 10px rgba(255, 255, 255, .06); }
+.callbox .stage h2 { font-size: 24px; letter-spacing: -.03em; margin-top: 14px; }
+.callbox .sub { color: #A5B0B3; font-size: 13.5px; }
+.callbox .facts { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 6px 18px; font-size: 12.5px; color: #A5B0B3; max-width: 680px; }
+.callbox .facts .ok svg { color: #56CFC1; }
+.callbox .controls { gap: 8px; padding: 8px; border-radius: 999px; background: #111516; border: 1px solid rgba(255, 255, 255, .08); margin-bottom: 26px; }
+.callbox .controls button { width: 44px; height: 44px; border-radius: 22px; background: #191E20; color: #F0F3F3; }
+.callbox .controls button:hover { background: #22292B; }
+.callbox .controls button[aria-pressed="true"] { background: #F0F3F3; color: #0A0D0E; }
+.callbox .controls button.end, .callbox .controls button.accept { width: 64px; border-radius: 22px; }
+.callbox .controls svg.i { width: 20px; height: 20px; }
+.callbox video.self { width: 168px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, .16); background: #191E20; }
+.callbox video.remote { border-radius: 14px; }
+.dlg-do .btn.small { min-height: 32px; padding: 0 14px; }
+/* Settings rows as in the design: title and a short note on the left, the control on the right, hairlines between. */
+.page.flat .card > .eyebrow:first-child { font-size: 20px; letter-spacing: -.025em; }
+.page.flat #set-privacy > label { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 24px; row-gap: 2px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); margin: 0 !important; }
+.page.flat #set-privacy > label > b { grid-column: 1; grid-row: 1; font-weight: 500 !important; }
+.page.flat #set-privacy > label > .field { grid-column: 2; grid-row: 1 / span 2; min-height: 32px; border: 1px solid var(--line-2); background: var(--panel); border-radius: 8px; padding: 0 4px 0 10px; }
+.page.flat #set-privacy > label > .field select { min-height: 30px !important; font-size: 13px; }
+.page.flat #set-privacy > label > .note { grid-column: 1; grid-row: 2; }
