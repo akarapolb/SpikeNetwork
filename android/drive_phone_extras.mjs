@@ -33,6 +33,12 @@ async function until(fn, ms = 25000) {
   while (Date.now() < end) { try { const v = await fn(); if (v) return v; } catch (_) {} await sleep(500); }
   return null;
 }
+/** A desktop command whose error, if any, is shown in full (the page reports only "Uncaught" otherwise). */
+async function inv(desk, cmd, args = {}) {
+  const r = await desk.eval(`try { return { ok: await window.__TAURI__.core.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)}) }; } catch (e) { return { err: String(e) }; }`);
+  if (r.err !== undefined) throw new Error(`${desk.name} ${cmd}: ${r.err}`);
+  return r.ok;
+}
 const byDesc = (sub) => nodes().find((n) => (n.desc || "").includes(sub));
 
 /** A small PNG (a diagonal gradient), so the phone has a real picture to decode. */
@@ -65,23 +71,27 @@ try {
   sh(`am start -n ${PKG}/.MainActivity`);
   check(await waitText("Your identity lives on this phone", 60000), "the phone shows the create screen");
   await tapText("Create my identity"); await waitText("Passphrase for this phone");
-  for (let attempt = 0; attempt < 4; attempt++) {
+  // The emulator's keyboard now and then drops a keystroke: clear both fields, type, check the lengths, then Create.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    for (const i of [0, 1]) { await tapField(i); sh("input keyevent KEYCODE_MOVE_END " + "67 ".repeat(40)); hideKeyboard(); }
     await fill(0, PHONE_PASS);
     await fill(1, PHONE_PASS);
-    if (nodes().filter((n) => n.cls.endsWith("EditText") && (n.text || "").length > 0).length === 2) break;
-    sh(`am start -n ${PKG}/.MainActivity`);
-    await sleep(1500);
+    const lens = nodes().filter((n) => n.cls.endsWith("EditText")).map((n) => (n.text || "").length);
+    if (lens.length !== 2 || lens.some((l) => l !== PHONE_PASS.length)) { console.log(`   (the fields hold ${lens.join(", ")} characters; typing again)`); continue; }
+    await tapText("Create my identity");
+    if (!(await waitText("The two passphrases differ", 3000))) break;
+    await tapText("OK", true);
   }
-  await tapText("Create my identity");
   if (await waitText("Turn on fingerprint unlock", 6000)) await tapText("Not now").catch(() => {});
   check(await waitText("Chats"), "the identity is created");
   debug("set_relay", { url: RELAY });
+  debug("sync"); // connects once, so the relay holds the phone's keys for new conversations
 
   console.log("-- a contact on the desktop");
   const desk = await D.launch("desktop", 9351);
-  await desk.invoke("add_contact", { name: "Phone", card: debug("overview").me.card });
-  debug("add_contact", { name: "Alice", card: (await desk.invoke("overview")).me.card });
-  await desk.invoke("send", { name: "Phone", text: "a picture is coming" });
+  await inv(desk, "add_contact", { name: "Phone", card: debug("overview").me.card });
+  debug("add_contact", { name: "Alice", card: (await inv(desk, "overview")).me.card });
+  check(!!(await until(async () => { await inv(desk, "send", { name: "Phone", text: "a picture is coming" }); return true; })), "the desktop can write to the phone");
   check(await waitText("a picture is coming", 25000), "the phone receives the contact's message");
 
   console.log("-- picture viewer");
@@ -112,20 +122,20 @@ try {
 
   console.log("-- link a second desktop as another device of the phone's");
   const desk2 = await D.launch("desktop2", 9352);
-  const code = await desk2.invoke("link_offer");
+  const code = await inv(desk2, "link_offer");
   await tapText("Devices", true); await sleep(600);
   check(!screenText().includes("Send to my devices"), "with one device there is nothing to send to");
   await tapText("Link a device");
   await waitText("Scan the code");
   await tapField(0); typeText(code); hideKeyboard();
-  const waiting = desk2.invoke("link_wait");
+  const waiting = inv(desk2, "link_wait");
   await sleep(300);
   await tapText("Continue", true);
   await waiting;
   await waitText("Compare this code");
   await tapText("The codes match", true);
   await waitText("What should it receive");
-  const received = desk2.invoke("link_receive");
+  const received = inv(desk2, "link_receive");
   await tapText("Link device", true);
   check((await received).contacts >= 1, "the second desktop is linked");
   await sleep(1500);
@@ -138,19 +148,21 @@ try {
   check(screenText().includes("Picture") && screenText().includes("Camera") && screenText().includes("File"), "it offers Picture, Camera and File");
   await tapText("A note for your devices"); typeText("note for the laptop"); hideKeyboard();
   await tapText("Send the note", true);
-  const gotNote = await until(async () => (await desk2.invoke("own_notes")).find((n) => n.body === "note for the laptop" && !n.out));
+  const gotNote = await until(async () => (await inv(desk2, "own_notes")).find((n) => n.body === "note for the laptop" && !n.out));
   check(!!gotNote, "the linked desktop receives the phone's note");
   check(await waitText("Sent to Device", 8000), "the phone lists it as sent to the other device");
   sh(`run-as ${PKG} sh -c 'echo plan v4 > cache/pilot-plan-v4.txt'`);
   debug("send_to_devices", { file_name: "pilot-plan-v4.txt", path: `/data/data/${PKG}/cache/pilot-plan-v4.txt` });
-  const gotFile = await until(async () => (await desk2.invoke("own_notes")).find((n) => n.file && n.file.name === "pilot-plan-v4.txt"));
+  const gotFile = await until(async () => (await inv(desk2, "own_notes")).find((n) => n.file && n.file.name === "pilot-plan-v4.txt"));
   check(!!gotFile, "the linked desktop receives the phone's file");
   if (gotFile) {
-    const saved = await desk2.invoke("save_attachment", { id: gotFile.id });
+    const saved = await inv(desk2, "save_attachment", { id: gotFile.id });
     check(!!saved, "the desktop saves the file");
   }
-  await desk2.invoke("send_note_to_devices", { text: "from the laptop" });
-  check(await waitText("from the laptop", 25000), "the phone shows the desktop's note without being asked");
+  await inv(desk2, "send_note_to_devices", { text: "from the laptop" });
+  const shown = await waitText("from the laptop", 25000);
+  if (!shown) { console.log("   diagnostics: sync", JSON.stringify(debug("sync")), "notes", JSON.stringify(debug("own_notes").map((n) => [n.body, n.out, n.from]))); }
+  check(shown, "the phone shows the desktop's note without being asked");
   await sendBytes(desk2, "send_file_to_devices", png(200, 300, 90), { "x-filename": "IMG_2041.png" });
   check(await waitText("IMG_2041.png", 25000), "the phone lists the desktop's picture");
   check(screenText().includes("From Device"), "it says which device it came from");
@@ -159,7 +171,7 @@ try {
   check(await waitText("Pinch to zoom", 10000), "tapping a picture there opens the viewer");
   await tapText("Close the picture", true);
   await sleep(600);
-  const contactSaw = await desk.invoke("conversation", { name: "Phone" });
+  const contactSaw = await inv(desk, "conversation", { name: "Phone" });
   check(!contactSaw.some((m) => ["note for the laptop", "from the laptop"].includes(m.body) || (m.file && ["pilot-plan-v4.txt", "IMG_2041.png"].includes(m.file.name))), "the contact received none of it");
   const phoneChat = debug("conversation", { name: "Alice" });
   check(!phoneChat.some((m) => m.body === "from the laptop"), "notes to your devices stay out of conversations");

@@ -46,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -170,7 +171,7 @@ fun PictureViewer(msg: Message, who: String, onClose: () -> Unit) {
                 ) { Ico(Ic.Share, ink, 20.dp) }
             }
             Box(
-                Modifier.weight(1f).fillMaxWidth()
+                Modifier.weight(1f).fillMaxWidth().clipToBounds()
                     .pointerInput(Unit) {
                         detectTransformGestures { _, p, zoom, _ ->
                             scale = (scale * zoom).coerceIn(1f, 6f)
