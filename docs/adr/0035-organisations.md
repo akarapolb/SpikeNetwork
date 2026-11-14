@@ -278,7 +278,10 @@ queue, rules only forward, storage limit, leave and delete, activity buckets), `
 real relays: visitor and single-use, full and withdrawn and forged tokens, rules forward-only and forged rules
 refused, retention, revoke in open and enrolled mode, a contact on another relay reaching a member and leaving
 moving back, the admin interface closed to devices and to other keys), and `desktop/drive_org.mjs` (three real
-windows).
+windows: the console, a member joining by the sheet, a contact on another relay, rules, revoke, leave; all checks
+pass). `android/drive_org.mjs` is written; on its one run (2026-11-14) it passed up to opening the join page, then
+the emulator was needed by another session, so the phone's join, rules and leave steps are **not yet verified on the
+emulator** (the Android app builds).
 
 **Limits (honest list).**
 - Rules are carried out by the app; a modified app ignores them.

@@ -78,7 +78,7 @@ private fun untilText(secs: Long): String {
 }
 
 @Composable
-private fun KvRow(k: String, v: String) {
+private fun OrgKv(k: String, v: String) {
     Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
     Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Muted(k, 14.sp, Modifier.weight(1f))
@@ -98,7 +98,7 @@ fun OrgRelayEntry(m: AppModel, open: (String) -> Unit) {
         if (o == null) {
             Text("Join an organisation", fontWeight = FontWeight.Medium)
             Muted("Scan or paste the token your organisation sent you. It enrols this phone only.", 13.sp)
-            OutlineButton("Join an organisation", small = true) { open("orgjoin") }
+            OutlineButton("Join…", small = true) { open("orgjoin") }
         } else {
             Text(if (o.removed) "${o.orgName} removed this phone" else "Managed by ${o.orgName}", fontWeight = FontWeight.Medium, color = if (o.removed) C.Danger else C.Text)
             Muted(if (o.removed) "Its rules no longer apply. Leave to go back to the relay you used before." else "Rules your organisation set for this phone.", 13.sp)
@@ -143,10 +143,10 @@ fun OrgJoinPage(m: AppModel, done: () -> Unit) {
         Muted(i.getString("relay").removePrefix("wss://").removePrefix("ws://"), 13.sp)
     }
     Column {
-        KvRow("Enrols", "This phone only")
-        KvRow("Token valid until", untilText(i.getLong("valid_until")))
-        KvRow("$name can see", "That this device exists")
-        KvRow("$name cannot see", "Your name, contacts, messages")
+        OrgKv("Enrols", "This phone only")
+        OrgKv("Token valid until", untilText(i.getLong("valid_until")))
+        OrgKv("$name can see", "That this device exists")
+        OrgKv("$name cannot see", "Your name, contacts, messages")
     }
     Muted("The name is the one the organisation gave itself. Its key: ${i.getString("admin_fingerprint")}.", 12.5.sp)
     err?.let { Text(it, color = C.Danger, fontSize = 13.5.sp) }
@@ -182,10 +182,10 @@ fun OrgRulesPage(m: AppModel, done: () -> Unit) {
     }
     if (o.removed) Text("${o.orgName} removed this phone. Its rules no longer apply.", color = C.Danger, fontSize = 14.sp)
     Column {
-        KvRow("Lock when idle", o.lock?.let { if (it >= 60 && it % 60 == 0) "${it / 60} hour${if (it > 60) "s" else ""}" else "$it minute${if (it > 1) "s" else ""}" } ?: "No rule")
-        KvRow("Messages kept on this phone", o.keepDays?.let { "$it days" } ?: "No rule")
-        KvRow("Backups", ruleText("backups", o.backups))
-        KvRow("Agents", ruleText("agents", o.agents))
+        OrgKv("Lock when idle", o.lock?.let { if (it >= 60 && it % 60 == 0) "${it / 60} hour${if (it > 60) "s" else ""}" else "$it minute${if (it > 1) "s" else ""}" } ?: "No rule")
+        OrgKv("Messages kept on this phone", o.keepDays?.let { "$it days" } ?: "No rule")
+        OrgKv("Backups", ruleText("backups", o.backups))
+        OrgKv("Agents", ruleText("agents", o.agents))
         Box(Modifier.fillMaxWidth().height(1.dp).background(C.Border))
     }
     Muted("These rules are enforced by the app on your device. ${o.orgName} cannot read your messages or see who you talk to.", 13.sp)
