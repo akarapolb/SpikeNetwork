@@ -73,8 +73,10 @@ try {
   check(await waitText("Join an organisation"), "Home relay offers to join an organisation");
   await tapText("Join…", true);
   check(await waitText("Nothing is sent until you choose to use the relay"), "the join page says nothing is sent yet");
-  // The token field: tap it by its placeholder (the page has one field).
-  await tapText("spikeorg1:").catch(() => tapField(0)); typeText(token); hideKeyboard();
+  // The token is several hundred characters: `adb input text` drops some on a busy emulator, so put it on the
+  // clipboard and use the page's own Paste button.
+  debug("_clip", token);
+  await tapText("Paste", true);
   await tapText("Continue", true);
   check(await waitText("Join Northwind's relay"), "the sheet names the organisation");
   const sheet = screenText();

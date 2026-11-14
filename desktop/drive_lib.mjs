@@ -25,7 +25,7 @@ export function createDrive({ relayUrl, shotsDir, pass = "drive test passphrase"
   class Page {
     constructor(name, port) { this.name = name; this.port = port; this.id = 0; this.pending = new Map(); }
     async connect() {
-      for (let i = 0; i < 80; i++) {
+      for (let i = 0; i < 240; i++) {
         try {
           const list = await (await fetch(`http://127.0.0.1:${this.port}/json`)).json();
           const t = list.find((x) => x.type === "page");
@@ -72,6 +72,11 @@ export function createDrive({ relayUrl, shotsDir, pass = "drive test passphrase"
     const p = new Page(name, port);
     await p.connect();
     await sleep(1500);
+    // On a busy machine the page can take longer than that to load the app's bridge: wait for it.
+    for (let i = 0; i < 120; i++) {
+      try { if (await p.eval("return !!(window.__TAURI__ && window.__TAURI__.core)")) break; } catch (_) {}
+      await sleep(500);
+    }
     await p.invoke("create_identity", { passphrase: pass });
     await p.invoke("set_relay", { url: relayUrl });
     await p.reload();

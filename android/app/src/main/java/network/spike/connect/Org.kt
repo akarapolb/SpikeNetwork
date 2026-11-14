@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -115,6 +116,7 @@ fun OrgJoinPage(m: AppModel, done: () -> Unit) {
     var info by remember { mutableStateOf<JSONObject?>(null) }
     var err by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    val ctx = LocalContext.current
     val i = info
     if (i == null) {
         Muted("Nothing is sent until you choose to use the relay.", 14.sp)
@@ -127,6 +129,10 @@ fun OrgJoinPage(m: AppModel, done: () -> Unit) {
         } else {
             Field("Organisation token", token, { token = it }, singleLine = false, minHeight = 96.dp, placeholder = "spikeorg1:…")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlineButton("Paste", small = true) {
+                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(ctx)?.toString()?.trim()?.let { token = it }
+                }
                 OutlineButton("Scan", small = true) { scanning = true }
                 OutlineButton("Continue", small = true, enabled = token.isNotBlank()) {
                     m.run { try { info = Bridge.obj("org_inspect", args("token" to token.trim())); err = null } catch (e: BridgeError) { err = e.message } }
