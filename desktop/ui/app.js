@@ -323,6 +323,17 @@ function tile(c, sm) { return h("span", { class: `tile${sm ? " sm" : ""}${c.agen
 // The teal mark after a verified name.
 const vtick = () => h("span", { class: "vtick", title: "Verified" }, icon("shield"));
 const notVerified = () => h("span", { class: "flag bad" }, "Not verified");
+const shortDate = (ms) => new Date(ms).toLocaleDateString([], { day: "numeric", month: "short" });
+// From the open chat, back returns to it; from a group, back returns to the group.
+const openVerify = (name) => { st.verifyFor = !st.group && name === st.chat ? null : name; st.verifyDone = null; st.screen = "verify"; render(); };
+/** The red line over a chat whose contact's identity key changed and has not been compared since (ADR 0008). */
+function keyChangedBanner(c) {
+  if (!c.key_changed) return null;
+  const first = c.name.split(" ")[0];
+  return h("div", { class: "kc-banner", role: "alert" },
+    h("span", {}, h("b", {}, `${first}'s safety number changed.`), ` Usually a new or reinstalled device. It can also mean someone is in the middle. Compare the number with ${first} before you trust this chat.`),
+    h("button", { class: "btn small", type: "button", onclick: () => openVerify(c.name) }, "Verify again"));
+}
 // A soft tint picked from the name, so people are easier to tell apart. Status colours stay red, amber and green.
 function tint(name) { let n = 0; for (const ch of name || "") n = (n * 31 + ch.codePointAt(0)) >>> 0; return `c-t${n % 6}`; }
 // An empty state: a quiet icon above the same sentence as before.
@@ -366,8 +377,8 @@ function chatsList() {
 function contactRow(c) {
   return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.chat === c.name), onclick: () => openChat(c.name) }, tile(c),
     h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.verified ? vtick() : null),
-      h("span", { class: "preview" }, c.verified || c.agent ? (c.last || "No messages yet") : [notVerified(), c.last ? ` · ${c.last}` : ""])),
-    h("span", { class: "meta" }, c.last_ts ? when(c.last_ts) : "", c.unread ? h("i", { class: "dot", role: "img", "aria-label": `${c.unread} unread` }) : null));
+      h("span", { class: "preview" }, c.key_changed ? h("span", { class: "flag bad" }, "Safety number changed") : c.verified || c.agent ? (c.last || "No messages yet") : [notVerified(), c.last ? ` · ${c.last}` : ""])),
+    h("span", { class: "meta" }, c.key_changed ? when(Math.max(c.key_changed, c.last_ts || 0)) : c.last_ts ? when(c.last_ts) : "", c.unread ? h("i", { class: "dot", role: "img", "aria-label": `${c.unread} unread` }) : null));
 }
 /** Delete for everyone, asked in the line under the message. */
 function deleteConfirm(m) {
@@ -635,14 +646,17 @@ function contactSide(c) {
   return h("aside", { class: "side", "aria-label": `About ${c.name}` },
     h("div", { class: "stop" }, h("span", { class: "tile lg" + (c.agent ? " sq" : "") + " c-neutral", "aria-hidden": "true" }, c.agent ? icon("agents") : ini2(c.name)),
       h("b", {}, c.name),
-      c.verified ? h("span", { class: "vbadge" }, icon("shield"), "Verified") : h("span", { class: "nvbadge" }, "Not verified")),
-    h("div", {}, sideCap("Safety number"), safetyGrid(c.fingerprint),
-      h("button", { class: "btn small", type: "button", style: "margin-top:12px", onclick: () => { st.verifyFor = c.name; st.verifyDone = null; st.screen = "verify"; render(); } }, c.verified ? "Compare again" : "Verify")),
+      c.verified ? h("span", { class: "vbadge" }, icon("shield"), "Verified") : h("span", { class: "nvbadge" }, "Not verified"),
+      !c.verified && c.verified_at ? h("span", { class: "shint" }, `Was verified ${shortDate(c.verified_at)}`) : null),
+    h("div", {}, sideCap(c.key_changed ? "New safety number" : "Safety number"), safetyGrid(c.fingerprint),
+      h("button", { class: "btn small", type: "button", style: "margin-top:12px", onclick: () => openVerify(c.name) }, c.key_changed ? "Verify again" : c.verified ? "Compare again" : "Verify")),
     h("div", {}, sideCap(`Devices · ${c.devices}`),
       // The signed list has keys only, no names or types: each device is shown by its short id.
       (c.device_list || []).map((d) => h("div", { class: "sdv", "data-device": d.id, title: `Device ${d.id}` }, h("span", { class: "dvn" }, `Device ${d.id.slice(0, 6)}`),
         h("span", { class: d.last_heard ? "" : "dim" }, heardLabel(d.last_heard)))),
-      h("p", { class: "snote" }, "When a message from each device last reached this computer. The relay is never asked.")),
+      h("p", { class: "snote" }, "When a message from each device last reached this computer. The relay is never asked."),
+      c.key_changed ? h("div", { class: "sdv" }, "New identity key", h("span", { class: "bad" }, `changed ${when(c.key_changed)}`)) : null,
+      c.devices_changed ? h("div", { class: "sdv" }, "Device list changed", h("span", {}, when(c.devices_changed))) : null),
     h("div", {}, sideCap(c.agent ? "Agent" : "Contact"),
       c.agent ? h("button", { class: "slink", type: "button", onclick: () => { go("agents"); } }, "What this agent may do") : null,
       h("button", { class: "slink", type: "button", onclick: () => { st.contactFor = c.name; st.contactForm = null; st.screen = "contact"; render(); } }, "Rename, or update their card")));
@@ -667,7 +681,7 @@ function chatMain() {
   if (!c) return [h("div", { class: "head" }, h("h1", {}, "Chats")), startState()];
   const head = h("div", { class: "head" }, tile(c, true), h("span", { class: "who" }, h("b", {}, c.name, c.verified ? vtick() : null),
       h("span", {}, c.agent ? "Agent · acts only within the limits you set" : [`${c.devices} device${c.devices > 1 ? "s" : ""} · end-to-end encrypted`, c.verified ? "" : [" · ", notVerified()]])),
-    c.verified ? null : h("button", { class: "btn small", type: "button", onclick: () => { st.screen = "verify"; st.verifyDone = null; render(); } }, "Verify"),
+    c.verified || c.key_changed ? null : h("button", { class: "btn small", type: "button", onclick: () => openVerify(c.name) }, "Verify"),
     callButtons(c), findButton(),
     sideButton("Details and safety number"));
   const items = threadItems(false);
@@ -680,7 +694,7 @@ function chatMain() {
     catch (e) { toast(String(e)); }
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
-  return withSide([head, findBar(), h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
+  return withSide([head, keyChangedBanner(c), findBar(), h("div", { class: "scroll" }, items.length ? h("div", { class: "thread" }, items) : emptyState(c.verified ? "No messages yet." : "No messages yet. Verify this contact first: compare their safety number over a call or in person.")),
     h("div", { class: "composer" }, mention.list, replyStrip(), composerBar(ta, picker, send, `Encrypted separately for each of ${c.name}'s devices.`))], contactSide(c));
 }
 
@@ -692,6 +706,7 @@ function verifyScreen() {
     h("p", { class: "lead" }, `Compare this with ${first} in person or on a call you trust, reading it aloud. If it matches on both sides, nobody is in the middle.`),
     h("section", { class: "safety", "aria-label": "Safety number " + c.fingerprint }, h("span", { class: "cap" }, "Safety number"),
       h("div", { class: "groups mono", "aria-hidden": "true" }, c.fingerprint.split(/[-\s]+/).filter(Boolean).map((g) => h("span", {}, g)))),
+    c.key_changed && !done ? h("div", { class: "status bad" }, h("b", {}, `${c.name}'s safety number changed.`), h("span", {}, "This is the new number. Compare it again before you trust the chat.")) : null,
     c.verified && !done ? h("div", { class: "status soft" }, h("b", {}, `${c.name} is verified.`), h("span", {}, "If this number ever changes, you will be warned.")) : null,
     done === "match" ? h("div", { class: "status good", role: "status" }, h("b", {}, `${c.name} is verified.`)) : null,
     done === "nomatch" ? h("div", { class: "status bad", role: "status" }, h("b", {}, "Do not trust this conversation yet."), h("span", {}, `Someone may be in the middle. Ask ${first} to show their number in person.`)) : null,
@@ -746,7 +761,11 @@ async function addContactFromScreen() {
     // The other person must accept a request from us before they can talk to us; introducing ourselves
     // now means they see that request straight away, with our card, and need no card of their own.
     if (isNew) { try { await invoke("send", { name: n, text: INTRO_TEXT, replyTo: null }); await refresh(); } catch (_) {} }
-  } catch (e) { toast(String(e)); }
+  } catch (e) {
+    // A new identity under a name you have: the contact screen asks whether to replace their key.
+    if (String(e).includes("KEY CHANGE")) { st.contactFor = n; st.contactForm = { for: n, name: n, card: d.card.trim(), keyChange: true }; st.addDraft = null; st.screen = "contact"; render(); }
+    else toast(String(e));
+  }
 }
 
 /* Contact details: rename, and replace the identity card when the person's devices changed (ADR 0008). */
@@ -764,7 +783,12 @@ function contactScreen() {
   };
   const saveCard = async () => {
     if (!f.card.trim()) { toast("Paste their new card first."); return; }
-    try { const msg = await invoke("add_contact", { name: c.name, card: f.card }); f.card = ""; await refresh(); toast(msg); }
+    try { const msg = await invoke("add_contact", { name: c.name, card: f.card }); f.card = ""; f.keyChange = false; await refresh(); toast(msg); }
+    catch (e) { if (String(e).includes("KEY CHANGE")) { f.keyChange = true; render(); } else toast(String(e)); }
+  };
+  // A card with a different identity key: taken only when the person says so, and then shown as changed.
+  const replaceKey = async () => {
+    try { const msg = await invoke("replace_contact_key", { name: c.name, card: f.card }); f.card = ""; f.keyChange = false; await refresh(); toast(msg); st.screen = null; st.chat = c.name; render(); }
     catch (e) { toast(String(e)); }
   };
   return [header("Contact", () => { st.screen = null; render(); }), h("div", { class: "scroll" }, h("div", { class: "page" },
@@ -787,7 +811,11 @@ function contactScreen() {
     h("section", { class: "card" }, h("h2", { class: "eyebrow" }, "Update their card"),
       h("span", { class: "note" }, "Their identity stays the same: this only adds devices they added. A different identity is refused."),
       cardIn,
-      h("button", { class: "btn", style: "align-self:flex-start", type: "button", onclick: saveCard }, "Update card")))) ];
+      f.keyChange ? h("div", { class: "status bad", role: "alert" }, h("b", {}, `This card has a different safety number from ${c.name}'s.`),
+        h("span", {}, `Replace it only if ${c.name} told you about a new or reinstalled device. They will show as not verified until you compare again.`)) : null,
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
+        h("button", { class: "btn", type: "button", onclick: saveCard }, "Update card"),
+        f.keyChange ? h("button", { class: "btn danger", type: "button", onclick: replaceKey }, "Replace their key") : null)))) ];
 }
 
 /* ---------- agents ---------- */

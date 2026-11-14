@@ -165,6 +165,45 @@ async fn a_contact_can_be_renamed_and_its_card_updated_later() {
 }
 
 #[tokio::test]
+async fn a_verified_contact_whose_key_changes_warns_until_compared_again() {
+    let url = relay().await;
+    let (alice, bob, bob2) = (dev("alice", &url), dev("bob", &url), dev("bob2", &url));
+    alice.s.add_contact("Bob", &card(&bob)).unwrap();
+    let fp = |d: &Dev| IdentityCard::decode(&card(d)).unwrap().fingerprint();
+    alice.s.mark_verified("Bob", &fp(&bob)).unwrap();
+    let bob_row = |a: &Dev| {
+        a.s.overview()
+            .unwrap()
+            .contacts
+            .into_iter()
+            .find(|c| c.name == "Bob")
+            .unwrap()
+    };
+    let before = bob_row(&alice);
+    assert!(before.verified && before.key_changed.is_none() && before.verified_at.is_some());
+
+    // A new identity under the same name is refused when adding, and taken only when replaced on purpose.
+    let e = alice.s.add_contact("Bob", &card(&bob2)).unwrap_err().to_string();
+    assert!(e.contains("KEY CHANGE"), "{e}");
+    assert!(bob_row(&alice).verified);
+    assert!(alice.s.replace_contact_key("Nobody", &card(&bob2)).is_err());
+    assert!(alice.s.replace_contact_key("Bob", &card(&bob)).is_err());
+    let msg = alice.s.replace_contact_key("Bob", &card(&bob2)).unwrap();
+    assert!(msg.contains("safety number changed"), "{msg}");
+
+    let after = bob_row(&alice);
+    assert!(!after.verified, "a changed key is not verified");
+    assert!(after.key_changed.is_some());
+    assert_eq!(after.verified_at, before.verified_at, "kept to say 'was verified'");
+    assert_eq!(after.fingerprint, fp(&bob2));
+    // The old safety number no longer verifies; the new one does, and clears the warning.
+    assert!(alice.s.mark_verified("Bob", &fp(&bob)).is_err());
+    alice.s.mark_verified("Bob", &fp(&bob2)).unwrap();
+    let again = bob_row(&alice);
+    assert!(again.verified && again.key_changed.is_none());
+}
+
+#[tokio::test]
 async fn adding_a_contact_introduces_you_to_them_as_a_request() {
     let url = relay().await;
     let (alice, bob) = (dev("alice", &url), dev("bob", &url));

@@ -191,6 +191,9 @@ impl Engine {
             "sync" => val(rt.block_on(x.sync(Duration::from_millis(700)))?),
             "mark_read" => val(rt.block_on(x.mark_read(&s(a, "name")?))?),
             "add_contact" => val(x.add_contact(&s(a, "name")?, &s(a, "card")?)?),
+            "replace_contact_key" => {
+                val(x.replace_contact_key(&s(a, "name")?, &s(a, "card")?)?)
+            }
             "mark_verified" => val(x.mark_verified(&s(a, "name")?, &s(a, "fingerprint")?)?),
             "change_passphrase" => {
                 val(x.change_passphrase(s(a, "old")?, s(a, "new")?)?)

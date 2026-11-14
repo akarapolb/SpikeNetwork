@@ -70,6 +70,9 @@ impl Device {
             name: name.into(),
             card: card.into(),
             verified,
+            key_changed: None,
+            verified_at: None,
+            devices_changed: None,
         });
         self.home.save_contacts(&c).unwrap();
     }
@@ -903,7 +906,9 @@ fn contact_updates_follow_the_device_list_rules() {
             .unwrap(),
         Added::Replaced
     );
-    assert!(!alice.home.load_contacts().unwrap()[0].verified);
+    let c = &alice.home.load_contacts().unwrap()[0];
+    assert!(!c.verified);
+    assert!(c.key_changed.is_some(), "the apps warn until it is compared again");
 }
 
 #[test]

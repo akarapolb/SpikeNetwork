@@ -87,6 +87,9 @@ async fn full_conversation_over_wss_with_trusted_ca() {
             name: name.into(),
             card: other.load_identity().unwrap().card().encode(),
             verified: true,
+            key_changed: None,
+            verified_at: None,
+            devices_changed: None,
         }])
         .unwrap();
     };

@@ -21,6 +21,10 @@ data class Contact(
     val agent: Boolean = false,
     /** Their signed device list, in order. `lastHeard` 0: no message from that device has arrived here yet. */
     val deviceList: List<ContactDevice> = emptyList(),
+    /** When their identity key changed (ms), until compared again; 0 when it has not. */
+    val keyChanged: Long = 0,
+    /** When you last verified them (ms), kept across a key change; 0 when never. */
+    val verifiedAt: Long = 0,
 )
 
 /** One of a contact's devices. The signed list has keys only, so it is shown by its short id. */
@@ -79,6 +83,7 @@ fun parseOverview(o: JSONObject): Overview {
                 it.optJSONArray("device_list")?.mapObjects { d ->
                     ContactDevice(d.getString("id"), if (d.isNull("last_heard")) 0 else d.getLong("last_heard"))
                 } ?: emptyList(),
+                it.optLong("key_changed", 0), it.optLong("verified_at", 0),
             )
         },
         groups = o.getJSONArray("groups").mapObjects {
