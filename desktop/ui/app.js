@@ -225,6 +225,7 @@ async function refresh() {
     if (st.group) await loadGroup();
     // Settings shows how much each app sent and received: keep it current while it is open.
     if (st.section === "settings" && !st.screen && st.appsLoaded) { st.apps = await invoke("apps"); st.appWaiting = st.apps.waiting; }
+    if (st.section === "devices" && st.ownNotes !== undefined) st.ownNotes = await invoke("own_notes");
   } catch (e) { if (e === "locked") return gate("unlock"); toast(String(e)); }
   render();
   banners();
@@ -940,8 +941,46 @@ function devicesMain() {
         d.this ? h("span", { class: "here" }, "You are here") : (me.approver ? h("button", { class: "btn small danger", type: "button", onclick: () => removeDevice(d) }, "Remove") : null))),
       h("div", { class: "devrow" }, h("span", { class: "t" }, h("b", {}, "Identity key"), h("span", { class: "note mono", style: "overflow-wrap:anywhere" }, me.fingerprint)),
         h("button", { class: "btn small", type: "button", onclick: copyKey }, "Copy")),
-      h("p", { class: "note", style: "margin-top:16px" }, `Contacts compare the identity key when they verify you. It signs your device list (now v${me.list_version}); it never signs messages. Keep another device linked or an encrypted backup: with neither, losing every device and the passphrase loses the identity.`)),
+      h("p", { class: "note", style: "margin-top:16px" }, `Contacts compare the identity key when they verify you. It signs your device list (now v${me.list_version}); it never signs messages. Keep another device linked or an encrypted backup: with neither, losing every device and the passphrase loses the identity.`),
+      sendOwnPanel(me)),
     linkPanel(me)))];
+}
+/* Send to my devices: a note or a file for your own other devices and nobody else (as in the design's "Send to Phone"). */
+async function loadOwnNotes() { try { st.ownNotes = await invoke("own_notes"); } catch (_) { st.ownNotes = []; } render(); }
+async function sendOwnFile(file) {
+  if (file.size === 0) return toast("That file is empty.");
+  if (file.size > MAX_FILE) return toast("Files are limited to 100 MB.");
+  toast(`Encrypting and sending ${file.name} to your devices…`);
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const n = await invoke("send_file_to_devices", bytes, { headers: { "x-filename": encodeURIComponent(file.name) } });
+    toast(`Sent to ${plural(n, "device", "devices")}.`);
+  } catch (e) { toast(String(e)); }
+  await loadOwnNotes();
+}
+function sendOwnPanel(me) {
+  const others = me.device_list.filter((d) => !d.this);
+  if (!others.length) return null;
+  if (st.ownNotes === undefined) { st.ownNotes = []; loadOwnNotes(); }
+  const target = others.length === 1 ? `Device ${others[0].id.slice(0, 6)}` : "your devices";
+  const input = h("input", { type: "file", hidden: true, onchange: (e) => { const f = e.target.files[0]; if (f) sendOwnFile(f); } });
+  const drop = h("button", { class: "drop", type: "button", "aria-label": "Drop files here or choose a file", onclick: () => input.click(),
+    ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add("over"); }, ondragleave: (e) => e.currentTarget.classList.remove("over"),
+    ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove("over"); for (const f of e.dataTransfer.files) sendOwnFile(f); } },
+    icon("down"), h("b", {}, "Drop files here"), h("span", { class: "note" }, "or choose a file"));
+  const note = h("input", { type: "text", placeholder: "A note for your devices", "aria-label": "A note for your devices" });
+  const sendNote = async () => { const t = note.value; if (!t.trim()) return; try { const n = await invoke("send_note_to_devices", { text: t }); note.value = ""; toast(`Sent to ${plural(n, "device", "devices")}.`); } catch (e) { toast(String(e)); } await loadOwnNotes(); };
+  note.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendNote(); } });
+  const rows = (st.ownNotes || []).slice().reverse().slice(0, 20).map((n) => h("div", { class: "att own" },
+    h("i", {}, icon(n.file ? "file" : "chats")),
+    h("div", { style: "flex:1;min-width:0" }, h("div", { class: "nm" }, n.file ? n.file.name : n.body),
+      h("small", {}, [n.file ? fmtSize(n.file.size) + " · " : "", n.out ? `sent to ${target}` : `received from ${n.from || "another device"}`, " · ", new Date(n.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })].join(""))),
+    n.file ? h("button", { class: "btn small", type: "button", onclick: () => saveFile(n) }, "Save") : null));
+  return h("section", { class: "sendown", "aria-label": "Send to my devices" },
+    h("h4", {}, others.length === 1 ? `Send to ${target}` : "Send to my devices"),
+    h("span", { class: "note" }, "Between your own devices only, encrypted for each one. Nobody else receives it."),
+    drop, input, h("div", { style: "display:flex;gap:8px" }, h("label", { class: "field", style: "flex:1" }, note), h("button", { class: "btn primary", type: "button", onclick: sendNote }, "Send")),
+    rows.length ? rows : h("span", { class: "note" }, "Nothing sent between your devices yet."));
 }
 function linkPanel(me) {
   const steps = h("div", { class: "lsteps" }, ["1 Paste code", "2 Compare", "3 History"].map((t, i) => h("b", { class: i + 1 === (st.linkStep || 1) ? "on" : "" }, t)));

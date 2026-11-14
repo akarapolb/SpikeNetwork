@@ -12,6 +12,7 @@ pub mod link;
 pub mod messages;
 pub mod ops;
 pub mod org;
+pub mod presence;
 pub mod requests;
 pub mod socket;
 pub mod state;
@@ -449,6 +450,11 @@ pub fn process(
                         persist(sessions, me)?;
                         return Ok(Outcome::Ignored);
                     }
+                    if env.kind == Kind::Status {
+                        // Statuses go to contacts only (ADR 0037); our own devices have nothing to keep.
+                        persist(sessions, me)?;
+                        return Ok(Outcome::Ignored);
+                    }
                     let Some(to) = env.to.clone() else {
                         persist(sessions, me)?;
                         return Ok(Outcome::Invalid);
@@ -555,6 +561,14 @@ pub fn process(
                         persist(sessions, me)?;
                         return Ok(outcome);
                     }
+                    if env.kind == Kind::Status {
+                        // Read receipt, online or typing (ADR 0037): kept only if we share the same.
+                        if let Ok(status) = serde_json::from_str(&env.body) {
+                            presence::on_status(home, &peer, status, env.ts, spike_core::clock::now_ms())?;
+                        }
+                        persist(sessions, me)?;
+                        return Ok(Outcome::Ignored);
+                    }
                     if env.kind == Kind::React {
                         let done = apply_reaction(home, &env, &peer, &peer, &sender_device)?;
                         persist(sessions, me)?;
@@ -591,6 +605,7 @@ pub fn process(
                     if !fresh {
                         return Ok(Outcome::Duplicate);
                     }
+                    presence::on_message(home, &contacts[contact].conversation_key()?)?;
                     let c = &contacts[contact];
                     Ok(Outcome::Message {
                         from: c.name.clone(),

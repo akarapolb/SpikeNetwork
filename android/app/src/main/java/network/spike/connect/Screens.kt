@@ -103,7 +103,7 @@ internal fun listTime(ms: Long): String {
     }
 }
 
-private fun dayLabel(ms: Long): String {
+internal fun dayLabel(ms: Long): String {
     val now = System.currentTimeMillis()
     return when {
         sameDay(ms, now) -> "Today"
@@ -112,7 +112,7 @@ private fun dayLabel(ms: Long): String {
     }
 }
 
-private fun clock(ms: Long): String = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(ms))
+internal fun clock(ms: Long): String = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(ms))
 
 private fun copy(ctx: Context, text: String) {
     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -449,8 +449,12 @@ fun ConversationScreen(
     onSend: suspend (String, String?) -> Unit, onInfo: () -> Unit,
     onCall: ((Boolean) -> Unit)? = null,
     attach: (suspend (String, java.io.File) -> Unit)? = null,
+    /** One to one: the contact's name, for read receipts, online and typing (ADR 0037). Null in a group. */
+    contact: String? = null,
 ) {
     var text by remember { mutableStateOf("") }
+    val peer = rememberPeerStatus(contact)
+    val typing = rememberTypingSender(contact)
     val ctx = LocalContext.current
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null && attach != null) {
@@ -472,7 +476,10 @@ fun ConversationScreen(
     // Replying to a message, and the message whose reactions menu is open (long press).
     var replyTo by remember { mutableStateOf<Message?>(null) }
     var menuFor by remember { mutableStateOf<String?>(null) }
+    // The picture open full screen (tapped in its bubble).
+    var viewing by remember { mutableStateOf<Message?>(null) }
     val who = { x: Message -> if (x.out) "You" else x.from ?: title }
+    viewing?.let { v -> PictureViewer(v, who(v)) { viewing = null } }
     var query by remember { mutableStateOf("") }
     var cur by remember { mutableStateOf(0) }
     val q = if (finding) query.trim() else ""
@@ -499,7 +506,10 @@ fun ConversationScreen(
                     Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, lineHeight = 16.8.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     if (verified) Ico(Ic.ShieldCheck, C.Green, 14.dp)
                 }
-                Text(sub, color = C.Muted, fontSize = 11.5.sp, lineHeight = 13.8.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (peer.typing) "typing…" else if (peer.online) "Online" else sub,
+                    color = if (peer.typing || peer.online) C.Green else C.Muted, fontSize = 11.5.sp, lineHeight = 13.8.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
             }
             if (onCall != null) {
                 val gate = rememberMicGate { onCall(false) }
@@ -564,6 +574,7 @@ fun ConversationScreen(
                 val run = { a: Message, b: Message -> a.out == b.out && a.from == b.from && sameDay(a.ts, b.ts) && b.ts - a.ts < 300_000 }
                 val cont = prev != null && run(prev, msg)
                 val mid = next != null && run(msg, next)
+                val readHere = peer.readUpto != null && msg.id == m.messages.lastOrNull { it.out && !it.deleted && it.ts <= peer.readUpto }?.id
                 item(key = msg.id) {
                     val hit = msg.id in hits
                     Bubble(
@@ -578,6 +589,8 @@ fun ConversationScreen(
                             val mine = msg.reactions.firstOrNull { it.mine }?.emoji
                             m.run { Bridge.call("react", args("id" to msg.id, "emoji" to if (mine == e) "" else e)); m.refresh() }
                         },
+                        onPicture = { viewing = msg },
+                        read = if (readHere) "Read ${clock(peer.readAt ?: msg.ts)}" else null,
                     ) { m.run { saveAndOpen(ctx, msg.id) } }
                 }
             }
@@ -620,7 +633,7 @@ fun ConversationScreen(
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     BasicTextField(
-                        text, { text = it }, cursorBrush = SolidColor(C.Accent), maxLines = 4,
+                        text, { text = it; typing(it.isNotBlank()) }, cursorBrush = SolidColor(C.Accent), maxLines = 4,
                         textStyle = TextStyle(fontFamily = Geist, fontSize = 14.sp, color = C.Text),
                         modifier = Modifier.fillMaxWidth(),
                         decorationBox = { inner ->
@@ -637,6 +650,7 @@ fun ConversationScreen(
                             val r = replyTo?.id
                             text = ""
                             replyTo = null
+                            typing(false)
                             m.run { onSend(t, r); m.refresh() }
                         }.semantics { contentDescription = "Send" },
                     contentAlignment = Alignment.Center,
@@ -662,7 +676,7 @@ private fun marked(text: String, q: String?): androidx.compose.ui.text.Annotated
 private fun Bubble(
     msg: Message, onCall: ((Boolean) -> Unit)?, cont: Boolean = false, mid: Boolean = false, mark: String? = null, current: Boolean = false,
     quoteName: String? = null, menu: Boolean = false, onLongPress: () -> Unit = {}, onReply: () -> Unit = {},
-    onQuote: (String) -> Unit = {}, onReact: (String) -> Unit = {}, onFile: () -> Unit,
+    onQuote: (String) -> Unit = {}, onReact: (String) -> Unit = {}, onPicture: (() -> Unit)? = null, read: String? = null, onFile: () -> Unit,
 ) {
     // A line the call itself left in the conversation offers to call again, the same kind of call.
     val callVideo = msg.body.contains("video call", ignoreCase = true)
@@ -725,7 +739,17 @@ private fun Bubble(
                                 }
                             }
                         }
-                        if (msg.fileName != null && !msg.deleted) {
+                        if (msg.fileName != null && !msg.deleted && isPicture(msg.fileName) && onPicture != null) {
+                            PictureInBubble(msg, onPicture) {
+                                Row(
+                                    Modifier.clickable(onClick = onFile).semantics { contentDescription = "File ${msg.fileName}" },
+                                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Ico(Ic.File, if (msg.out) C.OnBubbleOut else C.AvatarText, 26.dp)
+                                    Text(msg.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        } else if (msg.fileName != null && !msg.deleted) {
                             Row(
                                 Modifier.clickable(onClick = onFile).semantics { contentDescription = "File ${msg.fileName}" },
                                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -778,7 +802,7 @@ private fun Bubble(
                 if (msg.body.isNotEmpty()) MenuItem("Copy", Ic.Copy) { copy(ctx, msg.body); onLongPress() }
             }
         }
-        if (!mid || msg.edited) Muted(clock(msg.ts) + if (msg.edited) " · edited" else "", 11.5.sp, Modifier.padding(horizontal = 2.dp))
+        if (!mid || msg.edited || read != null) Muted(clock(msg.ts) + (if (msg.edited) " · edited" else "") + (read?.let { " · $it" } ?: ""), 11.5.sp, Modifier.padding(horizontal = 2.dp))
     }
 }
 
@@ -1136,6 +1160,13 @@ fun DevicesTab(m: AppModel) {
                 }
             }
         }
+        if (o.me.deviceList.any { !it.self }) {
+            val shape = RoundedCornerShape(13.dp)
+            Row(
+                Modifier.fillMaxWidth().height(44.dp).clip(shape).background(C.Accent).clickable { m.open(Screen.SendToDevices) },
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            ) { Ico(Ic.Send, C.OnAccent, 18.dp); Text("Send to my devices", color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp) }
+        }
         if (o.me.approver) {
             val shape = RoundedCornerShape(13.dp)
             Row(
@@ -1180,7 +1211,7 @@ fun SettingsTab(m: AppModel) {
     // The design's Settings: an index of one-line rows, each opening its own page. Back returns to the index.
     var sec by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf<String?>(null) }
     androidx.activity.compose.BackHandler(enabled = sec != null) { sec = null }
-    val sections = listOf("phone" to "Your identity", "relay" to "Home relay", "backup" to "Backup", "direct" to "Direct connections", "alerts" to "Unlocking and alerts", "apps" to "Apps", "sees" to "What relays can see")
+    val sections = listOf("phone" to "Your identity", "relay" to "Home relay", "backup" to "Backup", "direct" to "Direct connections", "alerts" to "Unlocking and alerts", "apps" to "Apps", "others" to "What others see", "sees" to "What relays can see")
     if (sec == null) {
         var backupDue by remember { mutableStateOf<Boolean?>(null) }
         var directOn by remember { mutableStateOf<Boolean?>(null) }
@@ -1284,6 +1315,7 @@ fun SettingsTab(m: AppModel) {
         if (sec == "backup") BackupCard(m)
         if (sec == "direct") DirectCard(m)
         if (sec == "apps") AppsCard(m)
+        if (sec == "others") WhatOthersSee(m)
         if (sec == "sees") CardBox {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {

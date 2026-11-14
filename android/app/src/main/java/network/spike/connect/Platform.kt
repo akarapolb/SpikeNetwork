@@ -78,7 +78,12 @@ object Listener {
         val want = ready && !paused && (visible || background)
         if (want && job?.isActive != true) {
             val app = ctx.applicationContext
-            job = scope.launch { launch { directLoop(app) }; loop(app) }
+            // When the relay loop stops (linking pauses it), the direct loop stops too, so the job ends and the next
+            // update() starts both again. Before, the direct loop kept the job "active" and the relay loop never came back.
+            job = scope.launch {
+                val direct = launch { directLoop(app) }
+                try { loop(app) } finally { direct.cancel() }
+            }
         } else if (!want) {
             job?.cancel()
             job = null

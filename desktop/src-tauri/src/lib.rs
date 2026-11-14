@@ -666,6 +666,38 @@ async fn mark_read(state: State<'_, AppState>, name: String) -> Result<(), Strin
     session(&state)?.mark_read(&name).await.map_err(err)
 }
 
+// What others see (ADR 0037). The desktop has no screen for these yet; the engine is shared.
+#[tauri::command]
+fn presence_share(state: State<'_, AppState>) -> Result<spike_cli::presence::Share, String> {
+    session(&state)?.presence_share().map_err(err)
+}
+
+#[tauri::command]
+fn set_presence_share(
+    state: State<'_, AppState>,
+    receipts: bool,
+    online: bool,
+    typing: bool,
+) -> Result<(), String> {
+    session(&state)?
+        .set_presence_share(spike_cli::presence::Share {
+            receipts,
+            online,
+            typing,
+        })
+        .map_err(err)
+}
+
+#[tauri::command]
+fn peer_status(state: State<'_, AppState>, name: String) -> Result<spike_cli::presence::Shown, String> {
+    session(&state)?.peer_status(&name).map_err(err)
+}
+
+#[tauri::command]
+async fn send_presence(state: State<'_, AppState>, name: String, what: String) -> Result<bool, String> {
+    session(&state)?.send_presence(&name, &what).await.map_err(err)
+}
+
 #[tauri::command]
 fn add_contact(state: State<'_, AppState>, name: String, card: String) -> Result<String, String> {
     session(&state)?.add_contact(&name, &card).map_err(err)
@@ -1066,6 +1098,37 @@ async fn send_file(
     );
     session(&state)?
         .send_file(&name, &file, bytes, &caption)
+        .await
+        .map_err(err)
+}
+
+/// What went between your own devices ("Send to my devices"), oldest first.
+#[tauri::command]
+fn own_notes(state: State<'_, AppState>) -> Result<Vec<MessageDto>, String> {
+    session(&state)?.own_notes(200).map_err(err)
+}
+
+/// A note for your other devices only.
+#[tauri::command]
+async fn send_note_to_devices(state: State<'_, AppState>, text: String) -> Result<usize, String> {
+    session(&state)?
+        .send_to_devices(&text, None)
+        .await
+        .map_err(err)
+}
+
+/// A file (the raw body, its name in `x-filename`) for your other devices only.
+#[tauri::command]
+async fn send_file_to_devices(
+    state: State<'_, AppState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<usize, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the file's bytes".into());
+    };
+    let file = header(&request, "x-filename");
+    session(&state)?
+        .send_to_devices("", Some((&file, bytes)))
         .await
         .map_err(err)
 }
@@ -1493,6 +1556,13 @@ pub fn run() {
             revoke,
             send_file,
             save_attachment,
+            own_notes,
+            presence_share,
+            set_presence_share,
+            peer_status,
+            send_presence,
+            send_note_to_devices,
+            send_file_to_devices,
             attachment_bytes,
             link_offer,
             qr_svg,

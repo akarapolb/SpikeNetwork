@@ -215,6 +215,7 @@ private fun Ready(m: AppModel) {
                 { m.open(Screen.Verify(s.name)) },
                 { video -> CallManager.call(s.name, c?.verified == true, video) },
                 { fileName, f -> Bridge.call("send_file", args("name" to s.name, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
+                contact = s.name,
             )
         }
         is Screen.GroupChat -> {
@@ -243,5 +244,6 @@ private fun Ready(m: AppModel) {
         is Screen.AgentRequest -> AgentRequestScreen(m, s.id)
         is Screen.AgentGrant -> AgentGrantScreen(m, s.agent)
         Screen.AgentLog -> AgentLogScreen(m)
+        Screen.SendToDevices -> SendToDevicesScreen(m)
     }
 }

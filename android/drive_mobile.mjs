@@ -235,9 +235,8 @@ try {
   await sleep(2500);
   const kept = sh(`run-as ${PKG} sh -c 'cat files/received/desk-note.txt'`).trim();
   check(kept === "hello from the desktop file", "tapping the file saves it intact in the app's folder");
-  back(); await sleep(800); // the "open with" chooser
-  if (!screenText().includes("Message Alice")) { back(); await sleep(800); }
-  back(); await sleep(800);
+  // Back out of the "open with" chooser (when the emulator has an app for the file) and the conversation, to the tabs.
+  for (let i = 0; i < 3 && !screenText().includes("New group"); i++) { back(); await sleep(800); }
 
   console.log("-- the other tabs");
   for (const t of ["Agents", "Devices", "Settings"]) {

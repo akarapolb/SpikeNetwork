@@ -26,6 +26,7 @@ use spike_cli::groups;
 use spike_cli::large;
 use spike_cli::link;
 use spike_cli::messages::Direction;
+use spike_cli::presence;
 use spike_cli::requests;
 use spike_cli::state::{Added, Home};
 use spike_cli::transport::{validate_ca_pem, Target, TransportOpts};
@@ -1089,7 +1090,55 @@ impl Session {
                 .unwrap_or(0);
             self.home.advance_read_marker(&key, upto)?;
         }
+        // A read receipt (ADR 0037), only when the switch is on and only for something new.
+        let key = self.contact_key(name)?;
+        let upto = self
+            .home
+            .messages()?
+            .conversation(&key, usize::MAX)?
+            .iter()
+            .filter(|m| m.direction == Direction::In)
+            .map(|m| m.ts)
+            .max()
+            .unwrap_or(0);
+        let _ = presence::send(
+            &self.home,
+            self.target(),
+            name,
+            spike_core::envelope::Status::Read { upto },
+        )
+        .await;
         Ok(())
+    }
+
+    // ---------------------------------------------- what others see (ADR 0037)
+
+    /// The three switches: read receipts, online now, typing. All off until turned on.
+    pub fn presence_share(&self) -> Result<presence::Share> {
+        presence::share(&self.home)
+    }
+
+    pub fn set_presence_share(&self, share: presence::Share) -> Result<()> {
+        presence::set_share(&self.home, share)
+    }
+
+    /// What to show about a contact in their conversation: read point, online, typing.
+    pub fn peer_status(&self, name: &str) -> Result<presence::Shown> {
+        let key = self.contact_key(name)?;
+        presence::shown(&self.home, &key, spike_core::clock::now_ms())
+    }
+
+    /// Tell a contact you have their conversation open (`online`) or are typing (`typing`,
+    /// `typing_off`). Returns false when a switch or rule says no; nothing is sent then.
+    pub async fn send_presence(&self, name: &str, what: &str) -> Result<bool> {
+        let status = match what {
+            "online" => spike_core::envelope::Status::Online,
+            "typing" => spike_core::envelope::Status::Typing { on: true },
+            "typing_off" => spike_core::envelope::Status::Typing { on: false },
+            other => bail!("unknown presence '{other}'"),
+        };
+        let _net = self.net.lock().await;
+        presence::send(&self.home, self.target(), name, status).await
     }
 
     // ---------------------------------------------------- message requests
@@ -1442,6 +1491,71 @@ impl Session {
         let _net = self.net.lock().await;
         let (a, bytes) = ops::fetch_attachment(&self.home, self.target(), id).await?;
         Ok((spike_core::attachment::safe_file_name(&a.name), bytes))
+    }
+
+    // ---------------------------------------------------- your own devices
+
+    /// What you sent between your own devices ("Send to my devices"), oldest first. `out` means
+    /// this device sent it; otherwise `from` names the device it came from.
+    pub fn own_notes(&self, limit: usize) -> Result<Vec<MessageDto>> {
+        let me = self.my_owner()?;
+        let my_id = self.device_id()?;
+        let msgs = self
+            .home
+            .messages()?
+            .conversation(&me, limit.clamp(1, 500))?;
+        Ok(msgs
+            .into_iter()
+            .map(|m| {
+                let here = m.stamp_device == my_id;
+                let from = (!here).then(|| {
+                    format!("Device {}", m.stamp_device.chars().take(6).collect::<String>())
+                });
+                let mut dto = message_dto(m, None, true, &me);
+                dto.out = here;
+                dto.from = from;
+                dto
+            })
+            .collect())
+    }
+
+    /// Send a note, or a file with an optional caption, to your other devices only.
+    pub async fn send_to_devices(
+        &self,
+        text: &str,
+        file: Option<(&str, &[u8])>,
+    ) -> Result<usize> {
+        let text = text.trim_end();
+        if file.is_none() && text.trim().is_empty() {
+            bail!("nothing to send");
+        }
+        if text.len() > MAX_MESSAGE {
+            bail!("messages are limited to {} KiB", MAX_MESSAGE / 1024);
+        }
+        let file = match file {
+            Some((name, bytes)) => {
+                if bytes.is_empty() {
+                    bail!("that file is empty");
+                }
+                if bytes.len() as u64 > spike_core::attachment::MAX_FILE {
+                    bail!(
+                        "files are limited to {} MiB",
+                        spike_core::attachment::MAX_FILE / (1024 * 1024)
+                    );
+                }
+                Some((spike_core::attachment::safe_file_name(name), bytes))
+            }
+            None => None,
+        };
+        let _net = self.net.lock().await;
+        let (_, n) = ops::send_to_own(
+            &self.home,
+            self.target(),
+            text,
+            file.as_ref().map(|(n, b)| (n.as_str(), *b)),
+        )
+        .await?;
+        Ok(n)
     }
 
     // ------------------------------------------------------------ linking
