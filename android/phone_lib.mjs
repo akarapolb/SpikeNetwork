@@ -48,8 +48,14 @@ export function createPhone(D) {
     const end = Date.now() + ms;
     let last = "";
     while (Date.now() < end) {
-      last = screenText();
+      const ns = nodes();
+      last = ns.map((n) => n.text || n.desc).filter(Boolean).join(" | ");
       if (last.includes(sub)) return true;
+      // On a loaded PC the system now and then says another app "isn't responding" over everything: wait for it.
+      if (last.includes("isn't responding")) {
+        const w = ns.find((n) => n.text === "Wait");
+        if (w) { console.log(`   (a system dialog: ${last.slice(0, 60)}; tapping Wait)`); tap(w.cx, w.cy); }
+      }
       await sleep(500);
     }
     console.log(`   (waited for "${sub}"; the phone shows: ${last.slice(0, 300)})`);
@@ -79,6 +85,34 @@ export function createPhone(D) {
     for (let i = 0; i < text.length; i += 40) {
       sh(`input text '${text.slice(i, i + 40).replace(/ /g, "%s")}'`);
     }
+  }
+  /** How many characters text field #index holds (a password field shows one dot per character). */
+  function fieldLength(index) {
+    const f = nodes().filter((n) => n.cls.endsWith("EditText")).sort((a, b) => a.y1 - b.y1)[index];
+    return f ? [...(f.text || "")].length : -1;
+  }
+  /** Replace what field #index holds with `text`, and check it took: `adb input` into the emulator's keyboard
+   *  now and then loses characters, or a late Delete lands after the first typed ones. Clears with exactly as
+   *  many Deletes as the field holds, waits for the field to settle, types, and tries again until the field
+   *  holds as many characters as were typed. Returns whether it did. */
+  async function setField(index, text, tries = 4) {
+    for (let t = 0; t < tries; t++) {
+      await tapField(index);
+      sh("input keyevent KEYCODE_MOVE_END");
+      for (let k = 0; k < 3; k++) {
+        const have = fieldLength(index);
+        if (have <= 0) break;
+        sh(`input keyevent ${Array(have).fill("KEYCODE_DEL").join(" ")}`);
+        await sleep(400);
+      }
+      if (fieldLength(index) !== 0) continue;
+      typeText(text);
+      await sleep(600);
+      if (fieldLength(index) === [...text].length) { hideKeyboard(); return true; }
+      console.log(`   (field #${index} holds ${fieldLength(index)} of ${text.length} typed characters: typing it again)`);
+    }
+    hideKeyboard();
+    return false;
   }
   function shot(label) {
     writeFileSync(join(D.shots, `phone-${label}.png`), execFileSync(ADB, ["exec-out", "screencap", "-p"], { maxBuffer: 64 * 1024 * 1024 }));
@@ -117,5 +151,5 @@ export function createPhone(D) {
   }
 
 
-  return { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, shot, back, hideKeyboard, touch, debug };
+  return { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, fieldLength, setField, shot, back, hideKeyboard, touch, debug };
 }

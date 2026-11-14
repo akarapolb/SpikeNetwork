@@ -40,7 +40,9 @@ export function createDrive({ relayUrl, shotsDir, pass = "drive test passphrase"
     send(method, params = {}) { return new Promise((res) => { const id = ++this.id; this.pending.set(id, res); this.ws.send(JSON.stringify({ id, method, params })); }); }
     async eval(expr) {
       const r = await this.send("Runtime.evaluate", { expression: `(async()=>{${expr}})()`, awaitPromise: true, returnByValue: true });
-      if (r.result.exceptionDetails) throw new Error(`${this.name}: ${JSON.stringify(r.result.exceptionDetails.exception?.description || r.result.exceptionDetails.text)}`);
+      // A rejected Tauri command carries a plain string (exception.value), not an Error with a description.
+      const ex = r.result.exceptionDetails;
+      if (ex) throw new Error(`${this.name}: ${JSON.stringify(ex.exception?.description ?? ex.exception?.value ?? ex.text)}`);
       return r.result.result.value;
     }
     invoke(cmd, args = {}) { return this.eval(`return await window.__TAURI__.core.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)});`); }

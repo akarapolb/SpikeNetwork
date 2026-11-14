@@ -7,7 +7,7 @@
 // the relay back and switches the phone's direct listener off to show the relay is still the fallback.
 //
 // Topology: the emulator reaches the PC as 10.0.2.2; the PC reaches the emulator through `adb forward`.
-// Uses its own relay port (8797) and only ever stops the relay process it started itself.
+// Uses its own relay port (8795) and only ever stops the relay process it started itself.
 // Needs Node 22+, Windows, a booted emulator, the debug APK, debug builds of the relay and the desktop app:
 //   bash android/build-native.sh --release && (cd android && ./gradlew assembleDebug)
 //   cargo build -p spike-relay && (cd desktop/src-tauri && cargo build)   (or SPIKE_DESKTOP_EXE=<other build>)
@@ -19,7 +19,7 @@ import { createDrive, sleep } from "../desktop/drive_lib.mjs";
 import { createPhone, ADB, APK, PKG } from "./phone_lib.mjs";
 
 const PHONE_PASS = "phone test passphrase";
-const RELAY_PORT = 8797;
+const RELAY_PORT = 8795;
 const RELAY = `ws://127.0.0.1:${RELAY_PORT}`;
 
 const D = createDrive({ relayUrl: RELAY, shotsDir: process.argv[2] });
@@ -42,7 +42,7 @@ const startRelay = () => { relay = D.start(join(D.root, "target", "debug", "spik
 const killRelay = () => { try { relay.kill(); } catch (_) {} relay = null; };
 
 try {
-  console.log("-- setting up: a relay of our own on port 8797, clean install on the emulator");
+  console.log("-- setting up: a relay of our own on port 8795, clean install on the emulator");
   startRelay();
   await sleep(1000);
   adb("install", "-r", APK);
