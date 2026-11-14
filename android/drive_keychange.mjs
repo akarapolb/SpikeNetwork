@@ -21,29 +21,40 @@ const { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, 
 const bobRow = () => debug("overview").contacts.find((c) => c.name === "Bob");
 
 try {
-  console.log("-- setting up: a relay of our own, clean install on the emulator, two Bobs");
+  console.log("-- setting up: a relay of our own, two Bobs, clean install on the emulator");
   D.start(join(D.root, "target", "debug", "spike-relay.exe"), ["--listen", `127.0.0.1:${RELAY_PORT}`], {});
   await sleep(1000);
+  const bob = await D.launch("bob", 9467);
+  const bob2 = await D.launch("bob2", 9468); // Bob after reinstalling: a new identity
+  const bobCard = (await bob.invoke("overview")).me.card, bob2Card = (await bob2.invoke("overview")).me.card;
   adb("install", "-r", APK);
   sh(`pm clear ${PKG}`);
   adb("reverse", `tcp:${RELAY_PORT}`, `tcp:${RELAY_PORT}`);
   sh("svc power stayon true; settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0");
   sh(`am start -n ${PKG}/.MainActivity`);
   await sleep(6000);
-  debug("create_identity", { passphrase: PHONE_PASS });
+  // On a busy shared emulator the first create can take longer than the debug door waits: wait for the result.
+  // A background app is frozen by Android, so while creating keep it in front.
+  const front = () => { if (!sh("dumpsys activity activities").match(/topResumedActivity=.*network\.spike\.connect/)) sh(`am start -n ${PKG}/.MainActivity`); };
+  const settle = async (cmd, done, keepFront) => {
+    if (keepFront) { front(); await sleep(2000); }
+    try { debug(cmd, { passphrase: PHONE_PASS }); } catch (e) { console.log(`   (${e.message}; waiting)`); }
+    for (let i = 0; i < 90; i++) { if (keepFront) front(); try { if (done(debug("app_status"))) return; } catch (_) {} await sleep(1000); }
+    throw new Error(`phone ${cmd} never finished`);
+  };
+  await settle("create_identity", (s) => s.exists, true);
   sh(`am force-stop ${PKG}`);
-  debug("unlock", { passphrase: PHONE_PASS });
-  sh(`am start -n ${PKG}/.MainActivity`);
-  check(await waitText("Chats", 30000), "the phone has an identity and shows Chats");
+  await settle("unlock", (s) => s.unlocked, false);
+  // Verified Bob, before the window opens (it then shows him without a restart).
   debug("set_relay", { url: RELAY });
-
-  const bob = await D.launch("bob", 9467);
-  const bob2 = await D.launch("bob2", 9468); // Bob after reinstalling: a new identity
-  const bobCard = (await bob.invoke("overview")).me.card, bob2Card = (await bob2.invoke("overview")).me.card;
   debug("add_contact", { name: "Bob", card: bobCard });
   const fp1 = bobRow().fingerprint;
   debug("mark_verified", { name: "Bob", fingerprint: fp1 });
-  sh(`am force-stop ${PKG}`); debug("unlock", { passphrase: PHONE_PASS }); sh(`am start -n ${PKG}/.MainActivity`);
+  sh(`am start -n ${PKG}/.MainActivity`);
+  // The shared emulator is sometimes slow enough for the launcher to show "isn't responding" over the app.
+  await sleep(1500);
+  for (let i = 0; i < 3 && screenText().includes("isn't responding"); i++) { try { await tapText("Wait", true); } catch (_) {} await sleep(800); }
+  check(await waitText("Chats", 30000), "the phone has an identity and shows Chats");
   check(await waitText("Bob", 30000), "verified Bob is in the chat list");
   check(!screenText().includes("Safety number changed"), "no warning while the key is the one verified");
 
@@ -52,8 +63,14 @@ try {
   await tapText("Add a contact");
   await waitText("Add a contact");
   await tapText("Paste", true);
-  await tapField(0); typeText("Bob"); hideKeyboard();
-  { const ps = nodes().filter((n) => n.text === "Paste" || n.desc === "Paste"); const p = ps[ps.length - 1]; tap(p.cx, p.cy); }
+  await waitText("Paste the card");
+  await tapField(0); typeText("Bob"); hideKeyboard(); await sleep(800);
+  // The tab and the clipboard button both say Paste: press the button (the lower one).
+  for (let i = 0; i < 20; i++) {
+    const ps = nodes().filter((n) => n.text === "Paste" || n.desc === "Paste");
+    if (ps.length > 1) { const p = ps[ps.length - 1]; tap(p.cx, p.cy); break; }
+    await sleep(500);
+  }
   await sleep(500);
   await tapText("Add contact", true);
   check(await waitText("different safety number", 10000), "a different identity under Bob's name is refused, with the choice to replace");
@@ -76,7 +93,7 @@ try {
   await tapText("Verify again", true);
   check(await waitText("Verify Bob", 10000), "Verify again opens the verify screen");
   const t = screenText();
-  check(t.includes("Bob's new key") && t.includes("Was verified"), "the verify screen says the number is new and when it was verified");
+  check(t.toLowerCase().includes("bob's new key") && t.includes("Was verified"), "the verify screen says the number is new and when it was verified");
   check(t.includes(c.fingerprint.split(/[-\s]/)[0]), "it shows the new number");
   shot("keychange-verify");
   await tapText("They match", true);
