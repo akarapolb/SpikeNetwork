@@ -24,8 +24,9 @@ try {
   sh(`pm clear ${PKG}`);
   adb("reverse", `tcp:${PORT}`, `tcp:${PORT}`);
   sh("settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0");
-  const desk = await D.launch("desktop", 9341);
-  const friend = await D.launch("friend", 9342);
+  // Debug ports no other driver uses (9341/9342 are drive_call's too): a clash attaches to another run's window.
+  const desk = await D.launch("desktop", 9491);
+  const friend = await D.launch("friend", 9492);
   await desk.invoke("add_contact", { name: "Friend", card: (await friend.invoke("overview")).me.card });
   await friend.invoke("add_contact", { name: "Desk", card: (await desk.invoke("overview")).me.card });
   await friend.invoke("sync", {}); // publishes the friend's prekeys

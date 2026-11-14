@@ -41,7 +41,9 @@ try {
   await sleep(1000);
   adb("install", "-r", APK);
   sh(`pm clear ${PKG}`);
-  sh(`rm -f /sdcard/Download/${FILE}`);
+  // A file left by an earlier run would make the picker save under another name. (Right after a boot the
+  // shell may not reach /sdcard yet; the save step below checks the file itself.)
+  try { sh(`rm -f /sdcard/Download/${FILE}`); } catch (e) { console.log(`   (could not remove an old backup file: ${e.message.split("\n")[1] || e.message})`); }
   adb("reverse", `tcp:${PORT}`, `tcp:${PORT}`);
   sh("settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0");
   sh(`am start -n ${PKG}/.MainActivity`);
