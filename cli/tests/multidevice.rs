@@ -330,3 +330,47 @@ async fn partial_delivery_is_reported_and_still_stored() {
     assert!(failed[0].error.as_ref().unwrap().contains("no prekeys"));
     assert!(alice[0].0.messages().unwrap().contains(&r.id).unwrap());
 }
+
+#[tokio::test]
+async fn each_contact_device_is_remembered_when_a_message_from_it_arrives() {
+    let url = relay().await;
+    let (alice, alice_v1) = person("seena", &[None, None]);
+    let (bob, bob_v1) = person("seenb", &[None]);
+    befriend(&alice, "bob", &bob_v1);
+    befriend(&bob, "alice", &alice_v1);
+    for d in alice.iter().chain(bob.iter()) {
+        ops::publish_keys(&d.0, &url).await.unwrap();
+    }
+    let alice_owner = owner_of(&alice[0]);
+    let phone = alice[0].0.load_identity().unwrap().device_id();
+    let laptop = alice[1].0.load_identity().unwrap().device_id();
+    assert!(spike_cli::seen::for_owner(&bob[0].0, &alice_owner)
+        .unwrap()
+        .is_empty());
+
+    let before = spike_core::clock::now_ms();
+    ops::send(&alice[0].0, &url, "bob", b"from the phone")
+        .await
+        .unwrap();
+    recv(&bob[0], &url).await;
+    let seen = spike_cli::seen::for_owner(&bob[0].0, &alice_owner).unwrap();
+    assert_eq!(seen.len(), 1, "only the device that wrote: {seen:?}");
+    assert!(seen[&phone] >= before, "local arrival time");
+
+    ops::send(&alice[1].0, &url, "bob", b"from the laptop")
+        .await
+        .unwrap();
+    recv(&bob[0], &url).await;
+    let seen = spike_cli::seen::for_owner(&bob[0].0, &alice_owner).unwrap();
+    assert_eq!(
+        seen.keys().cloned().collect::<Vec<_>>().len(),
+        2,
+        "{seen:?}"
+    );
+    assert!(seen.contains_key(&phone) && seen.contains_key(&laptop));
+
+    // Nothing is recorded about our own devices, or on the sender's side.
+    assert!(spike_cli::seen::for_owner(&alice[0].0, &owner_of(&bob[0]))
+        .unwrap()
+        .is_empty());
+}

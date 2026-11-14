@@ -23,7 +23,10 @@ Compose screens (Kotlin)  --JSON-->  libspike_mobile.so (mobile/, JNI)  -->  spi
 Built to match: 1 Create identity (and unlock), 2 Chats (status chips, search, message-requests row, rows
 with avatars, tags and unread badges, the four-tab bar), 3 Conversation, 4 Verify, 5 Your devices, 7 Network
 and privacy (as Settings), 8 Agent approval and 9 Agents (as the Agents tab: waiting requests with
-approve and deny, allowed agents), 10 Add a contact, 11 Message requests. Large and small groups use the same
+approve and deny, allowed agents), 10 Add a contact, 11 Message requests, and Contact details (the conversation's
+Details button: quick actions, safety number, and each device on the contact's signed list with when this phone last
+heard from it; devices are labelled by short id because the signed list carries no names, and "last heard" is the
+local arrival time of that device's last message, never asked of the relay; driver: `drive_contact_devices.mjs`). Large and small groups use the same
 style (not in the prototype).
 
 Deliberately different, because the feature does not exist yet and a control that does nothing would mislead:

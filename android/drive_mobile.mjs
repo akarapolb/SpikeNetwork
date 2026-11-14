@@ -145,8 +145,22 @@ try {
   check(await waitText("❤️ 1", 20000), "the phone shows the desktop's reaction on its message");
   shot("7d-reply-and-reactions");
 
-  console.log("-- 4 · verify (the phone's fingerprint screen)");
+  console.log("-- 4 · contact details: each of Alice's devices, with when the phone last heard from it");
   await tapText("Details", true);
+  check(await waitText("Safety number"), "Details opens the contact details");
+  {
+    const alice = debug("overview").contacts.find((x) => x.name === "Alice");
+    const dev = alice?.device_list?.[0];
+    check(alice?.device_list?.length === alice?.devices, `the contact carries its signed device list (${JSON.stringify(alice?.device_list)})`);
+    check(typeof dev?.last_heard === "number", "the phone recorded when a message from Alice's device arrived");
+    const t = screenText();
+    check(t.includes(`DEVICES · ${alice?.devices}`), "the Devices caption gives the count");
+    check(!!dev && t.includes(`Device ${dev.id.slice(0, 6)}`), "each device is labelled by its short id, not an invented name");
+    check(/active now|min ago| h ago/.test(t), "the device shows when it was last heard from");
+    check(t.includes("Message") && t.includes("Call") && t.includes("Video"), "the quick actions are there, as in the design");
+  }
+  shot("7e-contact-details");
+  await tapText("Safety number");
   check(await waitText("Read the codes aloud"), "the verify screen shows both keys");
   shot("8-verify");
   check(screenText().includes("They don't match") && screenText().includes("Type the code instead"), "the verify screen offers match buttons and typing the code");

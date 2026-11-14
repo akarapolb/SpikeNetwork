@@ -191,12 +191,25 @@ pub struct GrantRequest {
     pub typed_only: bool,
 }
 
+/// One device on a contact's signed list. The list carries keys only, no names or types,
+/// so the apps label a device by its short id.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct ContactDeviceDto {
+    /// First characters of the device id: enough to tell devices apart.
+    pub id: String,
+    /// When a message from this device last arrived here (ms, this device's clock). Learned only
+    /// from what this device received, never from the relay. `None`: not heard from yet.
+    pub last_heard: Option<u64>,
+}
+
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct ContactDto {
     pub name: String,
     pub verified: bool,
     pub fingerprint: String,
     pub devices: usize,
+    /// Each device in the signed list's order.
+    pub device_list: Vec<ContactDeviceDto>,
     pub unread: usize,
     pub agent: bool,
     pub last: Option<String>,
@@ -710,7 +723,20 @@ impl Session {
             let id = c.identity()?;
             let key = id.owner_hex();
             let last = store.conversation(&key, usize::MAX)?.into_iter().last();
+            let heard = spike_cli::seen::for_owner(&self.home, &key)?;
+            let device_list = id
+                .devices()
+                .iter()
+                .map(|d| {
+                    let full = d.device_id();
+                    ContactDeviceDto {
+                        last_heard: heard.get(&full).copied(),
+                        id: full.chars().take(12).collect(),
+                    }
+                })
+                .collect();
             contacts.push(ContactDto {
+                device_list,
                 unread: unread.get(&c.name).copied().unwrap_or(0),
                 agent: grants.iter().any(|g| g.body.agent == key),
                 verified: c.verified,

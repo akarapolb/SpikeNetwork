@@ -15,6 +15,8 @@ sealed interface Screen {
     data class Members(val id: String) : Screen
     data class Invite(val id: String) : Screen
     data class Verify(val name: String) : Screen
+    /** A contact's details: safety number and each device on their signed list. */
+    data class ContactInfo(val name: String) : Screen
     data object NewGroup : Screen
     data object AddContact : Screen
     data object Requests : Screen

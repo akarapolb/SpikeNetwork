@@ -17,7 +17,12 @@ data class Contact(
     val unread: Int,
     val last: String?,
     val lastTs: Long,
+    /** Their signed device list, in order. `lastHeard` 0: no message from that device has arrived here yet. */
+    val deviceList: List<ContactDevice> = emptyList(),
 )
+
+/** One of a contact's devices. The signed list has keys only, so it is shown by its short id. */
+data class ContactDevice(val id: String, val lastHeard: Long)
 
 data class Group(
     val id: String,
@@ -66,6 +71,9 @@ fun parseOverview(o: JSONObject): Overview {
                 it.getString("name"), it.getBoolean("verified"), it.getString("fingerprint"),
                 it.getInt("devices"), it.getInt("unread"), it.str("last"),
                 if (it.isNull("last_ts")) 0 else it.getLong("last_ts"),
+                it.optJSONArray("device_list")?.mapObjects { d ->
+                    ContactDevice(d.getString("id"), if (d.isNull("last_heard")) 0 else d.getLong("last_heard"))
+                } ?: emptyList(),
             )
         },
         groups = o.getJSONArray("groups").mapObjects {
