@@ -283,7 +283,7 @@ async fn a_contact_on_another_relay_reaches_a_member_and_leaving_moves_back() {
     }
     let befriend = |d: &Dev, name: &str, other: &Dev| {
         let mut cs = d.0.load_contacts().unwrap();
-        cs.push(Contact { name: name.into(), card: other.0.identity_card().unwrap(), verified: true });
+        cs.push(Contact { name: name.into(), card: other.0.identity_card().unwrap(), verified: true, key_changed: None, verified_at: None, devices_changed: None });
         d.0.save_contacts(&cs).unwrap();
     };
     befriend(&alice, "bob", &bob);
