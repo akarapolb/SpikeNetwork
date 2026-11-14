@@ -75,7 +75,8 @@ pub fn decide(
         | Kind::React
         | Kind::App
         | Kind::AppStateRequest
-        | Kind::AppState => Action::Ignore,
+        | Kind::AppState
+        | Kind::Status => Action::Ignore,
     }
 }
 

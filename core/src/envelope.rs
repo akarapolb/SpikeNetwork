@@ -56,6 +56,22 @@ pub enum Kind {
     AppStateRequest,
     /// The answer: the body names the channel (`app::AppChannel`), the attachment is the snapshot.
     AppState,
+    /// What a person chose to share about using the app (ADR 0037): a read receipt, "online now"
+    /// or typing. The body is a [`Status`] as JSON. One to one only; never stored as a message.
+    Status,
+}
+
+/// The body of a `Kind::Status` envelope (ADR 0037). Each is sent only while its sender's
+/// matching switch is on, and kept by the receiver only while theirs is on too.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Status {
+    /// "I have read your messages up to `upto`" (your clock, ms).
+    Read { upto: u64 },
+    /// "I have our conversation open now."
+    Online,
+    /// "I am typing" (`on`), or "I stopped".
+    Typing { on: bool },
 }
 
 /// Longest reaction accepted, in bytes: one emoji, with room for skin tones and joiners.
@@ -243,6 +259,14 @@ impl Envelope {
     }
 
     /// A delete of message `target`.
+    /// A read receipt, online or typing signal (ADR 0037).
+    pub fn status(s: Status) -> Result<Self> {
+        let mut e = Self::text("")?;
+        e.kind = Kind::Status;
+        e.body = serde_json::to_string(&s).map_err(|_| Error::Malformed)?;
+        Ok(e)
+    }
+
     pub fn delete(target: &str) -> Result<Self> {
         let mut e = Self::text("")?;
         e.kind = Kind::Delete;
@@ -293,7 +317,8 @@ impl Envelope {
                 | Kind::AgentReceipt
                 | Kind::LargeWelcome
                 | Kind::LargeLeave
-                | Kind::LargeLists => e.group.is_none() && e.gstate.is_none(),
+                | Kind::LargeLists
+                | Kind::Status => e.group.is_none() && e.gstate.is_none(),
                 // A group message says which member list it was sent with.
                 Kind::Text
                 | Kind::Edit
@@ -318,7 +343,8 @@ impl Envelope {
             | Kind::LargeLists
             | Kind::App
             | Kind::AppStateRequest
-            | Kind::AppState => e.target.is_none(),
+            | Kind::AppState
+            | Kind::Status => e.target.is_none(),
             Kind::Edit | Kind::Delete | Kind::React => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
@@ -350,6 +376,11 @@ impl Envelope {
                 e.attachment.is_none()
                     && serde_json::from_str::<crate::app::AppData>(&e.body)
                         .is_ok_and(|d| d.bytes().is_ok())
+            }
+            Kind::Status => {
+                e.attachment.is_none()
+                    && e.intro.is_none()
+                    && serde_json::from_str::<Status>(&e.body).is_ok()
             }
             Kind::AppStateRequest | Kind::AppState => {
                 e.attachment.is_some() == (e.kind == Kind::AppState)

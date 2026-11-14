@@ -25,6 +25,7 @@ use spike_cli::groups;
 use spike_cli::large;
 use spike_cli::link;
 use spike_cli::messages::Direction;
+use spike_cli::presence;
 use spike_cli::requests;
 use spike_cli::state::{Added, Home};
 use spike_cli::transport::{validate_ca_pem, Target, TransportOpts};
@@ -1073,7 +1074,55 @@ impl Session {
                 .unwrap_or(0);
             self.home.advance_read_marker(&key, upto)?;
         }
+        // A read receipt (ADR 0037), only when the switch is on and only for something new.
+        let key = self.contact_key(name)?;
+        let upto = self
+            .home
+            .messages()?
+            .conversation(&key, usize::MAX)?
+            .iter()
+            .filter(|m| m.direction == Direction::In)
+            .map(|m| m.ts)
+            .max()
+            .unwrap_or(0);
+        let _ = presence::send(
+            &self.home,
+            self.target(),
+            name,
+            spike_core::envelope::Status::Read { upto },
+        )
+        .await;
         Ok(())
+    }
+
+    // ---------------------------------------------- what others see (ADR 0037)
+
+    /// The three switches: read receipts, online now, typing. All off until turned on.
+    pub fn presence_share(&self) -> Result<presence::Share> {
+        presence::share(&self.home)
+    }
+
+    pub fn set_presence_share(&self, share: presence::Share) -> Result<()> {
+        presence::set_share(&self.home, share)
+    }
+
+    /// What to show about a contact in their conversation: read point, online, typing.
+    pub fn peer_status(&self, name: &str) -> Result<presence::Shown> {
+        let key = self.contact_key(name)?;
+        presence::shown(&self.home, &key, spike_core::clock::now_ms())
+    }
+
+    /// Tell a contact you have their conversation open (`online`) or are typing (`typing`,
+    /// `typing_off`). Returns false when a switch or rule says no; nothing is sent then.
+    pub async fn send_presence(&self, name: &str, what: &str) -> Result<bool> {
+        let status = match what {
+            "online" => spike_core::envelope::Status::Online,
+            "typing" => spike_core::envelope::Status::Typing { on: true },
+            "typing_off" => spike_core::envelope::Status::Typing { on: false },
+            other => bail!("unknown presence '{other}'"),
+        };
+        let _net = self.net.lock().await;
+        presence::send(&self.home, self.target(), name, status).await
     }
 
     // ---------------------------------------------------- message requests

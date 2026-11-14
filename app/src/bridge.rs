@@ -375,6 +375,18 @@ impl Engine {
                 let cap = a.get("caption").and_then(Value::as_str).unwrap_or("");
                 val(rt.block_on(x.send_file(&s(a, "name")?, &s(a, "file_name")?, &bytes, cap))?)
             }
+            // What others see (ADR 0037): the switches, a contact's status, online and typing.
+            "presence_share" => val(x.presence_share()?),
+            "set_presence_share" => {
+                let share = spike_cli::presence::Share {
+                    receipts: b(a, "receipts")?,
+                    online: b(a, "online")?,
+                    typing: b(a, "typing")?,
+                };
+                val(x.set_presence_share(share)?)
+            }
+            "peer_status" => val(x.peer_status(&s(a, "name")?)?),
+            "send_presence" => val(rt.block_on(x.send_presence(&s(a, "name")?, &s(a, "what")?))?),
             // Between your own devices only: a note, or a file (by path) with an optional caption.
             "own_notes" => val(x.own_notes(200)?),
             "send_to_devices" => {

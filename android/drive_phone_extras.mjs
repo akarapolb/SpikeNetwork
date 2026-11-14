@@ -2,6 +2,8 @@
 // a second desktop linked as another device of the phone's:
 //   - picture viewer: a picture from a contact shows in its bubble; tapping opens it full screen; double tap zooms;
 //     Save puts it in the phone's Pictures; Share offers the system share sheet;
+//   - what others see: the three switches start off; with both sides sharing, Read, typing and Online show, and
+//     turning the phone's receipts off hides the contact's;
 //   - send to my devices: a note and a file from the phone reach the linked desktop, a note and a picture from it reach
 //     the phone, and the contact receives none of them.
 // Needs Node 22+, Windows, the Android SDK with a booted emulator, the debug APK, debug builds of the relay and desktop:
@@ -15,7 +17,7 @@ import { createDrive, sleep } from "../desktop/drive_lib.mjs";
 import { createPhone, APK, PKG } from "./phone_lib.mjs";
 
 const PHONE_PASS = "phone test passphrase";
-const PORT = 18813;
+const PORT = 18873; // ports other drivers do not use, so runs can share this PC
 const RELAY = `ws://127.0.0.1:${PORT}`;
 
 if (!process.env.ANDROID_SERIAL) {
@@ -88,7 +90,7 @@ try {
   debug("sync"); // connects once, so the relay holds the phone's keys for new conversations
 
   console.log("-- a contact on the desktop");
-  const desk = await D.launch("desktop", 9351);
+  const desk = await D.launch("desktop", 9471);
   await inv(desk, "add_contact", { name: "Phone", card: debug("overview").me.card });
   debug("add_contact", { name: "Alice", card: (await inv(desk, "overview")).me.card });
   check(!!(await until(async () => { await inv(desk, "send", { name: "Phone", text: "a picture is coming" }); return true; })), "the desktop can write to the phone");
@@ -113,15 +115,55 @@ try {
   const media = sh("content query --uri content://media/external/images/media --projection _display_name:relative_path");
   check(media.includes("icons-v2") && media.includes("Spike Connect"), "the picture is in the phone's Pictures/Spike Connect");
   await tapText("Share the picture", true);
-  check(await until(() => /chooser|resolver/i.test(sh("dumpsys window | grep mCurrentFocus")), 8000), "Share opens the system share sheet");
-  back(); await sleep(800);
-  if (!screenText().includes("Close the picture")) { back(); await sleep(500); }
+  // The sheet is its own window on some images and a panel showing "Sharing image" on others.
+  check(await until(() => /chooser|resolver/i.test(sh("dumpsys window | grep mCurrentFocus")) || /Sharing|Share with/i.test(screenText()), 8000), "Share opens the system share sheet");
+  for (let i = 0; i < 3 && !screenText().includes("Close the picture"); i++) { back(); await sleep(800); }
   await tapText("Close the picture", true).catch(() => back());
   check(await waitText("Message Alice", 5000), "closing the viewer returns to the conversation");
+  for (let i = 0; i < 3 && !screenText().includes("Settings"); i++) { back(); await sleep(800); }
+
+  console.log("-- read receipts, online now and typing (ADR 0037)");
+  let share = debug("presence_share");
+  check(!share.receipts && !share.online && !share.typing, "all three are off on a new install");
+  await tapText("Settings", true); await sleep(600);
+  await tapText("What others see");
+  check(await waitText("Read receipts", 8000) && screenText().includes("Online now") && screenText().includes("Typing"), "Settings has What others see with the three switches");
+  check(screenText().includes("A relay sees only that a message went"), "it says what a relay sees");
+  for (const t of ["Read receipts", "Online now", "Typing"]) { await tapText(t); await sleep(500); }
+  share = debug("presence_share");
+  check(share.receipts && share.online && share.typing, "the switches turn them on");
+  shot("extras-5-what-others-see");
+  await tapText("Back to Settings", true); await sleep(400);
+  await tapText("Chats", true); await sleep(600);
+  // Both verify each other (online goes to verified contacts only) and share everything.
+  const deskMe = (await inv(desk, "overview")).me;
+  debug("mark_verified", { name: "Alice", fingerprint: deskMe.fingerprint });
+  await inv(desk, "mark_verified", { name: "Phone", fingerprint: debug("overview").me.fingerprint });
+  await inv(desk, "set_presence_share", { receipts: true, online: true, typing: true });
+  debug("send", { name: "Alice", text: "did you see the icons?" });
+  await tapText("Alice");
+  await waitText("Message Alice");
+  check(!!(await until(async () => (await inv(desk, "peer_status", { name: "Phone" })).online)), "opening the conversation tells the verified contact the phone is online");
+  await tapField(0); typeText("typing a reply"); hideKeyboard();
+  check(!!(await until(async () => (await inv(desk, "peer_status", { name: "Phone" })).typing, 10000)), "typing tells the contact");
+  await until(async () => { await inv(desk, "sync").catch(() => {}); return (await inv(desk, "conversation", { name: "Phone" })).some((x) => x.body === "did you see the icons?"); });
+  await inv(desk, "mark_read", { name: "Phone" });
+  check(await waitText("Read ", 20000), "the contact reading shows Read under the phone's message");
+  await inv(desk, "send_presence", { name: "Phone", what: "typing" });
+  check(await waitText("typing…", 20000), "the contact typing shows in the header");
+  shot("extras-6-read-and-typing");
+  await inv(desk, "send_presence", { name: "Phone", what: "typing_off" });
+  await inv(desk, "send_presence", { name: "Phone", what: "online" });
+  check(await waitText("Online", 20000), "the contact having the conversation open shows Online");
+  // Turning receipts off on the phone hides theirs (reciprocal).
+  debug("set_presence_share", { receipts: false, online: true, typing: true });
+  check(!!(await until(() => !screenText().includes("Read "), 10000)), "with the phone's receipts off, the contact's Read is gone");
+  // Clear the typed text and leave.
+  await tapField(0); sh("input keyevent KEYCODE_MOVE_END " + "67 ".repeat(20)); hideKeyboard();
   back(); await sleep(800);
 
   console.log("-- link a second desktop as another device of the phone's");
-  const desk2 = await D.launch("desktop2", 9352);
+  const desk2 = await D.launch("desktop2", 9472);
   const code = await inv(desk2, "link_offer");
   await tapText("Devices", true); await sleep(600);
   check(!screenText().includes("Send to my devices"), "with one device there is nothing to send to");

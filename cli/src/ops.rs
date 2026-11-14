@@ -499,6 +499,25 @@ pub(crate) async fn deliver_app(
     deliver_to(home, base, name, env, None, quick).await
 }
 
+/// A status (ADR 0037) to a contact's devices only: never to our own, and without the relay
+/// housekeeping a message does (it is small and frequent).
+pub(crate) async fn deliver_status(
+    home: &Home,
+    base: Target,
+    name: &str,
+    env: Envelope,
+) -> Result<SendReport> {
+    deliver_to(
+        home,
+        base,
+        name,
+        env,
+        Some(&spike_core::call::Target::PeerAll),
+        true,
+    )
+    .await
+}
+
 async fn deliver_to(
     home: &Home,
     base: Target,
@@ -650,7 +669,8 @@ async fn deliver_to(
         | Kind::LargeLists
         | Kind::App
         | Kind::AppStateRequest
-        | Kind::AppState => {}
+        | Kind::AppState
+        | Kind::Status => {}
     }
     Ok(SendReport {
         id: env.id,

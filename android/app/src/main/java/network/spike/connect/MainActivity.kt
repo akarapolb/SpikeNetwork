@@ -213,6 +213,7 @@ private fun Ready(m: AppModel) {
                 { m.open(Screen.Verify(s.name)) },
                 { video -> CallManager.call(s.name, c?.verified == true, video) },
                 { fileName, f -> Bridge.call("send_file", args("name" to s.name, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
+                contact = s.name,
             )
         }
         is Screen.GroupChat -> {
