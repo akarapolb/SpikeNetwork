@@ -384,3 +384,35 @@ async fn a_file_offer_that_does_not_match_the_message_is_rejected() {
         .unwrap();
     assert_eq!(before, after, "the message still points at the real file");
 }
+
+/// "Send to my devices": a note and a file go to your other devices and land in the conversation with your own key,
+/// marked as sent from the device that sent them; the contact receives nothing; a lone device is told to link one.
+#[tokio::test]
+async fn notes_and_files_reach_only_your_own_devices() {
+    let (url, alice, bob) = world(Config::default()).await;
+    let (id, n) = ops::send_to_own(&alice[0].0, &url, "for my laptop", None)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    let (fid, _) = ops::send_to_own(&alice[0].0, &url, "", Some(("plan.txt", b"plan v4")))
+        .await
+        .unwrap();
+    recv(&alice[1], &url).await;
+    let own = alice[1].0.load_device_list().unwrap().owner;
+    let phone = alice[0].0.load_identity().unwrap().device_id();
+    for d in &alice {
+        let msgs = d.0.messages().unwrap().conversation(&own, 100).unwrap();
+        assert_eq!(msgs.len(), 2, "both devices hold both");
+        assert!(msgs.iter().all(|m| m.stamp_device == phone));
+        assert_eq!(msgs[0].id, id);
+        assert_eq!(msgs[0].body, "for my laptop");
+    }
+    let (_, bytes) = ops::fetch_attachment(&alice[1].0, &url, &fid).await.unwrap();
+    assert_eq!(bytes, b"plan v4");
+    // Bob gets nothing at all.
+    assert!(recv(&bob[0], &url).await.is_empty());
+    assert!(history(&bob[0], &alice[0]).is_empty());
+    // A device on its own has nobody to send to.
+    let err = ops::send_to_own(&bob[0].0, &url, "hi", None).await.unwrap_err();
+    assert!(err.to_string().contains("link one first"), "{err}");
+}

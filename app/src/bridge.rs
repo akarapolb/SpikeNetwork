@@ -375,6 +375,19 @@ impl Engine {
                 let cap = a.get("caption").and_then(Value::as_str).unwrap_or("");
                 val(rt.block_on(x.send_file(&s(a, "name")?, &s(a, "file_name")?, &bytes, cap))?)
             }
+            // Between your own devices only: a note, or a file (by path) with an optional caption.
+            "own_notes" => val(x.own_notes(200)?),
+            "send_to_devices" => {
+                let text = a.get("text").and_then(Value::as_str).unwrap_or("");
+                match a.get("path").and_then(Value::as_str) {
+                    Some(path) => {
+                        let bytes = read_file(path)?;
+                        let name = s(a, "file_name")?;
+                        val(rt.block_on(x.send_to_devices(text, Some((&name, &bytes))))?)
+                    }
+                    None => val(rt.block_on(x.send_to_devices(text, None))?),
+                }
+            }
             "group_send_file" => {
                 let bytes = read_file(&s(a, "path")?)?;
                 let cap = a.get("caption").and_then(Value::as_str).unwrap_or("");

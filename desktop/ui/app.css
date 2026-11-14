@@ -819,3 +819,14 @@ button { padding: 0; }
 
 .gatelinks .linklike { width: auto !important; flex: none; display: inline-block; min-height: 0; }
 .gatebox:has(.gatelinks) { width: min(424px, 100%); }
+/* Send to my devices (Devices page) */
+.sendown { display: flex; flex-direction: column; gap: 10px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.sendown h4 { margin: 0; font-size: 15px; font-weight: 600; }
+.sendown .drop { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 22px 12px; border: 1.5px dashed var(--line-2, var(--line)); border-radius: var(--r-sm, 10px); background: transparent; color: var(--text-2); cursor: pointer; font: inherit; }
+.sendown .drop.over, .sendown .drop:hover { border-color: var(--accent); background: var(--panel-2); }
+.sendown .drop svg { width: 22px; height: 22px; }
+.sendown .att.own { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+.sendown .att.own > i { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--panel-2); color: var(--text-2); font-style: normal; }
+.sendown .att.own > i svg { width: 18px; height: 18px; }
+.sendown .att.own .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sendown .att.own small { color: var(--muted); }

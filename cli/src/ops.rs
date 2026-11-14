@@ -936,6 +936,61 @@ pub(crate) async fn broadcast_own(home: &Home, base: Target, msg: &SyncMsg) -> R
 
 /// Send an envelope to every other device of ours, and to no one else. Returns how many accepted it.
 pub(crate) async fn deliver_to_own(home: &Home, base: Target, mut env: Envelope) -> Result<usize> {
+    deliver_to_own_mut(home, base, &mut env).await
+}
+
+/// A note or a file for your own other devices and nobody else ("Send to my devices"). It is kept
+/// in the conversation whose peer is your own owner key, which every device of yours fills the
+/// same way (a copy from another own device lands there because `to` is our own key). Returns the
+/// message id and how many of your other devices accepted it.
+pub async fn send_to_own(
+    home: &Home,
+    relay: impl Into<Target>,
+    text: &str,
+    file: Option<(&str, &[u8])>,
+) -> Result<(String, usize)> {
+    let base: Target = relay.into();
+    if !home.this_device_is_listed()? {
+        bail!("this device has been removed from your identity and can no longer send");
+    }
+    let me = home.load_identity()?;
+    if own_other_devices(home, &me)?.is_empty() {
+        bail!("you have no other devices yet; link one first");
+    }
+    let mut env = Envelope::text(text)?;
+    if let Some((name, bytes)) = file {
+        env.attachment = Some(upload_file(home, &base, name, bytes).await?);
+    }
+    let owner = home.load_device_list()?.owner;
+    env.to = Some(owner.clone());
+    let ok = deliver_to_own_mut(home, base, &mut env).await?;
+    if ok == 0 {
+        bail!("none of your other devices could be reached");
+    }
+    home.messages()?.insert(&StoredMessage {
+        id: env.id.clone(),
+        peer: owner,
+        direction: Direction::Out,
+        ts: env.ts,
+        body: env.body.clone(),
+        attachment: env.attachment.clone(),
+        lamport: env.lamport,
+        stamp_device: me.device_id(),
+        edited: false,
+        deleted: false,
+        changed_at: 0,
+        author: None,
+        shared_by: None,
+        reply_to: None,
+        reactions: Default::default(),
+    })?;
+    if let Some((_, bytes)) = file {
+        home.save_attachment(&env.id, bytes)?;
+    }
+    Ok((env.id, ok))
+}
+
+async fn deliver_to_own_mut(home: &Home, base: Target, env: &mut Envelope) -> Result<usize> {
     let me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
     {

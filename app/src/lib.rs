@@ -1417,6 +1417,71 @@ impl Session {
         Ok((spike_core::attachment::safe_file_name(&a.name), bytes))
     }
 
+    // ---------------------------------------------------- your own devices
+
+    /// What you sent between your own devices ("Send to my devices"), oldest first. `out` means
+    /// this device sent it; otherwise `from` names the device it came from.
+    pub fn own_notes(&self, limit: usize) -> Result<Vec<MessageDto>> {
+        let me = self.my_owner()?;
+        let my_id = self.device_id()?;
+        let msgs = self
+            .home
+            .messages()?
+            .conversation(&me, limit.clamp(1, 500))?;
+        Ok(msgs
+            .into_iter()
+            .map(|m| {
+                let here = m.stamp_device == my_id;
+                let from = (!here).then(|| {
+                    format!("Device {}", m.stamp_device.chars().take(6).collect::<String>())
+                });
+                let mut dto = message_dto(m, None, true, &me);
+                dto.out = here;
+                dto.from = from;
+                dto
+            })
+            .collect())
+    }
+
+    /// Send a note, or a file with an optional caption, to your other devices only.
+    pub async fn send_to_devices(
+        &self,
+        text: &str,
+        file: Option<(&str, &[u8])>,
+    ) -> Result<usize> {
+        let text = text.trim_end();
+        if file.is_none() && text.trim().is_empty() {
+            bail!("nothing to send");
+        }
+        if text.len() > MAX_MESSAGE {
+            bail!("messages are limited to {} KiB", MAX_MESSAGE / 1024);
+        }
+        let file = match file {
+            Some((name, bytes)) => {
+                if bytes.is_empty() {
+                    bail!("that file is empty");
+                }
+                if bytes.len() as u64 > spike_core::attachment::MAX_FILE {
+                    bail!(
+                        "files are limited to {} MiB",
+                        spike_core::attachment::MAX_FILE / (1024 * 1024)
+                    );
+                }
+                Some((spike_core::attachment::safe_file_name(name), bytes))
+            }
+            None => None,
+        };
+        let _net = self.net.lock().await;
+        let (_, n) = ops::send_to_own(
+            &self.home,
+            self.target(),
+            text,
+            file.as_ref().map(|(n, b)| (n.as_str(), *b)),
+        )
+        .await?;
+        Ok(n)
+    }
+
     // ------------------------------------------------------------ linking
 
     /// NEW device: make a link code to type on a device that already has your identity.

@@ -1013,6 +1013,37 @@ async fn send_file(
         .map_err(err)
 }
 
+/// What went between your own devices ("Send to my devices"), oldest first.
+#[tauri::command]
+fn own_notes(state: State<'_, AppState>) -> Result<Vec<MessageDto>, String> {
+    session(&state)?.own_notes(200).map_err(err)
+}
+
+/// A note for your other devices only.
+#[tauri::command]
+async fn send_note_to_devices(state: State<'_, AppState>, text: String) -> Result<usize, String> {
+    session(&state)?
+        .send_to_devices(&text, None)
+        .await
+        .map_err(err)
+}
+
+/// A file (the raw body, its name in `x-filename`) for your other devices only.
+#[tauri::command]
+async fn send_file_to_devices(
+    state: State<'_, AppState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<usize, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the file's bytes".into());
+    };
+    let file = header(&request, "x-filename");
+    session(&state)?
+        .send_to_devices("", Some((&file, bytes)))
+        .await
+        .map_err(err)
+}
+
 /// Where received files are saved: the Downloads folder (or `SPIKE_DESKTOP_DOWNLOADS`).
 fn downloads(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     match std::env::var_os("SPIKE_DESKTOP_DOWNLOADS") {
@@ -1425,6 +1456,9 @@ pub fn run() {
             revoke,
             send_file,
             save_attachment,
+            own_notes,
+            send_note_to_devices,
+            send_file_to_devices,
             attachment_bytes,
             link_offer,
             qr_svg,

@@ -33,6 +33,9 @@ sealed interface Screen {
 
     /** The signed, hash-chained activity log. */
     data object AgentLog : Screen
+
+    /** Notes and files between your own devices. */
+    data object SendToDevices : Screen
 }
 
 /** What the screens show, and what they ask for. One per app process. */
@@ -89,6 +92,7 @@ class AppModel(private val scope: CoroutineScope) {
             is Screen.Members -> loadGroup(s.id, false)
             is Screen.Invite -> loadGroup(s.id, false)
             Screen.Requests -> requests = parseRequests(Bridge.arr("message_requests"))
+            Screen.SendToDevices -> messages = parseMessages(Bridge.arr("own_notes"))
             else -> {}
         }
         val s = screen

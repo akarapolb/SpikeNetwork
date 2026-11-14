@@ -103,7 +103,7 @@ internal fun listTime(ms: Long): String {
     }
 }
 
-private fun dayLabel(ms: Long): String {
+internal fun dayLabel(ms: Long): String {
     val now = System.currentTimeMillis()
     return when {
         sameDay(ms, now) -> "Today"
@@ -112,7 +112,7 @@ private fun dayLabel(ms: Long): String {
     }
 }
 
-private fun clock(ms: Long): String = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(ms))
+internal fun clock(ms: Long): String = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(ms))
 
 private fun copy(ctx: Context, text: String) {
     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -472,7 +472,10 @@ fun ConversationScreen(
     // Replying to a message, and the message whose reactions menu is open (long press).
     var replyTo by remember { mutableStateOf<Message?>(null) }
     var menuFor by remember { mutableStateOf<String?>(null) }
+    // The picture open full screen (tapped in its bubble).
+    var viewing by remember { mutableStateOf<Message?>(null) }
     val who = { x: Message -> if (x.out) "You" else x.from ?: title }
+    viewing?.let { v -> PictureViewer(v, who(v)) { viewing = null } }
     var query by remember { mutableStateOf("") }
     var cur by remember { mutableStateOf(0) }
     val q = if (finding) query.trim() else ""
@@ -578,6 +581,7 @@ fun ConversationScreen(
                             val mine = msg.reactions.firstOrNull { it.mine }?.emoji
                             m.run { Bridge.call("react", args("id" to msg.id, "emoji" to if (mine == e) "" else e)); m.refresh() }
                         },
+                        onPicture = { viewing = msg },
                     ) { m.run { saveAndOpen(ctx, msg.id) } }
                 }
             }
@@ -662,7 +666,7 @@ private fun marked(text: String, q: String?): androidx.compose.ui.text.Annotated
 private fun Bubble(
     msg: Message, onCall: ((Boolean) -> Unit)?, cont: Boolean = false, mid: Boolean = false, mark: String? = null, current: Boolean = false,
     quoteName: String? = null, menu: Boolean = false, onLongPress: () -> Unit = {}, onReply: () -> Unit = {},
-    onQuote: (String) -> Unit = {}, onReact: (String) -> Unit = {}, onFile: () -> Unit,
+    onQuote: (String) -> Unit = {}, onReact: (String) -> Unit = {}, onPicture: (() -> Unit)? = null, onFile: () -> Unit,
 ) {
     // A line the call itself left in the conversation offers to call again, the same kind of call.
     val callVideo = msg.body.contains("video call", ignoreCase = true)
@@ -725,7 +729,17 @@ private fun Bubble(
                                 }
                             }
                         }
-                        if (msg.fileName != null && !msg.deleted) {
+                        if (msg.fileName != null && !msg.deleted && isPicture(msg.fileName) && onPicture != null) {
+                            PictureInBubble(msg, onPicture) {
+                                Row(
+                                    Modifier.clickable(onClick = onFile).semantics { contentDescription = "File ${msg.fileName}" },
+                                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Ico(Ic.File, if (msg.out) C.OnBubbleOut else C.AvatarText, 26.dp)
+                                    Text(msg.fileName, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        } else if (msg.fileName != null && !msg.deleted) {
                             Row(
                                 Modifier.clickable(onClick = onFile).semantics { contentDescription = "File ${msg.fileName}" },
                                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1135,6 +1149,13 @@ fun DevicesTab(m: AppModel) {
                     }
                 }
             }
+        }
+        if (o.me.deviceList.any { !it.self }) {
+            val shape = RoundedCornerShape(13.dp)
+            Row(
+                Modifier.fillMaxWidth().height(44.dp).clip(shape).background(C.Accent).clickable { m.open(Screen.SendToDevices) },
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            ) { Ico(Ic.Send, C.OnAccent, 18.dp); Text("Send to my devices", color = C.OnAccent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp) }
         }
         if (o.me.approver) {
             val shape = RoundedCornerShape(13.dp)
