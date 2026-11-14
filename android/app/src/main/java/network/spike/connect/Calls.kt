@@ -655,7 +655,10 @@ object CallManager {
             try { src?.dispose() } catch (_: Exception) {}
             try { th?.dispose() } catch (_: Exception) {}
         }
-        try { pc?.close() } catch (_: Exception) {}
+        // Closing waits for WebRTC's own threads, which on a busy phone took over 5 s: on the main thread (a Hang up
+        // tap) that froze the app ("isn't responding"). Close it in the background, like the camera.
+        val old = pc
+        if (old != null) scope.launch { try { old.close() } catch (_: Exception) {} }
         pc = null; track = null; callId = null; offerSdp = null; ready = null
         CallAudio.stop()
         appCtx?.let {

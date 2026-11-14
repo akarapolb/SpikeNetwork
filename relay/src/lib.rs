@@ -613,7 +613,7 @@ fn dispatch(
 ) -> Option<ServerMsg> {
     let m = &state.metrics;
     match msg {
-        ClientMsg::Send { to, blob } => on_send(state, cfg, &to, &blob),
+        ClientMsg::Send { to, blob, live } => on_send(state, cfg, &to, &blob, live),
         ClientMsg::Ack { id } => {
             Metrics::inc(&m.acks);
             on_ack(state, &p.me, &id);
@@ -762,7 +762,13 @@ fn internal() -> ServerMsg {
     err("internal", "storage error")
 }
 
-fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<ServerMsg> {
+fn on_send(
+    state: &Shared,
+    cfg: &Config,
+    to: &str,
+    blob_hex: &str,
+    live: bool,
+) -> Option<ServerMsg> {
     if !is_valid_device_id(to) {
         return Some(err("bad_request", "invalid recipient id"));
     }
@@ -773,6 +779,23 @@ fn on_send(state: &Shared, cfg: &Config, to: &str, blob_hex: &str) -> Option<Ser
         return Some(err("bad_request", "blob is not hex"));
     };
     let st = state.state.lock().unwrap();
+    if live {
+        // Never stored and never a wake-up push: connected devices get it now, others never.
+        // The id is not a number, so the receiver's acknowledgement of it is ignored.
+        let id = "live".to_string();
+        for (_, conn) in st.online.get(to).into_iter().flatten() {
+            if conn
+                .try_send(ServerMsg::Deliver {
+                    id: id.clone(),
+                    blob: blob_hex.to_string(),
+                })
+                .is_ok()
+            {
+                Metrics::inc(&state.metrics.delivered_live);
+            }
+        }
+        return Some(ServerMsg::Accepted { id });
+    }
     let id = match state
         .store
         .enqueue(to, &blob, cfg.ttl.as_millis() as i64, cfg.queue_cap)

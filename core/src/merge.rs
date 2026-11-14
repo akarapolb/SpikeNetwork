@@ -72,7 +72,10 @@ pub fn decide(
         | Kind::LargeWelcome
         | Kind::LargeLeave
         | Kind::LargeLists
-        | Kind::React => Action::Ignore,
+        | Kind::React
+        | Kind::App
+        | Kind::AppStateRequest
+        | Kind::AppState => Action::Ignore,
     }
 }
 

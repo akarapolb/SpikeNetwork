@@ -31,14 +31,17 @@ try {
 
   // Record every banner the window asks for (and still show it); "focused" is ours to set.
   await alice.eval(`window.__banners = []; window.__focused = false; document.hasFocus = () => window.__focused;
-    const real = window.showBanner; window.showBanner = (body, open) => { window.__banners.push(body); window.__opens.push(open || null); real(body, open); }; window.__opens = [];`);
+    const real = window.showBanner; window.showBanner = (body, open, title) => { window.__banners.push(body); window.__opens.push(open || null); window.__titles.push(title || null); real(body, open, title); }; window.__opens = []; window.__titles = [];`);
   const banners = () => alice.eval("return window.__banners.slice()");
   const opens = () => alice.eval("return window.__opens.slice()");
-  const mode = (m) => alice.eval(`localStorage.setItem("banners", ${JSON.stringify(m)}); window.__banners = []; window.__opens = [];`);
+  const mode = (m) => alice.eval(`localStorage.setItem("banners", ${JSON.stringify(m)}); window.__banners = []; window.__opens = []; window.__titles = [];`);
 
   let shown = "ok";
   try { await alice.invoke("notify_banner", { title: "Spike Connect", body: "Banner test." }); } catch (e) { shown = String(e.message || e); }
   check(shown === "ok", `the system shows a banner when asked (${shown})`);
+  shown = "ok";
+  try { await alice.invoke("notify_banner", { title: "Bob", body: "Banner test with buttons.", open: JSON.stringify({ chat: "Bob", id: "ab".repeat(16) }), actions: true }); } catch (e) { shown = String(e.message || e); }
+  check(shown === "ok", `the system shows a banner with reaction and Reply buttons (${shown})`);
 
   await mode("who");
   await bob.invoke("send", { name: "Alice", text: "the secret plan" });
@@ -60,6 +63,25 @@ try {
   await bob.invoke("send", { name: "Alice", text: "and another" });
   const b2 = await until(async () => (await banners())[0]);
   check(b2 === "New message.", `"something arrived": no name ("${b2}")`);
+
+  // Message previews (opt-in): who and what, with quick reactions and Reply.
+  await mode("full");
+  await bob.invoke("send", { name: "Alice", text: "lunch at 1?" });
+  const sent = (await bob.invoke("conversation", { name: "Alice" })).filter((m) => m.out && m.body === "lunch at 1?").pop();
+  const b4 = await until(async () => (await banners()).find((b) => b === "lunch at 1?"));
+  const t4 = (await alice.eval("return window.__titles.slice()")).find(Boolean);
+  const o4 = (await opens()).find((o) => o && o.id);
+  check(b4 === "lunch at 1?" && t4 === "Bob", `"show the message": the banner says who and what (${t4}: ${b4})`);
+  check(o4 && o4.chat === "Bob" && o4.id === sent.id, "the preview banner knows which message it shows, so it can offer reactions");
+  await alice.eval(`await bannerAction(${JSON.stringify(o4 || {})}, "react:👍");`);
+  const reacted = await until(async () => { await bob.invoke("sync"); return (await bob.invoke("conversation", { name: "Alice" })).find((m) => m.id === sent.id)?.reactions?.some((r) => r.emoji === "👍"); });
+  check(reacted, "👍 on the banner reacts to that message (Bob sees it)");
+  await alice.eval("st.section = 'settings'; st.chat = null; render();");
+  await alice.eval(`await bannerAction(${JSON.stringify(o4 || {})}, "reply");`);
+  const replying = await until(() => alice.eval(`return st.chat === 'Bob' && st.replyTo && st.replyTo.id === ${JSON.stringify(sent.id)} && !!document.querySelector('.replystrip');`));
+  check(replying, "Reply on the banner opens the chat, replying to that message");
+  await alice.shot("banner-reply");
+  await alice.eval("st.replyTo = null; st.section = 'settings'; st.chat = null; render();");
 
   await mode("off");
   await bob.invoke("send", { name: "Alice", text: "third" });

@@ -192,6 +192,7 @@ impl Engine {
             "mark_read" => val(rt.block_on(x.mark_read(&s(a, "name")?))?),
             "add_contact" => val(x.add_contact(&s(a, "name")?, &s(a, "card")?)?),
             "mark_verified" => val(x.mark_verified(&s(a, "name")?, &s(a, "fingerprint")?)?),
+            "rename_contact" => val(x.rename_contact(&s(a, "old")?, &s(a, "name")?)?),
             "set_relay" => val(x.set_relay(&s(a, "url")?)?),
             "set_allow_insecure" => val(x.set_allow_insecure(b(a, "allow")?)?),
             "test_relay" => val(rt.block_on(x.test_relay())?),
@@ -203,6 +204,9 @@ impl Engine {
             "block_request" => val(x.block_request(&s(a, "id")?)?),
             "blocked" => val(x.blocked()?),
             "unblock" => val(x.unblock(&s(a, "owner")?)?),
+            "apps" => val(x.apps()?),
+            "app_register" => val(x.app_register(&s(a, "app")?, &s(a, "name")?)?),
+            "app_remove" => val(x.app_remove(&s(a, "app")?)?),
             "group" => val(x.group(&s(a, "id")?)?),
             "group_conversation" => val(x.group_conversation(&s(a, "id")?, 200)?),
             "group_create" => val(rt.block_on(x.group_create_with(
@@ -324,6 +328,32 @@ impl Engine {
                     match relay.next_incoming(Some(Duration::from_millis(ms))).await {
                         Ok(Some(_)) => Ok::<bool, anyhow::Error>(true),
                         Ok(None) => Ok(false),
+                        Err(e) => Err(e),
+                    }
+                })?)
+            }
+            // Like `wait_for_push`, but a one-to-one delivery that arrives is stored and
+            // acknowledged right here on the open connection (ADR 0030, the fast path). Returns
+            // `{pushed, sync}`: `sync` is the result when it was handled, null when the caller
+            // should run `sync` (a group entry, a failure, linking in progress, nothing arrived).
+            "listen_once" => {
+                let ms = a
+                    .get("ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(25_000)
+                    .min(120_000);
+                val(rt.block_on(async {
+                    let mut relay = x.listener_connect().await?;
+                    x.listener_subscribe(&mut relay).await;
+                    match relay.next_incoming(Some(Duration::from_millis(ms))).await {
+                        Ok(Some(spike_cli::client::Incoming::Delivery(d))) if !x.paused() => {
+                            let sync = x.listener_receive(&mut relay, &d).await.ok();
+                            Ok::<Value, anyhow::Error>(
+                                serde_json::json!({"pushed": true, "sync": sync}),
+                            )
+                        }
+                        Ok(Some(_)) => Ok(serde_json::json!({"pushed": true, "sync": null})),
+                        Ok(None) => Ok(serde_json::json!({"pushed": false, "sync": null})),
                         Err(e) => Err(e),
                     }
                 })?)

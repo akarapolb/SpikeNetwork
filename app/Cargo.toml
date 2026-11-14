@@ -15,7 +15,10 @@ hex = "0.4"
 rand = "0.8"
 zeroize = "1"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+base64 = "0.22"
+sha2 = "0.10"
+httparse = "1"
 
 [dev-dependencies]
 spike-relay = { path = "../relay" }

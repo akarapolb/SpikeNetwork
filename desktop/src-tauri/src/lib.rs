@@ -5,8 +5,11 @@
 //! while the app is unlocked.
 
 pub mod api;
+pub mod media;
 pub mod updates;
 
+use api::apps::AppsDto;
+use api::local_api::{ConnectDto, LocalApi};
 use api::{
     ActionTypeDto, AgentsDto, BlockedDto, CallEventDto, DirectDto, GrantRequest, GroupDetailDto,
     GroupSendDto, IceServerDto, InstalledDto, LinkedDto, MessageDto, MessageRequestDto, Overview,
@@ -25,6 +28,11 @@ pub struct AppState {
     listener: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     /// A backup file opened on the create screen, waiting for the person to confirm the restore.
     backup: Mutex<Option<api::backup::Opened>>,
+    /// The local API for other programs (ADR 0030) while it runs, and the task that tells the
+    /// window when a program asks to connect.
+    local_api: Mutex<Option<(LocalApi, tauri::async_runtime::JoinHandle<()>)>>,
+    /// Why the local API could not start (the port is taken), for Settings.
+    local_api_error: Mutex<Option<String>>,
 }
 
 #[derive(serde::Serialize)]
@@ -74,6 +82,7 @@ async fn create_identity(
     .map_err(err)?;
     set(&state, Some(s));
     start_listener(&app, &state);
+    start_local_api(&app, &state).await;
     Ok(())
 }
 
@@ -90,12 +99,14 @@ async fn unlock(
         .map_err(err)?;
     set(&state, Some(s));
     start_listener(&app, &state);
+    start_local_api(&app, &state).await;
     Ok(())
 }
 
 #[tauri::command]
 fn lock(app: tauri::AppHandle, state: State<'_, AppState>) {
     stop_listener(&state);
+    stop_local_api(&state);
     set(&state, None);
     set_title(&app, 0);
 }
@@ -125,19 +136,51 @@ fn notify_banner(
     title: String,
     body: String,
     open: Option<String>,
+    actions: Option<bool>,
 ) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
     let mut b = app.notification().builder().title(title).body(body);
     if let Some(open) = open {
         b = b.extra("open", open);
     }
+    if actions == Some(true) {
+        b = b.action_type_id(BANNER_ACTIONS);
+    }
     b.show().map_err(|e| e.to_string())
 }
 
-/// A click on one of our banners: bring the window forward and tell it what the banner was about.
-/// (Windows reports a click only while the banner is on screen, not from the Action Center.)
+/// The buttons on a banner about one message (message previews): quick reactions and Reply.
+const BANNER_ACTIONS: &str = "message";
+
+fn banner_action_types() -> Vec<tauri_plugin_notification::ActionType> {
+    use tauri_plugin_notification::{Action, ActionType};
+    let mut actions: Vec<Action> = ["👍", "❤️", "😂"]
+        .iter()
+        .map(|e| Action::builder(format!("react:{e}"), *e).build())
+        .collect();
+    actions.push(Action::builder("reply", "Reply").build());
+    vec![ActionType::builder(BANNER_ACTIONS).actions(actions).build()]
+}
+
+/// A click on one of our banners: bring the window forward and tell it what the banner was about. A reaction
+/// button is handed to the window without bringing it forward. (Windows reports a click only while the banner is
+/// on screen, not from the Action Center.)
 fn banner_clicked(app: &tauri::AppHandle, performed: &tauri_plugin_notification::ActionPerformed) {
-    if performed.action_id() != "tap" {
+    let action = performed.action_id();
+    let open = performed
+        .notification()
+        .and_then(|n| n.extra().get("open"))
+        .and_then(|v| v.as_str());
+    if action.starts_with("react:") {
+        if let Some(open) = open {
+            let _ = app.emit(
+                "banner-action",
+                serde_json::json!({ "open": open, "action": action }),
+            );
+        }
+        return;
+    }
+    if action != "tap" && action != "reply" {
         return;
     }
     if let Some(w) = app.get_webview_window("main") {
@@ -145,12 +188,15 @@ fn banner_clicked(app: &tauri::AppHandle, performed: &tauri_plugin_notification:
         let _ = w.show();
         let _ = w.set_focus();
     }
-    let open = performed
-        .notification()
-        .and_then(|n| n.extra().get("open"))
-        .and_then(|v| v.as_str());
     if let Some(open) = open {
-        let _ = app.emit("banner-open", open);
+        if action == "reply" {
+            let _ = app.emit(
+                "banner-action",
+                serde_json::json!({ "open": open, "action": action }),
+            );
+        } else {
+            let _ = app.emit("banner-open", open);
+        }
     }
 }
 
@@ -265,6 +311,38 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
             };
             tokio::select! {
                 r = relay.next_incoming(Some(Duration::from_secs(50))) => match r {
+                    // The fast path (ADR 0030): a one-to-one delivery is stored and acknowledged right
+                    // here, on this connection, which stays open. Anything that goes wrong (another
+                    // operation took the connection, the delivery was odd) falls back to a full sync,
+                    // which is offered the same delivery again.
+                    Ok(Some(spike_cli::client::Incoming::Delivery(d))) => {
+                        let Some(s) = weak.upgrade() else { return };
+                        if s.paused() {
+                            break true;
+                        }
+                        match s.listener_receive(&mut relay, &d).await {
+                            Ok(r) => {
+                                let attention = s.attention().unwrap_or(0);
+                                drop(s);
+                                if r.received + r.changed + r.message_requests + r.groups + r.agent_requests > 0 || !r.notes.is_empty() {
+                                    if let Some(w) = app.get_webview_window("main") {
+                                        if !w.is_focused().unwrap_or(true) {
+                                            let _ = w.request_user_attention(Some(
+                                                tauri::UserAttentionType::Informational,
+                                            ));
+                                        }
+                                    }
+                                    set_title(&app, attention);
+                                    let _ = app.emit("synced", r);
+                                }
+                                continue;
+                            }
+                            Err(e) => {
+                                dbg_log!("fast path failed ({e:#}); syncing");
+                                break true;
+                            }
+                        }
+                    }
                     Ok(Some(_)) => break true,
                     Ok(None) => continue,
                     // Displaced by an operation that connected, or the connection dropped.
@@ -330,6 +408,123 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
         // The sync's own connection replaced ours: pause briefly so two connections do not trade places in a loop.
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
+}
+
+// App channels (ADR 0030): Settings lists the apps set up here; the local API lets a program on this
+// computer ask to use them, and the window asks the person.
+
+/// The port the local API listens on. SPIKE_LOCAL_API_PORT moves it (a second instance, tests).
+fn local_api_port() -> u16 {
+    std::env::var("SPIKE_LOCAL_API_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(api::local_api::DEFAULT_PORT)
+}
+
+#[derive(serde::Serialize)]
+pub struct AppsView {
+    #[serde(flatten)]
+    apps: AppsDto,
+    /// Where the local API listens while it runs.
+    port: Option<u16>,
+    /// Why it could not start.
+    error: Option<String>,
+    /// Programs waiting for the person to allow them.
+    waiting: Vec<ConnectDto>,
+}
+
+fn apps_view(state: &State<'_, AppState>) -> Result<AppsView, String> {
+    let apps = session(state)?.apps().map_err(err)?;
+    let running = state.local_api.lock().expect("api lock");
+    Ok(AppsView {
+        apps,
+        port: running.as_ref().map(|(a, _)| a.port()),
+        error: state.local_api_error.lock().expect("api lock").clone(),
+        waiting: running
+            .as_ref()
+            .map(|(a, _)| a.waiting())
+            .unwrap_or_default(),
+    })
+}
+
+/// Start the local API if the person turned it on and it is not running.
+async fn start_local_api(app: &tauri::AppHandle, state: &State<'_, AppState>) {
+    let Ok(s) = session(state) else { return };
+    if !s.app_api().unwrap_or(false) || state.local_api.lock().expect("api lock").is_some() {
+        return;
+    }
+    let handle = app.clone();
+    let started = LocalApi::start(local_api_port(), move || {
+        handle.state::<AppState>().session.lock().ok()?.clone()
+    })
+    .await;
+    match started {
+        Ok(local) => {
+            *state.local_api_error.lock().expect("api lock") = None;
+            let watcher = tauri::async_runtime::spawn({
+                let (app, local) = (app.clone(), local.clone());
+                async move {
+                    loop {
+                        local.asked().await;
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ =
+                                w.request_user_attention(Some(tauri::UserAttentionType::Critical));
+                        }
+                        let _ = app.emit("app-connect", local.waiting());
+                    }
+                }
+            });
+            *state.local_api.lock().expect("api lock") = Some((local, watcher));
+        }
+        Err(e) => *state.local_api_error.lock().expect("api lock") = Some(format!("{e:#}")),
+    }
+}
+
+fn stop_local_api(state: &State<'_, AppState>) {
+    if let Some((local, watcher)) = state.local_api.lock().expect("api lock").take() {
+        local.stop();
+        watcher.abort();
+    }
+}
+
+#[tauri::command]
+fn apps(state: State<'_, AppState>) -> Result<AppsView, String> {
+    apps_view(&state)
+}
+
+#[tauri::command]
+async fn app_api_set(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    on: bool,
+) -> Result<AppsView, String> {
+    session(&state)?.app_set_api(on).map_err(err)?;
+    if on {
+        start_local_api(&app, &state).await;
+    } else {
+        stop_local_api(&state);
+        *state.local_api_error.lock().expect("api lock") = None;
+    }
+    apps_view(&state)
+}
+
+#[tauri::command]
+fn app_remove(state: State<'_, AppState>, id: String) -> Result<AppsView, String> {
+    session(&state)?.app_remove(&id).map_err(err)?;
+    apps_view(&state)
+}
+
+/// The person's answer to a program asking to connect.
+#[tauri::command]
+fn app_decide(state: State<'_, AppState>, id: String, allow: bool) -> Result<AppsView, String> {
+    {
+        let running = state.local_api.lock().expect("api lock");
+        let (local, _) = running
+            .as_ref()
+            .ok_or_else(|| "the local API is not running".to_string())?;
+        local.decide(&id, allow).map_err(err)?;
+    }
+    apps_view(&state)
 }
 
 // Calls (ADR 0028): the window makes the WebRTC offer/answer and hands the text up.
@@ -474,6 +669,18 @@ async fn mark_read(state: State<'_, AppState>, name: String) -> Result<(), Strin
 #[tauri::command]
 fn add_contact(state: State<'_, AppState>, name: String, card: String) -> Result<String, String> {
     session(&state)?.add_contact(&name, &card).map_err(err)
+}
+
+/// The call screen turns this on while a call is up, so the page is granted the microphone only then.
+#[tauri::command]
+fn set_media_access(on: bool) {
+    media::set_active(on);
+}
+
+/// Give a contact a new name (defect: contact details could not be edited after adding).
+#[tauri::command]
+fn rename_contact(state: State<'_, AppState>, old: String, name: String) -> Result<(), String> {
+    session(&state)?.rename_contact(&old, &name).map_err(err)
 }
 
 #[tauri::command]
@@ -954,6 +1161,28 @@ async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
     updates::install(&app).await
 }
 
+#[derive(serde::Serialize)]
+struct UpdateStatusDto {
+    /// Automatic checks are on.
+    auto: bool,
+    /// A newer version is downloaded and verified, waiting for a restart.
+    ready: Option<updates::Ready>,
+}
+
+/// What the screens need to show about updates. Needs no unlocked identity.
+#[tauri::command]
+fn update_status(state: State<'_, AppState>) -> UpdateStatusDto {
+    UpdateStatusDto {
+        auto: updates::auto_enabled(&state.dir),
+        ready: updates::ready(),
+    }
+}
+
+#[tauri::command]
+fn update_set_auto(state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    updates::set_auto(&state.dir, on)
+}
+
 #[tauri::command]
 fn qr_svg(text: String) -> Result<String, String> {
     api::qr_svg(&text).map_err(err)
@@ -1004,6 +1233,7 @@ async fn link_finish(
 }
 
 pub fn run() {
+    media::configure_webview();
     let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     #[cfg(feature = "updater")]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
@@ -1019,17 +1249,29 @@ pub fn run() {
                 session: Mutex::new(None),
                 listener: Mutex::new(None),
                 backup: Mutex::new(None),
+                local_api: Mutex::new(None),
+                local_api_error: Mutex::new(None),
             });
+            if let Some(w) = app.get_webview_window("main") {
+                media::install(&w);
+            }
+            updates::start(app.handle().clone());
             {
                 use tauri_plugin_notification::NotificationExt;
                 let handle = app.handle().clone();
                 app.notification()
                     .on_action(move |p| banner_clicked(&handle, p))?;
+                app.notification()
+                    .register_action_types(banner_action_types())?;
             }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             app_status,
+            apps,
+            app_api_set,
+            app_remove,
+            app_decide,
             notify_banner,
             react,
             call_start,
@@ -1062,6 +1304,8 @@ pub fn run() {
             sync,
             mark_read,
             add_contact,
+            rename_contact,
+            set_media_access,
             mark_verified,
             agents,
             decide,
@@ -1088,6 +1332,8 @@ pub fn run() {
             qr_svg,
             update_check,
             update_install,
+            update_status,
+            update_set_auto,
             link_wait,
             link_receive,
             link_cancel,

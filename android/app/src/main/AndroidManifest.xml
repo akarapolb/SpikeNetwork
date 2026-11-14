@@ -69,6 +69,7 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".CallActionReceiver" android:exported="false" />
+        <receiver android:name=".PreviewActionReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

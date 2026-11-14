@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod apps;
 pub mod backup;
 pub mod client;
 pub mod direct;
@@ -165,6 +166,9 @@ pub enum Outcome {
     GroupInviteSettled { group: String, decision: String },
     /// A contact invited you to a large group (ADR 0025). Nothing is joined until you accept.
     LargeInvite { group: String, from: String },
+    /// Data, a state request or a state for an application registered here (ADR 0030). Stored data
+    /// is already in the app inbox; live data exists only here.
+    App(apps::AppEvent),
     /// Not decryptable: corrupted, tampered, replayed, or not for us.
     Invalid,
 }
@@ -422,6 +426,20 @@ pub fn process(
                         persist(sessions, me)?;
                         return Ok(outcome);
                     }
+                    if apps::is_app_kind(env.kind) {
+                        let outcome = apps::on_envelope(
+                            home,
+                            &env,
+                            apps::From {
+                                owner: &my_list.owner,
+                                name: "you".into(),
+                                device: &sender_device,
+                                own: true,
+                            },
+                        )?;
+                        persist(sessions, me)?;
+                        return Ok(outcome);
+                    }
                     if matches!(env.kind, Kind::AgentRequest | Kind::AgentReceipt) {
                         // Copies of our own agent traffic, or an invitation for someone else: nothing to store.
                         persist(sessions, me)?;
@@ -493,6 +511,20 @@ pub fn process(
                             },
                             Err(_) => Outcome::Invalid,
                         });
+                    }
+                    if apps::is_app_kind(env.kind) {
+                        let outcome = apps::on_envelope(
+                            home,
+                            &env,
+                            apps::From {
+                                owner: &peer,
+                                name: contacts[contact].name.clone(),
+                                device: &sender_device,
+                                own: false,
+                            },
+                        )?;
+                        persist(sessions, me)?;
+                        return Ok(outcome);
                     }
                     if env.kind == Kind::Sync {
                         // Sync messages are for a person's own devices only. A contact has no business sending one.
