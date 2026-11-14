@@ -123,9 +123,11 @@ private fun Root() {
             if (e == Lifecycle.Event.ON_STOP) {
                 Listener.visible = false
                 // Away from the app: forget the keys after a while, unless alerts need the engine to keep reading.
-                if (m.status == "ready" && !Prefs.notifyInBackground(ctx)) {
+                // An organisation's "lock when idle" rule (ADR 0035) applies even with alerts on: the organisation chose it.
+                val rule = OrgRules.lockMinutes
+                if (m.status == "ready" && (rule != null || !Prefs.notifyInBackground(ctx))) {
                     autoLock[0] = scope.launch {
-                        delay(AUTO_LOCK_MINUTES * 60_000L)
+                        delay((rule?.coerceAtMost(AUTO_LOCK_MINUTES) ?: AUTO_LOCK_MINUTES) * 60_000L)
                         try { Bridge.call("lock") } catch (_: Exception) {}
                         m.loadStatus()
                     }

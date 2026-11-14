@@ -13,6 +13,7 @@ pub mod bridge;
 mod calls;
 mod direct;
 pub mod local_api;
+pub mod org;
 pub use calls::{CallEventDto, IceServerDto};
 pub use direct::DirectDto;
 
@@ -982,15 +983,30 @@ impl Session {
             changed: 0,
             notes: vec![],
         };
-        ops::recv(&self.home, self.target(), Some(idle), |o| {
+        let received = ops::recv(&self.home, self.target(), Some(idle), |o| {
             self.calls.on_outcome(&o);
             self.apps.on_outcome(&o);
             if tally(&mut out, &o) {
                 progress(&out, self.attention().unwrap_or(0));
             }
         })
-        .await?;
+        .await;
+        if let Err(e) = received {
+            // A device its organisation removed is only a visitor on that relay now, so reading fails there.
+            // Say that in words rather than as a relay error (ADR 0035).
+            if let Some(note) = self.org_refresh().await {
+                if spike_cli::org::membership(&self.home).ok().flatten().is_some_and(|m| m.removed) {
+                    out.notes.push(note);
+                    return Ok(out);
+                }
+            }
+            return Err(e);
+        }
         self.sync_large(&mut out, &mut progress).await;
+        // An organisation's rules (ADR 0035): fetched with each sync, verified, and carried out here.
+        if let Some(note) = self.org_refresh().await {
+            out.notes.push(note);
+        }
         Ok(out)
     }
 
@@ -1290,6 +1306,11 @@ impl Session {
     /// The human's decision. On the approver device it is recorded and the
     /// receipt sent; on another device it is forwarded to the approver.
     pub async fn decide(&self, id: &str, approve: bool) -> Result<String> {
+        if approve
+            && self.org_rules()?.and_then(|r| r.agents) == Some(spike_core::tenant::AgentRule::Off)
+        {
+            bail!("your organisation does not allow agents on this device: you can only deny");
+        }
         let _net = self.net.lock().await;
         let sent = ops::agent_decide(&self.home, self.target(), id, approve, "").await?;
         let word = if approve { "Approved" } else { "Denied" };
@@ -1355,6 +1376,12 @@ impl Session {
         if !(1..=1000).contains(&g.per_hour) {
             bail!("requests per hour must be between 1 and 1000");
         }
+        let verified = self
+            .home
+            .load_contacts()?
+            .iter()
+            .any(|c| c.name == g.agent && c.verified);
+        self.org_check_agent(verified)?;
         let key = self.contact_key(&g.agent)?;
         agent::grant(
             &self.home,

@@ -196,6 +196,11 @@ impl Engine {
             "set_relay" => val(x.set_relay(&s(a, "url")?)?),
             "set_allow_insecure" => val(x.set_allow_insecure(b(a, "allow")?)?),
             "test_relay" => val(rt.block_on(x.test_relay())?),
+            // Organisations (ADR 0035).
+            "org_inspect" => val(x.org_inspect(&s(a, "token")?)?),
+            "org_join" => val(rt.block_on(x.org_join(&s(a, "token")?))?),
+            "org_status" => val(x.org_status()?),
+            "org_leave" => val(rt.block_on(x.org_leave(a.get("next").and_then(Value::as_str).map(str::to_string)))?),
             "edit_message" => val(rt.block_on(x.edit(&s(a, "id")?, &s(a, "text")?))?),
             "delete_message" => val(rt.block_on(x.delete(&s(a, "id")?))?),
             "message_requests" => val(x.message_requests()?),

@@ -8,7 +8,7 @@ use crate::store::Stats;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 /// The error codes the relay can answer with (anything else is counted as `other`).
-const ERROR_CODES: [&str; 19] = [
+const ERROR_CODES: [&str; 31] = [
     "bad_request",
     "too_large",
     "queue_full",
@@ -26,6 +26,18 @@ const ERROR_CODES: [&str; 19] = [
     "sealed",
     "exists",
     "mailbox_full",
+    "token_invalid",
+    "token_expired",
+    "token_used",
+    "token_withdrawn",
+    "tenant_suspended",
+    "tenant_over_limit",
+    "already_enrolled",
+    "not_enrolled",
+    "device_revoked",
+    "forbidden",
+    "bad_rules",
+    "stale_rules",
     "internal",
     "other",
 ];

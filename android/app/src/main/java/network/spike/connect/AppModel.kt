@@ -83,6 +83,8 @@ class AppModel(private val scope: CoroutineScope) {
     /** Re-read what the screens show, from the engine. */
     suspend fun refresh() {
         overview = parseOverview(Bridge.obj("overview"))
+        // The organisation's lock rule (ADR 0035) must be known before the app next goes to the background.
+        try { loadOrg() } catch (_: Exception) {}
         when (val s = screen) {
             is Screen.Chat -> messages = parseMessages(Bridge.arr("conversation", args("name" to s.name)))
             is Screen.GroupChat -> loadGroup(s.id, true)

@@ -10,6 +10,7 @@
 
 pub mod limits;
 pub mod metrics;
+mod org;
 pub mod push;
 pub mod store;
 pub mod tls;
@@ -105,6 +106,9 @@ pub struct Config {
     /// Terminate TLS in the relay. Without it the relay speaks plain WebSocket
     /// and must sit behind a TLS-terminating proxy or on loopback.
     pub tls: Option<tls::TlsFiles>,
+    /// Enrolled mode (ADR 0023): only devices enrolled in a tenant may sign in. Sends and prekey
+    /// claims *to* other devices are still allowed, so members can reach anyone.
+    pub enrolled: bool,
 }
 
 impl Default for Config {
@@ -139,6 +143,7 @@ impl Default for Config {
             push_min_interval: Duration::from_secs(5),
             db_path: None,
             tls: None,
+            enrolled: false,
         }
     }
 }
@@ -313,6 +318,28 @@ struct Peer {
     out: mpsc::WeakSender<ServerMsg>,
     /// The mailboxes this connection is subscribed to.
     subs: Mutex<HashSet<String>>,
+    /// Signed in to an enrolled relay without being enrolled (ADR 0035): may only deliver to this
+    /// relay's devices, never keep anything here.
+    visitor: bool,
+}
+
+/// What a visitor may do: reach this relay's devices (send, claim their keys, read their device lists
+/// and attachments, read and append to group mailboxes they are in). Nothing that stores anything
+/// for the visitor itself or costs the organisation bandwidth.
+fn visitor_may(m: &ClientMsg) -> bool {
+    matches!(
+        m,
+        ClientMsg::Ping
+            | ClientMsg::Send { .. }
+            | ClientMsg::ClaimPrekey { .. }
+            | ClientMsg::ClaimKeyPackage { .. }
+            | ClientMsg::FetchDeviceList { .. }
+            | ClientMsg::GetBlobChunk { .. }
+            | ClientMsg::GroupRead { .. }
+            | ClientMsg::GroupAppend { .. }
+            | ClientMsg::FetchRules
+            | ClientMsg::Ack { .. }
+    )
 }
 
 /// What a request costs the connection's token bucket.
@@ -419,11 +446,6 @@ where
     let Some(Ok(Message::Text(text))) = first else {
         return Err(());
     };
-    let Ok(ClientMsg::Auth { ed25519, sig }) = serde_json::from_str::<ClientMsg>(&text) else {
-        let _ = send_json(&mut tx, &err("bad_request", "expected auth")).await;
-        state.metrics.error("bad_request");
-        return Err(());
-    };
     // The answer must be signed for this relay's name, so a relay that passes our challenge to a
     // client cannot use the client's signature to sign in here as that client.
     let audience = cfg
@@ -431,6 +453,18 @@ where
         .clone()
         .or_else(|| host_seen.lock().unwrap().clone())
         .unwrap_or_default();
+    let (ed25519, sig, enrol) = match serde_json::from_str::<ClientMsg>(&text) {
+        Ok(ClientMsg::Auth { ed25519, sig, enrol }) => (ed25519, sig, enrol),
+        // An organisation admin's console (ADR 0035): its own, smaller set of requests.
+        Ok(ClientMsg::AdminAuth { tenant, sig }) => {
+            return org::serve_admin(tx, rx, state, cfg, nonce, audience, tenant, sig).await;
+        }
+        _ => {
+            let _ = send_json(&mut tx, &err("bad_request", "expected auth")).await;
+            state.metrics.error("bad_request");
+            return Err(());
+        }
+    };
     let verified = (|| {
         let ed: [u8; 32] = hex::decode(ed25519).ok()?.try_into().ok()?;
         let sig: [u8; 64] = hex::decode(sig).ok()?.try_into().ok()?;
@@ -443,15 +477,44 @@ where
         state.metrics.error("auth_failed");
         return Err(());
     };
+    // Organisations: redeem a token if one came with the sign-in, then refuse a device whose
+    // tenant is suspended, or (in enrolled mode) a device in no tenant.
+    let gate = {
+        let (state, cfg, me) = (state.clone(), cfg.clone(), me.clone());
+        tokio::task::spawn_blocking(move || org::gate(&state, &cfg, &me, enrol.as_deref())).await
+    };
+    let visitor = match gate {
+        Ok(Ok(v)) => v,
+        Ok(Err(refusal)) => {
+            if let ServerMsg::Error { code, .. } = &refusal {
+                state.metrics.error(code);
+            }
+            let _ = send_json(&mut tx, &refusal).await;
+            return Err(());
+        }
+        Err(_) => return Err(()),
+    };
     Metrics::inc(&state.metrics.auth_ok);
 
     // 2. Register (a device may hold a few live connections; the oldest beyond the cap is closed)
     // and flush the queue. The database work runs on a blocking thread.
     let (out_tx, mut out_rx) = mpsc::channel(OUT_QUEUE);
     let out_for_peer = out_tx.downgrade();
+    // A visitor (ADR 0035) has no mailbox here: it is not registered, so nothing is delivered to it,
+    // and it holds its own channel open (registered devices' channels are held by `online`).
+    let _visitor_channel = visitor.then(|| out_tx.clone());
     let registered = {
         let (state, me) = (state.clone(), me.clone());
-        tokio::task::spawn_blocking(move || register(&state, &me, out_tx)).await
+        tokio::task::spawn_blocking(move || {
+            if visitor {
+                let mut st = state.state.lock().unwrap();
+                st.next_conn += 1;
+                Ok((st.next_conn, Vec::new(), 0, None))
+            } else {
+                register(&state, &me, out_tx)
+            }
+        })
+        .await
     };
     let Ok(Ok((conn_id, backlog, prekeys, fallback_age_secs))) = registered else {
         let _ = send_json(&mut tx, &err("internal", "storage error")).await;
@@ -464,6 +527,7 @@ where
         conn_id,
         out: out_for_peer,
         subs: Mutex::new(HashSet::new()),
+        visitor,
     });
     let run = async {
         send_json(
@@ -472,6 +536,7 @@ where
                 device_id: me.clone(),
                 prekeys,
                 fallback_age_secs,
+                visitor,
             },
         )
         .await?;
@@ -610,6 +675,12 @@ fn dispatch(
     msg: ClientMsg,
 ) -> Option<ServerMsg> {
     let m = &state.metrics;
+    if p.visitor && !visitor_may(&msg) {
+        return Some(err(
+            "not_enrolled",
+            "this relay only lets devices outside its organisation deliver to its members",
+        ));
+    }
     match msg {
         ClientMsg::Send { to, blob, live } => on_send(state, cfg, &to, &blob, live),
         ClientMsg::Ack { id } => {
@@ -618,6 +689,15 @@ fn dispatch(
             None
         }
         ClientMsg::Ping => Some(ServerMsg::Pong),
+        ClientMsg::FetchRules => Some(org::on_fetch_rules(state, &p.me)),
+        ClientMsg::LeaveTenant => Some(org::on_leave(state, &p.me)),
+        ClientMsg::Auth { .. }
+        | ClientMsg::AdminAuth { .. }
+        | ClientMsg::ListDevices
+        | ClientMsg::RevokeDevice { .. }
+        | ClientMsg::CancelToken { .. }
+        | ClientMsg::PublishRules { .. }
+        | ClientMsg::TenantUsage => Some(err("forbidden", "not an organisation admin connection")),
         ClientMsg::RegisterPush { url } => Some(if state.push_tx.is_none() {
             err("no_push", "this relay does not send wake-up pushes")
         } else {
@@ -752,7 +832,6 @@ fn dispatch(
                 Some(on_claim(state, &device))
             }
         }
-        _ => Some(err("bad_request", "unexpected message")),
     }
 }
 
@@ -793,6 +872,15 @@ fn on_send(
             }
         }
         return Some(ServerMsg::Accepted { id });
+    }
+    // An enrolled relay keeps mailboxes for its members only (ADR 0035): a queued message for anyone
+    // else could never be read here, and would let outsiders use the relay as free storage.
+    if cfg.enrolled && !matches!(state.store.membership(to), Ok(Some(_))) {
+        return Some(err("not_enrolled", "the recipient has no mailbox on this relay"));
+    }
+    // An organisation pays for what is held for its devices (ADR 0023): past its limit, refuse.
+    if matches!(state.store.tenant_storage_over(to, blob.len() as u64), Ok(true)) {
+        return Some(err("tenant_over_limit", "storage: the recipient's organisation is at its storage limit"));
     }
     let id = match state
         .store
@@ -1339,6 +1427,9 @@ fn on_put_chunk(
     };
     if data.len() < OVERHEAD {
         return err("bad_request", "chunk too short");
+    }
+    if matches!(state.store.tenant_storage_over(me, data.len() as u64), Ok(true)) {
+        return err("tenant_over_limit", "storage: your organisation is at its storage limit");
     }
     match state.store.put_chunk(
         blob,

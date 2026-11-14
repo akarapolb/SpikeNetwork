@@ -1226,9 +1226,12 @@ fun SettingsTab(m: AppModel) {
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).statusBarsPadding().padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(40.dp).offset(x = (-10).dp).clip(CircleShape).clickable { sec = null }.semantics { contentDescription = "Back to Settings" }, contentAlignment = Alignment.Center) { Ico(Ic.Back) }
-            Text(sections.first { it.first == sec }.second, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            Box(Modifier.size(40.dp).offset(x = (-10).dp).clip(CircleShape).clickable { sec = if (sec == "orgjoin" || sec == "orgrules") "relay" else null }.semantics { contentDescription = "Back to Settings" }, contentAlignment = Alignment.Center) { Ico(Ic.Back) }
+            Text(sections.firstOrNull { it.first == sec }?.second ?: "", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
         }
+        // Organisations (ADR 0035): joining a relay with a token, and the rules shown to members.
+        if (sec == "orgjoin") OrgJoinPage(m) { sec = "relay" }
+        if (sec == "orgrules") OrgRulesPage(m) { sec = "relay" }
         if (sec == "relay") CardBox {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Ico(Ic.Server, C.AvatarText, 26.dp)
@@ -1277,6 +1280,7 @@ fun SettingsTab(m: AppModel) {
                 }
             }
         }
+        if (sec == "relay") OrgRelayEntry(m) { sec = it }
         if (sec == "backup") BackupCard(m)
         if (sec == "direct") DirectCard(m)
         if (sec == "apps") AppsCard(m)

@@ -24,6 +24,7 @@ function h(tag, attrs, ...kids) {
   return el;
 }
 const PATHS = {
+  org: '<path d="M4 20V6l8-3 8 3v14"/><path d="M9 20v-5h6v5M8 9h1M15 9h1M8 12h1M15 12h1"/>',
   chats: '<path d="M4 5h16v11H9l-5 4z"/>',
   agents: '<path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4z"/><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>',
   settings: '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
@@ -128,7 +129,12 @@ function listenToBackend() {
 
 /* Auto-lock after a period without use. The setting lives in this window's storage; it is not a secret. */
 const AUTOLOCK_CHOICES = [[5, "5 minutes"], [15, "15 minutes"], [30, "30 minutes"], [60, "1 hour"], [0, "Never"]];
-function autoLockMinutes() { try { const v = localStorage.getItem("autolock"); return v === null ? 15 : Number(v); } catch (_) { return 15; } }
+function autoLockMinutes() {
+  let m; try { const v = localStorage.getItem("autolock"); m = v === null ? 15 : Number(v); } catch (_) { m = 15; }
+  // An organisation's "lock when idle" rule (ADR 0035) is the longest this computer may stay unlocked.
+  const rule = typeof orgRules === "function" && orgRules() ? orgRules().lock_idle_minutes : null;
+  return rule ? (m && m < rule ? m : rule) : m;
+}
 function armAutoLock() {
   clearTimeout(st.idleTimer);
   const m = autoLockMinutes();
@@ -212,6 +218,7 @@ async function openFromBanner(open) {
 async function refresh() {
   try {
     st.ov = await invoke("overview");
+    await refreshOrg();
     st.agents = await invoke("agents");
     if (st.ov.requests) st.reqs = await invoke("message_requests"); else st.reqs = [];
     if (st.chat) st.msgs = await invoke("conversation", { name: st.chat });
@@ -241,10 +248,12 @@ function renderRail() {
   const unread = st.ov ? unreadTotal() + invitesCount() : 0, w = st.ov ? st.ov.waiting : 0;
   const keys = { chats: 1, agents: 2, devices: 3, settings: 4 };
   const item = (k, label, n, warn) => h("button", { type: "button", "aria-current": st.section === k ? "page" : null, "aria-label": n ? `${label}, ${n} ${warn ? "waiting" : "unread"}` : label, onclick: () => go(k) },
-    icon(k), h("span", { class: "tip", "aria-hidden": "true" }, `${label}  ${MOD}${keys[k]}`), n ? h("span", { class: "badge" + (warn ? " warn" : ""), "aria-hidden": "true" }, n) : null);
+    icon(k), h("span", { class: "tip", "aria-hidden": "true" }, keys[k] ? `${label}  ${MOD}${keys[k]}` : label), n ? h("span", { class: "badge" + (warn ? " warn" : ""), "aria-hidden": "true" }, n) : null);
   $("rail").replaceChildren(
     // The brand is in the title bar now; the rail is just the sections, with settings and the rest at the bottom.
     item("chats", "Chats", unread), item("agents", "Agents", w, true), item("devices", "Devices"),
+    // The organisation console (ADR 0035), only on the computer that holds an organisation's admin key.
+    ...(st.orgAdmin ? [item("org", "Organisation")] : []),
     h("span", { class: "spacer" }),
     item("settings", "Settings"),
     h("button", { type: "button", "aria-label": "Switch light or dark", onclick: () => { const r = document.documentElement; const dark = matchMedia("(prefers-color-scheme: dark)").matches; r.dataset.theme = (r.dataset.theme || (dark ? "dark" : "light")) === "dark" ? "light" : "dark"; } }, icon("moon"), h("span", { class: "tip", "aria-hidden": "true" }, "Light or dark")),
@@ -1069,7 +1078,7 @@ function settingsMain() {
     if (f.size > 65536) return toast("That file is too large to be a certificate.");
     try { const n = await invoke("set_relay_ca", { pem: await f.text() }); toast(`Trusting ${n} certificate${n > 1 ? "s" : ""} from ${f.name}.`); await refresh(); syncNow(); } catch (x) { toast(String(x)); } } });
   // The sections down the left, as in the design; the chosen one fills the page.
-  const jumps = [["set-identity", "Identity"], ["set-relay", "Home relay"], ["backupCard", "Backup"], ["set-privacy", "Privacy and security"], ["direct-card", "Direct connections"], ["apps-card", "Apps"], ["calls-card", "Calls"], ["set-trust", "Relay trust"], st.blocked.length ? ["set-blocked", "Blocked"] : null, ["set-updates", "Updates"]].filter(Boolean);
+  const jumps = [["set-identity", "Identity"], ["set-relay", "Home relay"], st.org ? ["set-org", st.org.org_name] : null, ["backupCard", "Backup"], ["set-privacy", "Privacy and security"], ["direct-card", "Direct connections"], ["apps-card", "Apps"], ["calls-card", "Calls"], ["set-trust", "Relay trust"], st.blocked.length ? ["set-blocked", "Blocked"] : null, ["set-orgadmin", "Organisation console"], ["set-updates", "Updates"]].filter(Boolean);
   const cur = jumps.some(([id]) => id === st.setSec) ? st.setSec : "set-identity";
   const backupDue = st.bk && st.bk.status && (!st.bk.status.last_ms || st.bk.status.stale);
   const nav = h("nav", { class: "setnav", "aria-label": "Settings sections" }, h("strong", {}, "Settings"),
@@ -1101,7 +1110,8 @@ function settingsMain() {
         h("button", { class: "btn", type: "button", onclick: () => { st.relayEdit = false; render(); } }, "Cancel"))) : null,
     h("div", { class: "relaysee" },
       h("div", {}, h("span", { class: "cap" }, "A relay can see"), h("span", {}, "Which device a message is for"), h("span", {}, "When, and how large"), h("span", {}, "Your network address")),
-      h("div", {}, h("span", { class: "cap" }, "A relay cannot see"), h("span", {}, "What a message says"), h("span", {}, "Who sent it"), h("span", {}, "Your contacts or groups"))));
+      h("div", {}, h("span", { class: "cap" }, "A relay cannot see"), h("span", {}, "What a message says"), h("span", {}, "Who sent it"), h("span", {}, "Your contacts or groups"))),
+    ...orgMemberRows());
 
   const trust = () => h("section", { class: "card", id: "set-trust" }, ...secHead("Relay trust", "For a relay you run yourself, with its own certificate."),
     srow("Certificates", st.ov.relay_trust.ca_certs ? `${st.ov.relay_trust.ca_certs} extra certificate${st.ov.relay_trust.ca_certs > 1 ? "s are" : " is"} trusted, as well as the usual public ones.` : "Only the usual public certificate authorities are trusted. Choose a relay's .crt or .pem file (the certificate, never the private key).",
@@ -1118,12 +1128,12 @@ function settingsMain() {
   const sel = (label, choices, current, onchange) => h("select", { "aria-label": label, class: "ssel", onchange }, choices.map(([v, l]) => h("option", { value: String(v), selected: v === current || null }, l)));
   const privacy = () => h("section", { class: "card", id: "set-privacy" }, ...secHead("Privacy and security", "What this computer keeps, and what it shows."),
     srow("Lock after no use for", "Locking wipes your keys from memory. While locked, this computer does not receive messages.",
-      sel("Auto-lock", AUTOLOCK_CHOICES, autoLockMinutes(), (e) => { try { localStorage.setItem("autolock", e.target.value); } catch (_) {} armAutoLock(); toast(Number(e.target.value) ? `Locks after ${e.target.selectedOptions[0].text} without use.` : "Auto-lock is off."); })),
+      sel("Auto-lock", orgRules() && orgRules().lock_idle_minutes ? AUTOLOCK_CHOICES.filter(([v]) => v && v <= orgRules().lock_idle_minutes).concat(AUTOLOCK_CHOICES.some(([v]) => v === orgRules().lock_idle_minutes) ? [] : [[orgRules().lock_idle_minutes, `${orgRules().lock_idle_minutes} minutes (organisation rule)`]]) : AUTOLOCK_CHOICES, autoLockMinutes(), (e) => { try { localStorage.setItem("autolock", e.target.value); } catch (_) {} armAutoLock(); toast(Number(e.target.value) ? `Locks after ${e.target.selectedOptions[0].text} without use.` : "Auto-lock is off."); })),
     srow("Notification banners", "Shown while Spike Connect is not the window you are using. Only the last choice puts a message's text on screen.",
       sel("Notification banners", BANNER_CHOICES, bannerMode(), (e) => { try { localStorage.setItem("banners", e.target.value); } catch (_) {} toast(e.target.value === "off" ? "No banners. The taskbar still flashes." : "Banners on, while Spike Connect is not the window you are using."); })),
     srow("Lock now", "The window title and the taskbar show how many messages and requests are waiting.", h("button", { class: "btn", type: "button", onclick: lockNow }, icon("lock"), "Lock now")));
 
-  const pick = { "set-identity": identity, "set-relay": relay, backupCard, "set-privacy": privacy, "direct-card": directCard, "apps-card": appsCard, "calls-card": callsCard, "set-trust": trust, "set-blocked": blocked, "set-updates": updatesCard }[cur];
+  const pick = { "set-identity": identity, "set-relay": relay, "set-org": orgRulesCard, "set-orgadmin": orgAdminCard, backupCard, "set-privacy": privacy, "direct-card": directCard, "apps-card": appsCard, "calls-card": callsCard, "set-trust": trust, "set-blocked": blocked, "set-updates": updatesCard }[cur];
   return [h("div", { class: "setwrap" }, nav, h("div", { class: "scroll setpane" }, h("div", { class: "page flat" }, pick(),
     h("p", { class: "setfoot note" }, "Unreviewed prototype: do not use it for real secrets yet."))))];
 }

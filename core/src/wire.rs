@@ -4,6 +4,33 @@
 
 use serde::{Deserialize, Serialize};
 
+/// One enrolled device as the organisation console sees it (ADR 0035): no times, no traffic.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct WireTenantDevice {
+    pub device: String,
+    /// Unix day (days since 1970-01-01) the device enrolled.
+    pub enrolled_day: u64,
+    /// `active` (signed in this week), `idle` (1 to 4 weeks) or `dormant` (longer).
+    pub activity: String,
+    /// The rules version this device last fetched (0: none yet).
+    pub rules_version: u64,
+}
+
+/// Tenant totals for the console. Limits of 0 mean unlimited.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct WireTenantUsage {
+    pub devices: u64,
+    pub device_limit: u64,
+    /// Ciphertext and attachment chunks held for the tenant's devices.
+    pub stored_bytes: u64,
+    pub storage_limit: u64,
+    pub rules_version: u64,
+    pub state: String,
+    pub relay_uptime_secs: u64,
+    /// Whether this relay refuses devices that are not enrolled.
+    pub enrolled_mode: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WirePrekey {
     pub key: String,
@@ -61,7 +88,37 @@ pub enum ClientMsg {
     Auth {
         ed25519: String,
         sig: String,
+        /// An organisation's enrolment token (ADR 0035), presented once to join its tenant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enrol: Option<String>,
     },
+    /// Instead of `Auth`: the organisation admin key answers the challenge (ADR 0035). Such a
+    /// connection may only make the admin requests below, and only for its own tenant.
+    AdminAuth {
+        tenant: String,
+        sig: String,
+    },
+    /// Admin: the tenant's enrolled devices (ids, enrol day, activity bucket, rules version).
+    ListDevices,
+    /// Admin: remove a device from the tenant. The relay refuses it from then on and drops its queue.
+    RevokeDevice {
+        device: String,
+    },
+    /// Admin: withdraw an unused token before it expires.
+    CancelToken {
+        token_id: String,
+        not_after: u64,
+    },
+    /// Admin: store new rules (an encoded `tenant::SignedRules`) and tell connected members.
+    PublishRules {
+        rules: String,
+    },
+    /// Admin: tenant totals and relay health.
+    TenantUsage,
+    /// Member: this device's organisation and its current rules.
+    FetchRules,
+    /// Member: leave the organisation. The relay removes the enrolment and this device's queue.
+    LeaveTenant,
     /// Queue `blob` for the device with id `to`. With `live` the relay never stores it: it goes
     /// to the device's open connections if there are any and is dropped otherwise (ADR 0030,
     /// live app data, which is worth nothing late).
@@ -190,6 +247,10 @@ pub enum ServerMsg {
         prekeys: usize,
         #[serde(default)]
         fallback_age_secs: Option<u64>,
+        /// Signed in as a visitor (ADR 0035): this enrolled relay lets the device deliver to its
+        /// members but keeps nothing for it and delivers nothing to it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        visitor: bool,
     },
     Accepted {
         id: String,
@@ -292,6 +353,42 @@ pub enum ServerMsg {
     PushCleared,
     /// Reply to `Ping`.
     Pong,
+    /// Reply to `AdminAuth`.
+    AdminReady {
+        tenant: String,
+        name: String,
+        state: String,
+    },
+    /// Reply to `ListDevices`.
+    Devices {
+        devices: Vec<WireTenantDevice>,
+    },
+    DeviceRevoked {
+        device: String,
+    },
+    TokenCancelled {
+        token_id: String,
+    },
+    RulesStored {
+        version: u64,
+    },
+    /// Reply to `TenantUsage`. Totals only: nothing per device beyond what `Devices` shows.
+    Usage {
+        usage: WireTenantUsage,
+    },
+    /// Reply to `FetchRules`. `tenant` is `None` when this device is in no organisation on this relay
+    /// (a device that thinks it is a member learns from this that it was removed).
+    Rules {
+        tenant: Option<String>,
+        rules: Option<String>,
+    },
+    /// Pushed to a member's live connections when the admin publishes new rules. The device verifies
+    /// them itself (pinned admin key, version only goes up).
+    RulesChanged {
+        rules: String,
+    },
+    /// Reply to `LeaveTenant`.
+    LeftTenant,
     Error {
         code: String,
         message: String,

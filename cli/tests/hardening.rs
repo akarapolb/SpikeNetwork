@@ -304,6 +304,7 @@ async fn a_ping_flood_is_rate_limited() {
     let auth = spike_core::wire::ClientMsg::Auth {
         ed25519: hex::encode(id.ed_public()),
         sig: hex::encode(sig),
+        enrol: None,
     };
     ws.send(Message::Text(serde_json::to_string(&auth).unwrap().into()))
         .await

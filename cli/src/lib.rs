@@ -11,6 +11,7 @@ pub mod large_testing;
 pub mod link;
 pub mod messages;
 pub mod ops;
+pub mod org;
 pub mod requests;
 pub mod socket;
 pub mod state;

@@ -709,6 +709,63 @@ fn set_relay(state: State<'_, AppState>, url: String) -> Result<(), String> {
     session(&state)?.set_relay(&url).map_err(err)
 }
 
+// ------------------------------------------------------------------ organisations (ADR 0035)
+
+#[tauri::command]
+fn org_inspect(state: State<'_, AppState>, token: String) -> Result<spike_app::org::OrgTokenDto, String> {
+    session(&state)?.org_inspect(&token).map_err(err)
+}
+
+#[tauri::command]
+async fn org_join(state: State<'_, AppState>, token: String) -> Result<spike_app::org::OrgDto, String> {
+    session(&state)?.org_join(&token).await.map_err(err)
+}
+
+#[tauri::command]
+fn org_status(state: State<'_, AppState>) -> Result<Option<spike_app::org::OrgDto>, String> {
+    session(&state)?.org_status().map_err(err)
+}
+
+#[tauri::command]
+async fn org_leave(state: State<'_, AppState>, next: Option<String>) -> Result<(), String> {
+    session(&state)?.org_leave(next).await.map_err(err)
+}
+
+#[tauri::command]
+fn org_admin(state: State<'_, AppState>) -> Result<Option<spike_app::org::AdminDto>, String> {
+    session(&state)?.org_admin().map_err(err)
+}
+
+#[tauri::command]
+fn org_admin_create(state: State<'_, AppState>, tenant: String, name: String, relay: String) -> Result<spike_app::org::AdminDto, String> {
+    session(&state)?.org_admin_create(&tenant, &name, &relay).map_err(err)
+}
+
+#[tauri::command]
+async fn org_console(state: State<'_, AppState>) -> Result<spike_app::org::ConsoleDto, String> {
+    session(&state)?.org_console().await.map_err(err)
+}
+
+#[tauri::command]
+fn org_issue_token(state: State<'_, AppState>, label: String, hours: u64) -> Result<spike_app::org::NewTokenDto, String> {
+    session(&state)?.org_issue_token(&label, hours).map_err(err)
+}
+
+#[tauri::command]
+async fn org_withdraw_token(state: State<'_, AppState>, token_id: String) -> Result<(), String> {
+    session(&state)?.org_withdraw_token(&token_id).await.map_err(err)
+}
+
+#[tauri::command]
+async fn org_revoke(state: State<'_, AppState>, device: String) -> Result<(), String> {
+    session(&state)?.org_revoke(&device).await.map_err(err)
+}
+
+#[tauri::command]
+async fn org_publish_rules(state: State<'_, AppState>, rules: spike_app::org::RulesDto) -> Result<u64, String> {
+    session(&state)?.org_publish_rules(rules).await.map_err(err)
+}
+
 #[tauri::command]
 fn set_relay_ca(state: State<'_, AppState>, pem: Option<String>) -> Result<usize, String> {
     session(&state)?.set_relay_ca(pem).map_err(err)
@@ -1364,6 +1421,17 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            org_inspect,
+            org_join,
+            org_status,
+            org_leave,
+            org_admin,
+            org_admin_create,
+            org_console,
+            org_issue_token,
+            org_withdraw_token,
+            org_revoke,
+            org_publish_rules,
             app_status,
             apps,
             app_api_set,

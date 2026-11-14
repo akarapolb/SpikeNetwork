@@ -12,13 +12,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "store_tenants.rs"]
+pub mod tenants;
+pub use tenants::{Redeem, Tenant};
+
 /// The schema this build writes. It is stored in the database (`PRAGMA user_version`) and
 /// raised by [`migrate`], never lowered: a database from a newer relay is refused, not guessed at.
 ///
 /// - 1: the original tables (databases from before versioning are treated as version 1).
 /// - 2: indexes on `expires`, so the expiry purge no longer scans whole tables.
 /// - 3: group mailboxes and their entries (ADR 0025).
-pub const SCHEMA_VERSION: i64 = 4;
+/// - 4: push endpoints (ADR 0028).
+/// - 5: organisations: tenants, enrolments, token uses, revoked devices (ADR 0023, ADR 0035).
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -254,7 +260,7 @@ fn migrate(conn: &mut Connection, path: Option<&Path>) -> Result<(), StoreError>
             }
         }
     }
-    let steps: [(i64, &str); 4] = [(1, V1), (2, V2), (3, V3), (4, V4)];
+    let steps: [(i64, &str); 5] = [(1, V1), (2, V2), (3, V3), (4, V4), (5, tenants::V5)];
     for (version, sql) in steps {
         if found >= version {
             continue;
@@ -342,6 +348,7 @@ impl Store {
             + c.execute("DELETE FROM blob_chunks WHERE expires <= ?1", [now])?;
         let tx = c.transaction()?;
         n += purge_groups(&tx, now)?;
+        n += Self::purge_tokens(&tx, now)?;
         tx.commit()?;
         Ok(n)
     }

@@ -819,3 +819,52 @@ button { padding: 0; }
 
 .gatelinks .linklike { width: auto !important; flex: none; display: inline-block; min-height: 0; }
 .gatebox:has(.gatelinks) { width: min(424px, 100%); }
+
+/* ---------- organisations (ADR 0035): the console, joining, rules ---------- */
+.orgpage { display: flex; flex-direction: column; }
+.orgpage h1 { font-size: 22px; font-weight: 600; letter-spacing: -.025em; margin: 0 0 2px; }
+.orgsub { color: var(--muted); font-size: 13.5px; margin: 0 0 16px; }
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+.stats > div { padding: 14px 16px 14px 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.stats > div + div { border-left: 1px solid var(--line); padding-left: 16px; }
+.stats span { font-size: 12px; color: var(--muted); }
+.stats b { font-size: 24px; letter-spacing: -.03em; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stats small { font-size: 12px; color: var(--muted); font-weight: 400; letter-spacing: 0; }
+.stats .um { height: 5px; border-radius: 3px; background: var(--line-2); overflow: hidden; margin-top: 4px; }
+.stats .um i { display: block; height: 100%; background: var(--text); }
+.stats .um.hot i { background: var(--warn-line); }
+.oset { display: flex; gap: 20px; align-items: center; padding: 13px 0; border-top: 1px solid var(--line); }
+.oset .t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.oset .t b { font-weight: 500; } .oset .t span { color: var(--muted); font-size: 12.5px; }
+.oset .v { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.okdot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; }
+.okdot.w { background: var(--warn-line); } .okdot.bad { background: var(--bad); }
+.kbtn { border: 1px solid var(--line-2); border-radius: 8px; padding: 5px 12px; font: inherit; font-weight: 500; font-size: 12.5px; white-space: nowrap; display: inline-flex; gap: 6px; align-items: center; background: none; color: var(--text); cursor: pointer; justify-content: center; }
+.kbtn:hover { background: var(--panel-2); }
+.kbtn.pri { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.kbtn.pri:hover { background: var(--accent-hover); }
+.kbtn.decl { color: var(--bad); }
+.orgtwo { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 32px; align-items: start; }
+.trow { display: grid; gap: 14px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 12.5px; align-items: center; font-variant-numeric: tabular-nums; }
+.trow.h { border: 0; padding: 0 0 6px; }
+.trow .mono { color: var(--text-2); } .trow .mu, .trow.mu { color: var(--muted); }
+.orgwiz .qrimg, .orgwiz .qrph { width: 132px; height: 132px; border-radius: 14px; align-self: flex-start; }
+.orgwiz .qrph { background: var(--panel-2); }
+.orgwiz .qrimg { padding: 9px; background: #fff; }
+.dv { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+.dv span { color: var(--muted); }
+.dv .ssel { font-size: 12.5px; }
+.orglabel { font: inherit; font-size: 12.5px; padding: 6px 9px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); color: var(--text); }
+.row2 { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.orgkey { overflow-wrap: anywhere; }
+.orgjoin { max-width: 420px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding-top: 12px; }
+.orgjoin .cardbox { min-height: 96px; }
+.orgprof { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0 14px; text-align: center; }
+.orgprof .tile.lg { width: 64px; height: 64px; border-radius: 18px; font-size: 20px; font-weight: 600; background: var(--panel-2); color: var(--text-2); display: grid; place-items: center; }
+.orgprof b { font-size: 19px; font-weight: 600; letter-spacing: -.02em; }
+.okv { display: flex; flex-direction: column; }
+.okv div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.okv div span:first-child { color: var(--muted); } .okv div span:last-child { text-align: right; }
+.orgjoin .btn.push { justify-content: center; height: 44px; }
+.orgjoin .btn.link { background: none; border: 0; color: var(--text-2); justify-content: center; }
+@media (max-width: 980px) { .orgtwo { grid-template-columns: minmax(0, 1fr); } .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .stats > div:nth-child(3) { border-left: 0; padding-left: 0; } }

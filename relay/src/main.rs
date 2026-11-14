@@ -1,10 +1,16 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use spike_relay::store::{tenants, Store};
 use spike_relay::{limits::Cidr, serve_with_metrics, tls::TlsFiles, Config};
 use std::time::Duration;
 
 /// Spike Network relay. Speaks plain WebSocket; terminate TLS in front of it.
 #[derive(Parser)]
 struct Args {
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+    /// Enrolled mode (ADR 0023): only devices an organisation enrolled may sign in.
+    #[arg(long)]
+    enrolled: bool,
     #[arg(long, default_value = "127.0.0.1:8787")]
     listen: String,
     /// Seconds an unacknowledged message is kept.
@@ -94,9 +100,108 @@ struct Args {
     metrics_token: Option<String>,
 }
 
+#[derive(Subcommand)]
+enum Cmd {
+    /// Organisations on this relay (ADR 0023, ADR 0035). Acts on the --db file directly; run it on the
+    /// relay machine. The relay may keep running.
+    Tenant {
+        #[command(subcommand)]
+        op: TenantOp,
+    },
+}
+
+#[derive(Subcommand)]
+enum TenantOp {
+    /// Create an organisation with the public half of its admin key.
+    Create {
+        id: String,
+        #[arg(long)]
+        name: String,
+        /// The admin public key (64 hex digits), from the organisation's console.
+        #[arg(long)]
+        admin_pub: String,
+        /// Most devices (0 = unlimited).
+        #[arg(long, default_value_t = 50)]
+        max_devices: u64,
+        /// Bytes held for the organisation's devices, in MB (0 = unlimited).
+        #[arg(long, default_value_t = 10_240)]
+        storage_mb: u64,
+    },
+    /// List organisations with their totals.
+    List,
+    /// Change an organisation's limits.
+    Limits {
+        id: String,
+        #[arg(long)]
+        max_devices: Option<u64>,
+        #[arg(long)]
+        storage_mb: Option<u64>,
+    },
+    /// Refuse all of an organisation's devices until resumed.
+    Suspend { id: String },
+    Resume { id: String },
+    /// Delete an organisation, its enrolments and its devices' queues.
+    Delete { id: String },
+    /// Replace the admin public key (a lost or rotated key). Old console sessions end.
+    RotateAdmin {
+        id: String,
+        #[arg(long)]
+        admin_pub: String,
+    },
+}
+
+fn tenant_cmd(db: Option<&std::path::Path>, op: TenantOp) -> Result<(), String> {
+    let db = db.ok_or("tenant commands need --db (the relay's database file)")?;
+    let s = Store::open(Some(db)).map_err(|e| e.to_string())?;
+    let e = |e: rusqlite::Error| e.to_string();
+    let key = |k: &str| -> Result<String, String> {
+        let k = k.trim().to_ascii_lowercase();
+        match hex::decode(&k) {
+            Ok(b) if b.len() == 32 => Ok(k),
+            _ => Err("--admin-pub must be 64 hex digits".into()),
+        }
+    };
+    let found = |ok: bool, id: &str| if ok { Ok(()) } else { Err(format!("no organisation {id}")) };
+    match op {
+        TenantOp::Create { id, name, admin_pub, max_devices, storage_mb } => {
+            if !spike_core::tenant::is_valid_tenant_id(&id) {
+                return Err("the id must be 1 to 32 of a-z, 0-9 and -".into());
+            }
+            if !s.tenant_create(&id, name.trim(), &key(&admin_pub)?, max_devices, storage_mb * 1024 * 1024).map_err(e)? {
+                return Err(format!("organisation {id} already exists"));
+            }
+            println!("created {id}");
+        }
+        TenantOp::List => {
+            for t in s.tenants().map_err(e)? {
+                let u = s.tenant_usage(&t.id).map_err(e)?.unwrap_or_default();
+                println!(
+                    "{}	{}	{}	devices {}/{}	stored {} of {} bytes	rules v{}",
+                    t.id, t.name, t.state, u.devices, t.max_devices, u.stored_bytes, t.storage_bytes, t.rules_version
+                );
+            }
+        }
+        TenantOp::Limits { id, max_devices, storage_mb } => {
+            found(s.tenant_set_limits(&id, max_devices, storage_mb.map(|m| m * 1024 * 1024)).map_err(e)?, &id)?
+        }
+        TenantOp::Suspend { id } => found(s.tenant_set_state(&id, tenants::SUSPENDED).map_err(e)?, &id)?,
+        TenantOp::Resume { id } => found(s.tenant_set_state(&id, tenants::ACTIVE).map_err(e)?, &id)?,
+        TenantOp::Delete { id } => found(s.tenant_delete(&id).map_err(e)?, &id)?,
+        TenantOp::RotateAdmin { id, admin_pub } => found(s.tenant_set_admin(&id, &key(&admin_pub)?).map_err(e)?, &id)?,
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let a = Args::parse();
+    let mut a = Args::parse();
+    if let Some(Cmd::Tenant { op }) = a.cmd.take() {
+        if let Err(why) = tenant_cmd(a.db.as_deref(), op) {
+            eprintln!("{why}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let listener = tokio::net::TcpListener::bind(&a.listen).await?;
     let tls = a
         .tls_cert
@@ -163,6 +268,7 @@ async fn main() -> std::io::Result<()> {
         push_min_interval: Duration::from_secs(a.push_min_interval_secs),
         db_path: a.db,
         tls,
+        enrolled: a.enrolled,
         ..Config::default()
     };
     serve_with_metrics(listener, metrics_listener, cfg).await

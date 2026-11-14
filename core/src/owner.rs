@@ -156,6 +156,23 @@ impl DeviceList {
         Self::sign(owner, self.version + 1, devices)
     }
 
+    /// A new list, version + 1, in which the device `device_id` reads from `relay` (its home relay,
+    /// ADR 0009; `None` means "the sender's relay"). Used when a device joins or leaves an
+    /// organisation's relay (ADR 0035). `None` returned when nothing would change.
+    pub fn with_relay(&self, owner: &OwnerKey, device_id: &str, relay: Option<String>) -> Result<Option<Self>> {
+        self.owned_by(owner)?;
+        let mut devices = self.devices.clone();
+        let entry = devices
+            .iter_mut()
+            .find(|d| DeviceCard::decode(&d.card).map(|c| c.device_id() == device_id).unwrap_or(false))
+            .ok_or(Error::BadDeviceList("no such device"))?;
+        if entry.relay == relay {
+            return Ok(None);
+        }
+        entry.relay = relay;
+        Self::sign(owner, self.version + 1, devices).map(Some)
+    }
+
     /// A new list, version + 1, without the device whose id is `device_id`.
     pub fn without_device(&self, owner: &OwnerKey, device_id: &str) -> Result<Self> {
         self.owned_by(owner)?;

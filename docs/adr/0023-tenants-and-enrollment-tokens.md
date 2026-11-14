@@ -1,6 +1,6 @@
 # ADR 0023: Tenants and enrollment tokens
 
-Status: **Proposed. For your review; not built.**
+Status: **Accepted, 2026-11-14.** The token flow is changed by ADR 0035 (single-use tokens not bound to a device, 24 hours); built with ADR 0035.
 Date: 2026-10-20
 
 This is slice 1 of `docs/hosted-relay-plan.md`. It changes what the relay stores about devices, so it is written for a decision before any code.
@@ -57,6 +57,12 @@ New tables: `tenants(id, admin_pub, limits, state)`, `enrollments(device, tenant
 3. **Who holds the admin key in the first customers:** the customer (proposed), or Spike on their behalf at first?
 4. **Operator key custody:** a single key on the host is simple but weak for a service; a hardware key or a two-person rule is stronger and more work.
 5. Plan decisions 1 to 7 (customers, legal entity, payments, pricing, hosting, service level, licence) still gate slice 2; this ADR does not depend on them.
+
+## Decisions (2026-11-14)
+1. Yes: an enrolled device may talk to devices outside the tenant.
+2. Revocation refuses the device and deletes its queue. Tokens are redeemable for 24 hours by default (ADR 0035).
+3. The customer holds the admin key.
+4. Operator: commands run on the relay machine for now; signed operator requests over the network later.
 
 ## Not decided here
 Billing and sign-up (slice 2), high availability (slice 3), and the licence of the relay (slice 4).

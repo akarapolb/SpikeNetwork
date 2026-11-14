@@ -44,6 +44,7 @@ impl Session {
 
     /// Seal a backup of this identity with its own passphrase. Returns the file's bytes.
     pub fn backup_export(&self, passphrase: &str, include_history: bool) -> Result<Vec<u8>> {
+        self.org_check_backup()?;
         let mut extra = BTreeMap::new();
         extra.insert(
             "relay".to_string(),

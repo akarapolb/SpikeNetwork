@@ -1,6 +1,6 @@
 # ADR 0035: Organisations: the console, enrolment and rules
 
-Status: **Proposed. For the owner's review; nothing built.**
+Status: **Accepted by the owner, 2026-11-14** (all five decisions as recommended; see "Decisions").
 Date: 2026-11-14
 
 Builds on ADR 0023 (tenants and enrollment tokens, itself still proposed), ADR 0022 (content-free counters),
@@ -169,12 +169,21 @@ The rules screen lists them, says they are enforced by the app, and says what th
 
 ## Storage and wire
 
-- Relay tables (migration to v3): `tenants(id, name, admin_pub, limits, state, created)`, `enrollments(device,
-  tenant, token_id, enrolled_day, rules_version)`, `token_uses(token_id, tenant, device, not_after)`,
-  `revocations(tenant, token_id_or_device, until)`, `rules(tenant, version, doc)`, `activity(device, week)`
-  holding only the ISO week a device last signed in, which is what the bucket needs and no more.
-- Relay modes from ADR 0023: open (today) and enrolled (`--enrolled`); enrolled mode refuses an unenrolled device at
-  sign-in, but sends and prekey claims *to* it are still allowed (ADR 0023 decision 1, proposed yes).
+- Relay tables (schema version 5): `tenants(id, name, admin_pub, max_devices, storage_bytes, state, created,
+  rules_version, rules)`, `enrollments(device, tenant, token_id, enrolled_day, active_week, rules_version)`,
+  `token_uses(token_id, tenant, device, not_after)` (device empty = withdrawn; rows go when the token expires) and
+  `revoked_devices(device, tenant)`. `active_week` holds only the week a device last signed in, which is what the
+  bucket needs and no more.
+- Relay modes from ADR 0023: open (today) and enrolled (`--enrolled`).
+- **Visitors (found while building, follows from decision 1).** A contact delivers to a member by signing in to the
+  member's home relay (ADR 0009). If enrolled mode refused every unenrolled device, nobody outside the organisation
+  could reach its members. So an enrolled relay lets an unenrolled device sign in as a **visitor** (`Ready.visitor`):
+  it may send, claim prekeys and key packages, fetch device lists, read attachment chunks, and read and append to
+  group mailboxes; it may not publish keys or device lists, upload attachments, create group mailboxes, register a
+  push endpoint, ask for TURN credentials or receive anything (it is not registered, so nothing is delivered to it).
+  An enrolled relay also refuses to *queue* a message for anyone who is not a member (`not_enrolled`), so visitors
+  cannot use it as free storage for each other. A visitor costs the organisation only its members' own queues,
+  which are capped as before. A revoked device becomes a visitor and learns from `FetchRules` that it was removed.
 - Wire: `Auth` gets an optional `enrol` token; new `AdminAuth` (the admin key answers the challenge instead of a
   device key; such a connection may only make admin requests), `ListDevices`, `RevokeDevice`, `CancelToken`,
   `PublishRules`, `TenantUsage`, `FetchRules`, `LeaveTenant`; server `Devices`, `Rules`, `RulesChanged`, `Usage`,
@@ -225,6 +234,61 @@ ADR shows less:
 5. **Where this code lives** given ADR 0034: tenancy and enrolment in the open relay and clients (ADR 0023 slice 4,
    recommended), with the console and rules in the open desktop and Android apps too; or the console and rules as an
    unpublished "enterprise" layer.
+
+## Decisions (2026-11-14)
+
+The owner took every recommendation:
+
+1. ADR 0023 approved: enrolled devices may talk to anyone; revocation deletes the queue; the customer holds the
+   admin key; the operator uses commands on the relay machine for now.
+2. Tokens are single-use, not bound to a device, 24 hours by default (the prototype's flow).
+3. "Messages kept on this phone" applies to every conversation on an enrolled device.
+4. The console shows per device only the activity bucket and the rules version fetched; no last-seen time.
+5. Tenancy, enrolment, the console and rules are in the open relay and the open desktop and Android apps.
+
+## Built (2026-11-14)
+
+- **Engine** (`core/src/tenant.rs`): token and rules formats, signed over exact JSON bytes with their own contexts
+  (`spike-enroll-v2`, `spike-rules-v1`), the admin sign-in (`spike-admin-auth-v1`, bound to tenant and relay name),
+  version-only-goes-up acceptance; `DeviceList::with_relay` for moving a device's home relay. Wire messages in
+  `core/src/wire.rs`.
+- **Relay** (`relay/src/org.rs`, `relay/src/store_tenants.rs`): schema version 5, redemption in one transaction, the
+  sign-in gate, visitors, per-tenant device and storage limits (`tenant_over_limit`), the admin connection,
+  rules pushed to connected members (`RulesChanged`), leaving and revoking (queue dropped), and the operator's
+  `spike-relay tenant create | list | limits | suspend | resume | delete | rotate-admin` acting on the database.
+  Twelve new error codes are counted in the metrics; none carries an id.
+- **Client** (`cli/src/org.rs`): join (enrol, take rules, re-sign the device list with the new home relay and publish
+  it on both relays), refresh and carry out rules, leave, and the admin side (key, tokens with local labels, the
+  admin connection, publish rules, withdraw tokens).
+- **App** (`app/src/org.rs`): the same for both apps. Rules are fetched with every sync; "backups off" refuses an
+  export; "agents off" refuses grants and approvals; "verified only" refuses a grant to an unverified contact;
+  "messages kept" deletes older messages in every conversation (their attachment files are not deleted yet; see
+  limits).
+- **Desktop** (`desktop/ui/org.js`): the console as its own section of the rail, shown only with an admin key
+  (Overview, Devices with the enrolment token and QR, Enrolment, Limits with the rules editor, Plan and usage,
+  Admin keys); Settings, Organisation console to make the key; Settings, Home relay, Join (the sheet from the
+  design) and the rules page with Leave. The lock rule caps auto-lock.
+- **Android** (`Org.kt`): Home relay, Join (paste or scan), the join sheet, the rules page with Leave. The lock rule
+  locks the app after it has been in the background for the rule's time or the app's own 2 minutes, whichever is
+  shorter, **even when alerts are on** (the organisation chose it; alerts stop while locked).
+
+**Tested:** `core` (9 unit tests: tokens, tampering, lifetimes, rules signatures, rollback, admin sign-in
+binding), `relay` store (9: single use, wrong key, unknown and full tenant, withdrawn, suspended, revoke drops the
+queue, rules only forward, storage limit, leave and delete, activity buckets), `cli/tests/orgs.rs` (7 end to end on
+real relays: visitor and single-use, full and withdrawn and forged tokens, rules forward-only and forged rules
+refused, retention, revoke in open and enrolled mode, a contact on another relay reaching a member and leaving
+moving back, the admin interface closed to devices and to other keys), and `desktop/drive_org.mjs` (three real
+windows).
+
+**Limits (honest list).**
+- Rules are carried out by the app; a modified app ignores them.
+- The relay can withhold new rules (it cannot forge or roll them back); the console shows which version each device
+  fetched.
+- "Messages kept" deletes message rows but not yet the attachment files those messages pointed to (sealed on disk,
+  unreachable from the screen). Deleting them too is a follow-up.
+- One admin key per tenant. A rotated key: devices keep trusting the key they pinned and refuse rules from the new
+  one until they join again. Re-pinning is a later piece of work.
+- Signed operator requests over the network, billing, call minutes and a delivery-time figure are not built.
 
 ## Not decided here
 

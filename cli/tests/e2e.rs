@@ -249,6 +249,7 @@ async fn wrong_key_cannot_authenticate() {
     let auth = ClientMsg::Auth {
         ed25519: hex::encode(bob.ed_public()),
         sig: hex::encode(sig),
+        enrol: None,
     };
     ws.send(Message::Text(serde_json::to_string(&auth).unwrap().into()))
         .await
@@ -274,6 +275,7 @@ async fn raw_sign_in(url: &str, who: &Identity, audience: &str) -> ServerMsg {
     let auth = ClientMsg::Auth {
         ed25519: hex::encode(who.ed_public()),
         sig: hex::encode(who.sign_auth(&hex::decode(nonce).unwrap(), audience)),
+        enrol: None,
     };
     ws.send(Message::Text(serde_json::to_string(&auth).unwrap().into()))
         .await

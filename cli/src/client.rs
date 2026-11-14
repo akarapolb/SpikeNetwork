@@ -94,11 +94,30 @@ pub struct Relay<S: Socket = WsSocket, C: Clock + Clone = TokioClock> {
     pong_due: Option<u64>,
     /// Group entries pushed while this connection was waiting for something else.
     group_pending: VecDeque<(String, GroupEntry, bool)>,
+    /// The relay said our organisation's rules changed (ADR 0035); fetch them at the next chance.
+    pub rules_changed: bool,
+    /// The relay let us in as a visitor (ADR 0035): we may deliver to its devices, nothing more.
+    pub visitor: bool,
 }
 
 /// Ping every 25 s (under the 60 s idle timeout many proxies use) and give up after 15 s of silence.
 const KEEPALIVE: Duration = Duration::from_secs(25);
 const PONG_WAIT: Duration = Duration::from_secs(15);
+
+/// The relay refused the sign-in, with its error code (`token_used`, `not_enrolled`, ...), so callers
+/// can tell the person what happened in words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayRefused {
+    pub code: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for RelayRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "relay refused: {}: {}", self.code, self.message)
+    }
+}
+impl std::error::Error for RelayRefused {}
 
 fn ms(d: Duration) -> u64 {
     d.as_millis().min(u64::MAX as u128) as u64
@@ -109,6 +128,11 @@ impl Relay {
     pub async fn connect(target: impl Into<Target>, me: &Identity) -> Result<Self> {
         Self::connect_with(&WsConnector, TokioClock, target, me).await
     }
+
+    /// Connect and present an organisation's enrolment token with the sign-in (ADR 0035).
+    pub async fn connect_enrol(target: impl Into<Target>, me: &Identity, token: &str) -> Result<Self> {
+        Self::connect_full(&WsConnector, TokioClock, target, me, Some(token)).await
+    }
 }
 
 impl<S: Socket, C: Clock + Clone> Relay<S, C> {
@@ -118,6 +142,16 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
         clock: C,
         target: impl Into<Target>,
         me: &Identity,
+    ) -> Result<Self> {
+        Self::connect_full(connector, clock, target, me, None).await
+    }
+
+    async fn connect_full<N: Connector<Socket = S>>(
+        connector: &N,
+        clock: C,
+        target: impl Into<Target>,
+        me: &Identity,
+        enrol: Option<&str>,
     ) -> Result<Self> {
         let target = target.into();
         let audience = target.audience();
@@ -134,6 +168,8 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
             pong_wait: PONG_WAIT,
             pong_due: None,
             group_pending: VecDeque::new(),
+            rules_changed: false,
+            visitor: false,
         };
         let ServerMsg::Challenge { nonce } = r.read().await? else {
             bail!("relay did not send a challenge")
@@ -142,6 +178,7 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
         r.write(&ClientMsg::Auth {
             ed25519: hex::encode(me.ed_public()),
             sig: hex::encode(me.sign_auth(&nonce, &audience)),
+            enrol: enrol.map(str::to_string),
         })
         .await?;
         loop {
@@ -150,13 +187,49 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
                     device_id,
                     prekeys,
                     fallback_age_secs,
+                    visitor,
                 } => {
+                    r.visitor = visitor;
                     r.device_id = device_id;
                     r.prekeys = prekeys;
                     r.fallback_age_secs = fallback_age_secs;
                     return Ok(r);
                 }
-                ServerMsg::Error { code, message } => bail!("relay refused: {code}: {message}"),
+                ServerMsg::Error { code, message } => {
+                    return Err(anyhow::Error::new(RelayRefused { code, message }))
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- organisations (ADR 0035)
+
+    /// This device's organisation on this relay and its rules document (encoded `SignedRules`), as
+    /// the relay holds them. The caller verifies the rules against the admin key it pinned.
+    pub async fn fetch_rules(&mut self) -> Result<(Option<String>, Option<String>)> {
+        self.write(&ClientMsg::FetchRules).await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::Rules { tenant, rules } => {
+                    self.rules_changed = false;
+                    return Ok((tenant, rules));
+                }
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery { id, blob: hex::decode(blob)? }),
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                _ => {}
+            }
+        }
+    }
+
+    /// Leave the organisation: the relay forgets the enrolment and this device's queue.
+    pub async fn leave_tenant(&mut self) -> Result<()> {
+        self.write(&ClientMsg::LeaveTenant).await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::LeftTenant => return Ok(()),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery { id, blob: hex::decode(blob)? }),
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
                 _ => {}
             }
         }
@@ -313,6 +386,7 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
                     ))))
                 }
                 ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                ServerMsg::RulesChanged { .. } => self.rules_changed = true,
                 _ => {}
             }
         }
@@ -824,6 +898,7 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
                 } => self
                     .group_pending
                     .push_back((mailbox, group_entry(entry)?, sealed)),
+                ServerMsg::RulesChanged { .. } => self.rules_changed = true,
                 other => return Ok(other),
             }
         }
