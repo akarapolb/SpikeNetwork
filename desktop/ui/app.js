@@ -351,7 +351,7 @@ function contactRow(c) {
   return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.chat === c.name), onclick: () => openChat(c.name) }, tile(c),
     h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.verified ? vtick() : null),
       h("span", { class: "preview" }, c.verified || c.agent ? (c.last || "No messages yet") : [notVerified(), c.last ? ` · ${c.last}` : ""])),
-    h("span", { class: "meta" }, c.last_ts ? when(c.last_ts) : "", c.unread ? h("span", { class: "count" }, c.unread) : null));
+    h("span", { class: "meta" }, c.last_ts ? when(c.last_ts) : "", c.unread ? h("i", { class: "dot", role: "img", "aria-label": `${c.unread} unread` }) : null));
 }
 function ownActions(m) {
   const link = (label, fn) => h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0 0 0 8px;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: fn }, label);
@@ -1137,7 +1137,7 @@ function groupRow(g) {
     h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, g.name)),
       h("span", { class: "preview" }, invited ? h("span", { class: "flag" }, `Invite from ${g.invited_by || "someone"}`) : left ? "You left this group"
         : [g.unverified ? h("span", { class: "flag bad" }, `${g.unverified} not verified`) : null, g.unverified ? " · " : "", g.last || `${plural(g.members, "person", "people")} · no messages yet`])),
-    h("span", { class: "meta" }, g.last_ts ? when(g.last_ts) : "", g.unread ? h("span", { class: "count" }, g.unread) : null));
+    h("span", { class: "meta" }, g.last_ts ? when(g.last_ts) : "", g.unread ? h("i", { class: "dot", role: "img", "aria-label": `${g.unread} unread` }) : null));
 }
 function groupMain() {
   const g = st.ov.groups.find((x) => x.id === st.group), d = st.gdetail;

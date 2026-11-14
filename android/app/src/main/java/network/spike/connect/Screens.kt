@@ -331,7 +331,7 @@ fun ChatsTab(m: AppModel) {
                 Ico(Ic.Search, C.Muted, 18.dp)
                 BasicTextField(
                     query, { query = it }, singleLine = true, cursorBrush = SolidColor(C.Accent),
-                    textStyle = TextStyle(fontFamily = Plex, fontSize = 13.5.sp, color = C.Text),
+                    textStyle = TextStyle(fontFamily = Geist, fontSize = 13.5.sp, color = C.Text),
                     modifier = Modifier.weight(1f),
                     decorationBox = { inner ->
                         if (query.isEmpty()) Text("Search", color = C.Muted, fontSize = 13.5.sp)
@@ -521,7 +521,7 @@ fun ConversationScreen(
                     BasicTextField(
                         query, { query = it; cur = maxOf(0, m.messages.count { x -> !x.deleted && x.body.contains(it.trim(), ignoreCase = true) } - 1) },
                         singleLine = true, cursorBrush = SolidColor(C.Accent),
-                        textStyle = TextStyle(fontFamily = Plex, fontSize = 15.sp, color = C.Text), modifier = Modifier.weight(1f),
+                        textStyle = TextStyle(fontFamily = Geist, fontSize = 15.sp, color = C.Text), modifier = Modifier.weight(1f),
                         decorationBox = { inner -> if (query.isEmpty()) Text("Search in this conversation", color = C.Muted, fontSize = 15.sp); inner() },
                     )
                 }
@@ -615,7 +615,7 @@ fun ConversationScreen(
                 ) {
                     BasicTextField(
                         text, { text = it }, cursorBrush = SolidColor(C.Accent), maxLines = 4,
-                        textStyle = TextStyle(fontFamily = Plex, fontSize = 14.sp, color = C.Text),
+                        textStyle = TextStyle(fontFamily = Geist, fontSize = 14.sp, color = C.Text),
                         modifier = Modifier.fillMaxWidth(),
                         decorationBox = { inner ->
                             if (text.isEmpty()) Text("Message $title", color = C.Muted, fontSize = 14.sp, maxLines = 1)
@@ -1098,7 +1098,7 @@ fun AgentsTab(m: AppModel) {
                         }
                     }
                     Text(
-                        r.summary ?: "\u201c${r.note}\u201d", fontFamily = Grotesk, fontWeight = FontWeight.SemiBold,
+                        r.summary ?: "\u201c${r.note}\u201d", fontFamily = Geist, fontWeight = FontWeight.SemiBold,
                         fontSize = if (r.summary != null) 30.sp else 20.sp, lineHeight = if (r.summary != null) 33.sp else 25.sp,
                     )
                     Column {

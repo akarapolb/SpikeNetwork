@@ -814,7 +814,7 @@ fun CallScreen(u: CallUi) {
             }
             Text(
                 when (u.status) { "ringing" -> "${u.name} is calling"; "calling" -> "Calling ${u.name}"; else -> u.name },
-                color = Color(0xFFE6EDF2), fontSize = 26.sp, fontFamily = Grotesk, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
+                color = Color(0xFFE6EDF2), fontSize = 26.sp, fontFamily = Geist, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center,
             )
             val sub = when (u.status) {
                 "ringing" -> if (u.video) "Incoming video call" else "Incoming voice call"

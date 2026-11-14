@@ -49,6 +49,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 
 /**
@@ -113,17 +114,18 @@ object C {
     }
 }
 
-val Plex = FontFamily(
-    Font(R.font.plex_sans_regular, FontWeight.Normal),
-    Font(R.font.plex_sans_medium, FontWeight.Medium),
-    Font(R.font.plex_sans_semibold, FontWeight.SemiBold),
-    Font(R.font.plex_sans_semibold, FontWeight.Bold),
+/** Geist and Geist Mono (SIL OFL 1.1, see android/FONTS-LICENSE.txt), the design's faces. Thai and other scripts Geist
+ *  does not cover fall back to the phone's own fonts. */
+val Geist = FontFamily(
+    Font(R.font.geist_regular, FontWeight.Normal),
+    Font(R.font.geist_medium, FontWeight.Medium),
+    Font(R.font.geist_semibold, FontWeight.SemiBold),
+    Font(R.font.geist_semibold, FontWeight.Bold),
 )
-val Grotesk = FontFamily(
-    Font(R.font.grotesk_semibold, FontWeight.SemiBold),
-    Font(R.font.grotesk_bold, FontWeight.Bold),
+val Mono = FontFamily(
+    Font(R.font.geist_mono_regular, FontWeight.Normal),
+    Font(R.font.geist_mono_medium, FontWeight.Medium),
 )
-val Mono = FontFamily(Font(R.font.plex_mono_regular, FontWeight.Normal))
 
 @Composable
 fun SpikeTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
@@ -143,7 +145,7 @@ fun SpikeTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () ->
     )
     MaterialTheme(colorScheme = scheme) {
         CompositionLocalProvider(
-            LocalTextStyle provides TextStyle(fontFamily = Plex, fontSize = 15.sp, color = C.Text),
+            LocalTextStyle provides TextStyle(fontFamily = Geist, fontSize = 15.sp, color = C.Text),
         ) { content() }
     }
 }
@@ -153,10 +155,10 @@ fun Ico(icon: ImageVector, tint: Color = C.Text, size: Dp = 22.dp, modifier: Mod
     Icon(icon, contentDescription = null, tint = tint, modifier = modifier.size(size))
 }
 
-/** Heading text in the prototype's display face. */
+/** Heading text: Geist SemiBold, tracked in as in the design. */
 @Composable
 fun H1(text: String, size: TextUnit = 30.sp, modifier: Modifier = Modifier) {
-    Text(text, fontFamily = Grotesk, fontWeight = FontWeight.SemiBold, fontSize = size, lineHeight = size * 1.1, modifier = modifier)
+    Text(text, fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = size, letterSpacing = (-0.035).em, lineHeight = size * 1.1, modifier = modifier)
 }
 
 @Composable
@@ -273,7 +275,7 @@ fun Field(
         ) {
             BasicTextField(
                 value, onChange, singleLine = singleLine, maxLines = maxLines,
-                textStyle = TextStyle(fontFamily = Plex, fontSize = 16.sp, color = C.Text),
+                textStyle = TextStyle(fontFamily = Geist, fontSize = 16.sp, color = C.Text),
                 cursorBrush = SolidColor(C.Accent),
                 visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
                 keyboardOptions = keyboard, modifier = Modifier.fillMaxWidth(),
@@ -319,7 +321,7 @@ fun TopBar(title: String, onBack: (() -> Unit)?, trailing: @Composable () -> Uni
                 Ico(Ic.Back)
             }
         }
-        Text(title, fontFamily = Grotesk, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, modifier = Modifier.weight(1f), maxLines = 1)
+        Text(title, fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, modifier = Modifier.weight(1f), maxLines = 1)
         trailing()
     }
     Box(Modifier.fillMaxWidth().size(1.dp).background(C.Border))

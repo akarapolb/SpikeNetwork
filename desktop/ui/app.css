@@ -1,4 +1,10 @@
-/* System fonts only: the CSP allows no remote fonts. */
+/* Geist and Geist Mono (SIL OFL 1.1, fonts/OFL-Geist.txt), bundled with the app: the CSP allows no remote fonts.
+   System fonts follow in every stack for scripts Geist does not cover (Thai and others). */
+@font-face { font-family: "Geist"; src: url("fonts/Geist-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Geist"; src: url("fonts/Geist-Medium.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: block; }
+@font-face { font-family: "Geist"; src: url("fonts/Geist-SemiBold.woff2") format("woff2"); font-weight: 600 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Geist Mono"; src: url("fonts/GeistMono-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Geist Mono"; src: url("fonts/GeistMono-Medium.woff2") format("woff2"); font-weight: 500 700; font-style: normal; font-display: block; }
 /* Tokens are shared with the Android app (Theme.kt). "Quiet ink, one signal": actions and your own messages are ink;
    colour means status only. Teal (--good) = verified or encrypted, amber = waiting for you, red = danger.
    Surfaces are flat: --shadow-sm is none, and only things that float (menus, toasts, dialogs) use --shadow.
@@ -59,13 +65,13 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
-body { background: var(--bg); color: var(--text); font: 14.5px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, "Noto Sans Thai", sans-serif; -webkit-font-smoothing: antialiased; }
+body { background: var(--bg); color: var(--text); font: 14.5px/1.45 "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, "Noto Sans Thai", sans-serif; -webkit-font-smoothing: antialiased; }
 button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 a { color: var(--accent); } a:hover { color: var(--accent-hover); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-h1, h2.display { font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; font-weight: 650; letter-spacing: -.3px; }
-.mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+h1, h2.display { font-family: "Geist", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; font-weight: 650; letter-spacing: -.3px; }
+.mono { font-family: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; }
 .muted { color: var(--muted); }
 .spacer { flex: 1; }
 [hidden] { display: none !important; }
@@ -236,7 +242,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .iconbtn[disabled] { opacity: .4; cursor: not-allowed; }
 
 /* ---------- misc screens ---------- */
-.safety { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 14px; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 20px; text-align: center; padding: 16px; background: var(--panel-2); border-radius: var(--r); }
+.safety { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px 14px; font-family: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 20px; text-align: center; padding: 16px; background: var(--panel-2); border-radius: var(--r); }
 .qr { display: grid; grid-template-columns: repeat(21, 1fr); width: 200px; height: 200px; padding: 10px; background: #fff; border-radius: 12px; border: 1px solid var(--line); }
 .steps { display: flex; gap: 8px; font-size: 13px; }
 .steps span { flex: 1; text-align: center; padding: 6px 4px; border-radius: 999px; background: var(--neutral-soft); color: var(--muted); }
@@ -400,7 +406,7 @@ details[open] summary { margin-bottom: 8px; }
 .tb-search input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; font-size: 12.5px; color: var(--text); padding: 0; }
 .tb-search input::placeholder { color: var(--muted); }
 .tb-search input::-webkit-search-cancel-button { cursor: pointer; }
-.tb-search kbd { font: 500 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); white-space: nowrap; }
+.tb-search kbd { font: 500 11px "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted); white-space: nowrap; }
 /* The window buttons in the app's own style (not the Windows look): small rounded buttons with rounded glyphs. */
 .tb-ctl { justify-self: end; display: flex; align-items: center; gap: 2px; padding-right: 6px; }
 .tb-ctl button { width: 30px; height: 28px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); display: grid; place-items: center; transition: background .12s, color .12s; }
@@ -608,7 +614,7 @@ button { padding: 0; }
 .dlg h2 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.02em; }
 .dlg .seg { margin: 0; } .dlg .seg button { min-height: 32px; font-size: 13px; font-weight: 500; }
 .dlg .field { min-height: 40px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-2); }
-.dlg .cardbox { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; min-height: 84px; border: 0; border-radius: 10px; }
+.dlg .cardbox { font-family: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; min-height: 84px; border: 0; border-radius: 10px; }
 .dlg-do { display: flex; justify-content: flex-end; gap: 8px; }
 .dlg-code { display: flex; gap: 16px; align-items: flex-start; }
 .dlg-code img.qrimg { width: 150px; height: 150px; flex: none; }
@@ -635,3 +641,8 @@ button { padding: 0; }
 .page.flat #set-privacy > label > .field { grid-column: 2; grid-row: 1 / span 2; min-height: 32px; border: 1px solid var(--line-2); background: var(--panel); border-radius: 8px; padding: 0 4px 0 10px; }
 .page.flat #set-privacy > label > .field select { min-height: 30px !important; font-size: 13px; }
 .page.flat #set-privacy > label > .note { grid-column: 1; grid-row: 2; }
+/* Unread is an 8 px ink dot under the time, as in the design; the count is read out. */
+.row .meta .dot { width: 8px; height: 8px; }
+.row:has(.dot) .line1 b { font-weight: 600; }
+.row:has(.dot) .preview { color: var(--text); }
+.head .who .flag.bad { color: var(--bad); }

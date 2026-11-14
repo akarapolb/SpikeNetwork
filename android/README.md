@@ -15,7 +15,7 @@ Compose screens (Kotlin)  --JSON-->  libspike_mobile.so (mobile/, JNI)  -->  spi
   `AppModel.kt` (state, and the loop that waits for the relay and syncs), `Theme.kt` (the prototype's palette,
   fonts, components), `Icons.kt` (the prototype's line icons, generated from its SVGs), `Screens.kt` (the
   screens), `MainActivity.kt`.
-- Fonts (IBM Plex Sans, Schibsted Grotesk, IBM Plex Mono, SIL OFL 1.1) are bundled in `res/font`; see
+- Fonts (Geist and Geist Mono, SIL OFL 1.1) are bundled in `res/font`; see
   `FONTS-LICENSE.txt`.
 
 ## What follows the prototype, and what does not
