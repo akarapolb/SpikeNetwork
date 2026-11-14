@@ -7,6 +7,7 @@
 //! directory, and keeps the synchronous methods every caller already uses; they run the async ones, which a
 //! `FileStore` finishes without waiting. A store that has to wait (IndexedDB) has only the async methods.
 
+use crate::direct_path::DirectPath;
 use crate::history::HistoryProvider;
 use crate::messages::{MessageStore, SqliteHistory};
 use crate::store::{FileStore, Store};
@@ -20,6 +21,7 @@ use spike_core::vault::{KdfParams, Vault, VaultHeader};
 use spike_core::Error as CoreError;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const HEADER_FILE: &str = "vault.json";
 const IDENTITY: &str = "identity.enc";
@@ -41,6 +43,8 @@ pub struct Home<S: Store = FileStore, P: HistoryProvider = SqliteHistory> {
     store: S,
     history: P,
     vault: Vault,
+    /// Direct connections (ADR 0027), where the platform has them. `None` sends everything through the relay.
+    direct: Option<Arc<dyn DirectPath>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -110,6 +114,17 @@ fn attachment_name(tag: &str) -> String {
 // The logic, over any store.
 // ---------------------------------------------------------------------------------------------------------
 impl<S: Store, P: HistoryProvider> Home<S, P> {
+    /// Use `direct` for direct connections.
+    pub fn with_direct(mut self, direct: Arc<dyn DirectPath>) -> Self {
+        self.direct = Some(direct);
+        self
+    }
+
+    /// The direct-connection hook, if this platform has one.
+    pub fn direct_path(&self) -> Option<&dyn DirectPath> {
+        self.direct.as_deref()
+    }
+
     /// The message history, opened with this vault's key.
     pub async fn messages_async(&self) -> Result<P::Opened<'_>> {
         self.history.open(&self.vault).await
@@ -138,6 +153,7 @@ impl<S: Store, P: HistoryProvider> Home<S, P> {
             store,
             history,
             vault,
+            direct: None,
         };
         let device = Identity::generate()?;
         let owner = OwnerKey::generate();
@@ -171,6 +187,7 @@ impl<S: Store, P: HistoryProvider> Home<S, P> {
             store,
             history,
             vault,
+            direct: None,
         })
     }
 
@@ -497,6 +514,7 @@ impl Home<FileStore, SqliteHistory> {
         store.make_dir()?;
         let history = SqliteHistory::new(store.dir().join(MESSAGES));
         ready(Self::create_with(store, history, passphrase, kdf, force))
+            .map(|h| h.with_direct(Arc::new(crate::direct::NativeDirect)))
     }
 
     pub fn unlock(dir: impl Into<PathBuf>, passphrase: &str) -> Result<Self> {
@@ -506,6 +524,7 @@ impl Home<FileStore, SqliteHistory> {
         }
         let history = SqliteHistory::new(store.dir().join(MESSAGES));
         ready(Self::unlock_with(store, history, passphrase))
+            .map(|h| h.with_direct(Arc::new(crate::direct::NativeDirect)))
     }
 
     pub fn path(&self) -> &Path {

@@ -227,10 +227,10 @@ async fn send_to_device_with(
     // The ratchet has advanced; persist before the message leaves the device.
     home.save_sessions(sessions)?;
     // Direct first (ADR 0027): only an acknowledgement from the device itself counts.
-    if !new && crate::direct::enabled(home) {
-        match crate::direct::try_send(home, me, card, &blob).await {
+    if let Some(direct) = home.direct_path().filter(|d| !new && d.enabled(home)) {
+        match direct.try_send(home, me, card, &blob).await {
             Ok(()) => return Ok(false),
-            Err(e) => crate::direct::note_fallback(&e),
+            Err(e) => direct.note_fallback(&e),
         }
     }
     let relay = pool.get(url).await?;
@@ -518,7 +518,7 @@ async fn deliver_to(
     } else {
         match housekeeping(home, &base, &mut me, name).await {
             Ok(n) => n,
-            Err(e) if crate::direct::enabled(home) => {
+            Err(e) if home.direct_path().is_some_and(|d| d.enabled(home)) => {
                 vec![format!("the relay could not be reached ({e:#})")]
             }
             Err(e) => return Err(e),
