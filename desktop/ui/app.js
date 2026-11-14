@@ -621,6 +621,16 @@ function withSide(items, side) {
 }
 const sideCap = (t) => h("h3", { class: "scap" }, t);
 function safetyGrid(fp) { return h("div", { class: "sgrid mono", "aria-label": "Safety number " + fp }, fp.split(/[-\s]+/).filter(Boolean).map((g) => h("span", { "aria-hidden": "true" }, g))); }
+/** When we last heard from a device: the local arrival time of its last message (null: never). */
+function heardLabel(ms, now = Date.now()) {
+  if (!ms) return "Not heard from yet";
+  const min = Math.floor(Math.max(0, now - ms) / 60000);
+  if (min < 2) return "active now";
+  if (min < 60) return `${min} min ago`;
+  if (min < 24 * 60) return `${Math.floor(min / 60)} h ago`;
+  if (min < 48 * 60) return "yesterday";
+  return new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
 function contactSide(c) {
   return h("aside", { class: "side", "aria-label": `About ${c.name}` },
     h("div", { class: "stop" }, h("span", { class: "tile lg" + (c.agent ? " sq" : "") + " c-neutral", "aria-hidden": "true" }, c.agent ? icon("agents") : ini2(c.name)),
@@ -628,7 +638,11 @@ function contactSide(c) {
       c.verified ? h("span", { class: "vbadge" }, icon("shield"), "Verified") : h("span", { class: "nvbadge" }, "Not verified")),
     h("div", {}, sideCap("Safety number"), safetyGrid(c.fingerprint),
       h("button", { class: "btn small", type: "button", style: "margin-top:12px", onclick: () => { st.verifyFor = c.name; st.verifyDone = null; st.screen = "verify"; render(); } }, c.verified ? "Compare again" : "Verify")),
-    h("div", {}, sideCap("Devices"), h("div", { class: "sdv" }, `${plural(c.devices, "device", "devices")} on their signed list`, h("span", {}, "end-to-end"))),
+    h("div", {}, sideCap(`Devices · ${c.devices}`),
+      // The signed list has keys only, no names or types: each device is shown by its short id.
+      (c.device_list || []).map((d) => h("div", { class: "sdv", "data-device": d.id, title: `Device ${d.id}` }, h("span", { class: "dvn" }, `Device ${d.id.slice(0, 6)}`),
+        h("span", { class: d.last_heard ? "" : "dim" }, heardLabel(d.last_heard)))),
+      h("p", { class: "snote" }, "When a message from each device last reached this computer. The relay is never asked.")),
     h("div", {}, sideCap(c.agent ? "Agent" : "Contact"),
       c.agent ? h("button", { class: "slink", type: "button", onclick: () => { go("agents"); } }, "What this agent may do") : null,
       h("button", { class: "slink", type: "button", onclick: () => { st.contactFor = c.name; st.contactForm = null; st.screen = "contact"; render(); } }, "Rename, or update their card")));

@@ -164,6 +164,7 @@ private fun Root() {
             is Screen.Verify -> m.open(Screen.Chat(s.name))
             Screen.Directory -> m.open(Screen.NewGrant)
             is Screen.ReviewListed, Screen.Listers -> m.open(Screen.Directory)
+            is Screen.ContactInfo -> m.open(Screen.Chat(s.name))
             Screen.LinkNew, Screen.LinkOld -> m.run { try { Bridge.call("link_cancel") } catch (_: Exception) {}; m.open(null) }
             else -> m.open(null)
         }
@@ -298,7 +299,7 @@ private fun ScreenContent(m: AppModel, s: Screen) {
                 m, s.name, "${if (c?.verified == true) "Verified" else "Not verified"} · $n ${if (n == 1) "device" else "devices"}", c?.verified == true, false,
                 if (n == 1) "Encrypted for ${s.name}'s device and your own other devices" else "Encrypted separately for each of ${s.name}'s $n devices and your own other devices",
                 { t, replyTo -> Bridge.call("send", args("name" to s.name, "text" to t, "reply_to" to replyTo)) },
-                { m.open(Screen.Verify(s.name)) },
+                { m.open(Screen.ContactInfo(s.name)) },
                 { video -> CallManager.call(s.name, c?.verified == true, video) },
                 { fileName, f -> Bridge.call("send_file", args("name" to s.name, "file_name" to fileName, "path" to f.absolutePath, "caption" to "")) },
                 contact = s.name,
@@ -322,6 +323,7 @@ private fun ScreenContent(m: AppModel, s: Screen) {
         is Screen.Members -> MembersScreen(m, s.id)
         is Screen.Invite -> InviteScreen(m, s.id)
         is Screen.Verify -> VerifyScreen(m, s.name)
+        is Screen.ContactInfo -> ContactInfoScreen(m, s.name)
         Screen.NewGroup -> NewGroupScreen(m)
         Screen.AddContact -> AddContactScreen(m)
         Screen.Requests -> RequestsScreen(m)

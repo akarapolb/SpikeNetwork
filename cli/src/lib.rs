@@ -15,6 +15,7 @@ pub mod ops;
 pub mod org;
 pub mod presence;
 pub mod requests;
+pub mod seen;
 pub mod socket;
 pub mod state;
 pub mod store;
@@ -366,6 +367,15 @@ pub fn process(
             };
             let sender_device = cards[device].device_id();
             home.observe_lamport(env.lamport)?;
+            if let From::Contact(i) = owner_of[device] {
+                // Authentic and from this contact's device: remember when we last heard from it.
+                seen::record(
+                    home,
+                    &contacts[i].conversation_key()?,
+                    &sender_device,
+                    spike_core::clock::now_ms(),
+                )?;
+            }
             if matches!(env.kind, Kind::LargeLeave | Kind::LargeLists) {
                 // Only ever sent inside a large group's own messages: never valid between two people.
                 persist(sessions, me)?;
