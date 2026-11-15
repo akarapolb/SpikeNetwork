@@ -31,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -52,7 +53,15 @@ import kotlinx.coroutines.launch
 /** Minutes away from the app before the keys are forgotten and the passphrase is asked again (alerts off). */
 const val AUTO_LOCK_MINUTES = 2
 
+/** The invite link (ADR 0039) in an intent from a tap in another app, if it holds one. */
+private fun inviteIn(i: android.content.Intent?): String? =
+    i?.dataString?.takeIf { i.action == android.content.Intent.ACTION_VIEW && it.startsWith("spikeinvite1:") }
+
 class MainActivity : FragmentActivity() {
+    /** An invite link this window was opened with; taken once the app is unlocked. Kept per window: a window left
+     *  behind must not take a link meant for the one in front. */
+    private val openedInvite = mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Draw edge to edge; the status and navigation icons follow the phone's light or dark setting, as the screens do.
@@ -63,10 +72,11 @@ class MainActivity : FragmentActivity() {
         )
         applyScreenPrivacy()
         showOverLockIfCall(intent)
+        openedInvite.value = inviteIn(intent)
         Bridge.ensureOpen(applicationContext)
         setContent {
             SpikeTheme {
-                Surface(Modifier.fillMaxSize(), color = C.Bg) { Root() }
+                Surface(Modifier.fillMaxSize(), color = C.Bg) { Root(openedInvite) }
             }
         }
     }
@@ -74,6 +84,7 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         showOverLockIfCall(intent)
+        inviteIn(intent)?.let { openedInvite.value = it }
     }
 
     /** Opened by an incoming-call alert on a locked phone: show the call, and only the call, over the lock screen. */
@@ -117,7 +128,7 @@ class MainActivity : FragmentActivity() {
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun Root() {
+private fun Root(openedInvite: androidx.compose.runtime.MutableState<String?>) {
     val scope = rememberCoroutineScope()
     val m = remember { AppModel(scope) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -151,6 +162,16 @@ private fun Root() {
         Listener.onRead = { ok, news -> m.listened(ok, news) }
         Listener.onDirect = { _ -> m.directArrived() }
         onDispose { Listener.onRead = null; Listener.onDirect = null }
+    }
+    // Opened from an invite link: Add a contact, on the Paste tab with the link filled in.
+    LaunchedEffect(m.status, openedInvite.value) {
+        val link = openedInvite.value
+        if (m.status == "ready" && link != null) {
+            openedInvite.value = null
+            m.openedInvite = link
+            m.addTab = 2
+            m.open(Screen.AddContact)
+        }
     }
     LaunchedEffect(m.status) {
         if (m.status == "ready") { CallManager.start(ctx); PushWake.syncRelay(ctx) } else CallManager.stop()

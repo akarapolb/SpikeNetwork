@@ -891,7 +891,8 @@ private fun FirstDay(m: AppModel, card: String) {
         Text("This is your code. Let someone scan it, or scan theirs.", color = C.AvatarText, fontSize = 14.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(4.dp))
         PrimaryButton("Scan a code") { m.addTab = 1; m.open(Screen.AddContact) }
-        TextLink("Paste a contact card") { m.addTab = 2; m.open(Screen.AddContact) }
+        TextLink("Share an invite link") { m.addTab = 0; m.addInvite = true; m.open(Screen.AddContact) }
+        Muted("One-time, valid 7 days. Arrives unverified.", 12.5.sp)
     }
 }
 
@@ -1014,6 +1015,30 @@ fun AddContactScreen(m: AppModel) {
     var qr by remember { mutableStateOf<List<String>?>(null) }
     var scanned by remember { mutableStateOf<String?>(null) }
     var keyChange by remember { mutableStateOf(false) }
+    // A one-time invite link (ADR 0039): made on the relay, shown here, and offered to the share sheet.
+    var invite by remember { mutableStateOf<String?>(null) }
+    val makeInvite = {
+        m.run {
+            val link = Bridge.call("create_invite").toString()
+            invite = link
+            val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, link)
+            ctx.startActivity(Intent.createChooser(send, "Share an invite link"))
+        }
+    }
+    LaunchedEffect(Unit) {
+        if (m.addInvite) { m.addInvite = false; makeInvite() }
+        m.openedInvite?.let { card = it; tab = 2; m.openedInvite = null }
+    }
+    // Opening someone's link: they become a contact, not verified, and are told.
+    val openInvite = { link: String, n: String ->
+        m.run {
+            val r = Bridge.obj("redeem_invite", args("link" to link.trim(), "name" to n.trim()))
+            val who = r.getString("name")
+            m.notice = if (r.getBoolean("existing")) "$who is already in your contacts." else "$who added, not verified. Compare safety numbers when you next speak."
+            m.refresh()
+            m.open(Screen.Chat(who))
+        }
+    }
     LaunchedEffect(o.me.card) {
         try {
             val r = Bridge.obj("qr_matrix", args("text" to o.me.card))
@@ -1052,7 +1077,21 @@ fun AddContactScreen(m: AppModel) {
                             Text(o.me.fingerprint.replace("-", " ").split(" ").take(3).joinToString(" "), fontFamily = Mono, fontSize = 13.sp, color = C.Muted)
                         }
                         Text(
-                            "Scanning each other in person verifies you both. They can also paste your card from the Share tab.",
+                            "Scanning each other in person verifies you both.",
+                            color = C.Muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                        val link = invite
+                        if (link != null) {
+                            CardBox { Text(link, fontFamily = Mono, fontSize = 12.sp, modifier = Modifier.semantics { contentDescription = "Invite link" }) }
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                OutlineButton("Copy link") { copy(ctx, link); m.notice = "Invite link copied." }
+                                OutlineButton("New link", enabled = !m.busy) { makeInvite() }
+                            }
+                        } else {
+                            OutlineButton("Share an invite link", Modifier.fillMaxWidth(), enabled = !m.busy) { makeInvite() }
+                        }
+                        Text(
+                            "One-time, valid 7 days. Arrives unverified.",
                             color = C.Muted, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         )
                     }
@@ -1092,9 +1131,10 @@ fun AddContactScreen(m: AppModel) {
                     }
                 }
                 2 -> {
-                    Muted("Paste the card your contact shared (it starts with spike2:). Then compare fingerprints with them once.", 14.sp)
-                    Field("Name", name, { name = it; keyChange = false }, helper = "Only you see this name.")
-                    Field("Card", card, { card = it; keyChange = false }, singleLine = false, minHeight = 96.dp, maxLines = 4)
+                    val isInvite = card.trim().startsWith("spikeinvite1:")
+                    Muted("Paste the card or invite link your contact shared. Then compare fingerprints with them once.", 14.sp)
+                    Field("Name", name, { name = it; keyChange = false }, helper = if (isInvite) "Optional: they suggest one. Only you see it." else "Only you see this name.")
+                    Field("Card or invite link", card, { card = it; keyChange = false }, singleLine = false, minHeight = 96.dp, maxLines = 4)
                     if (keyChange) {
                         // A card with a different identity key under a name you have: taken only when you say so.
                         Column(
@@ -1120,7 +1160,8 @@ fun AddContactScreen(m: AppModel) {
                             card = cm.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
                         }
                         Box(Modifier.weight(1f)) {
-                            PrimaryButton("Add contact", enabled = name.isNotBlank() && card.isNotBlank() && !m.busy) {
+                            PrimaryButton("Add contact", enabled = (isInvite || name.isNotBlank()) && card.isNotBlank() && !m.busy) {
+                                if (isInvite) { openInvite(card, name); return@PrimaryButton }
                                 m.run {
                                     try {
                                         Bridge.call("add_contact", args("name" to name.trim(), "card" to card.trim()))

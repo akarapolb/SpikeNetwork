@@ -345,8 +345,34 @@ function startState() {
   el.append(...[h("div", { class: "actions" },
     h("a", { class: "btn primary", href: "#", onclick: (e) => { e.preventDefault(); st.screen = "add"; st.addMsg = null; render(); } }, icon("addperson"), "Add a contact"),
     has ? h("a", { class: "btn", href: "#", onclick: (e) => { e.preventDefault(); st.newGroup = { name: "", members: [], anyCanAdd: false, week: false, large: false }; st.screen = "newgroup"; render(); } }, icon("newgroup"), "New group") : null),
-    has ? h("span", { class: "note" }, `${MOD}K finds people, messages and actions. Enter sends, Shift+Enter adds a line.`) : null].filter(Boolean));
+    has ? h("span", { class: "note" }, `${MOD}K finds people, messages and actions. Enter sends, Shift+Enter adds a line.`) : null,
+    has ? null : h("a", { class: "lnk", href: "#", onclick: (e) => { e.preventDefault(); shareInvite(); } }, "Share an invite link"),
+    has ? null : h("span", { class: "note" }, INVITE_NOTE)].filter(Boolean));
   return el;
+}
+/* One-time invite links (ADR 0039). */
+const INVITE_NOTE = "One-time, valid 7 days. Arrives unverified.";
+/** Make a link, copy it and show it on the Invite link tab of Add a contact. */
+async function shareInvite() {
+  st.screen = "add"; st.addTab = "invite"; st.addMsg = null;
+  st.invite = { busy: true, link: "" }; render();
+  try {
+    const link = await invoke("create_invite");
+    st.invite = { link };
+    try { await navigator.clipboard.writeText(link); toast("Invite link copied. Send it to one person."); } catch (_) {}
+  } catch (e) { st.invite = null; toast(String(e)); }
+  render();
+}
+/** Open a link someone sent: they become a contact, not verified, and are told. */
+async function redeemInvite(link, name) {
+  try {
+    const r = await invoke("redeem_invite", { link: link.trim(), name: (name || "").trim() || null });
+    st.addDraft = null; st.inviteDraft = null;
+    await refresh();
+    st.screen = null; st.section = "chats";
+    await openChat(r.name);
+    toast(r.existing ? `${r.name} is already in your contacts.` : `${r.name} added, not verified. Compare safety numbers when you next speak.`);
+  } catch (e) { toast(String(e)); }
 }
 
 /* ---------- chats ---------- */
@@ -750,22 +776,39 @@ function addScreen() {
   // someone; there is no phone-number or email lookup, so no server learns who knows whom.
   const close = () => { st.screen = null; render(); };
   const tab = st.addTab || "paste";
-  const tabs = h("div", { class: "seg", role: "tablist" }, [["code", "My code"], ["paste", "Paste a card"]].map(([k, l]) =>
+  const tabs = h("div", { class: "seg", role: "tablist" }, [["code", "My code"], ["paste", "Paste a card"], ["invite", "Invite link"]].map(([k, l]) =>
     h("button", { type: "button", role: "tab", "aria-selected": String(tab === k), onclick: () => { st.addTab = k; render(); } }, l)));
   const who = d.name.trim();
-  const body = tab === "paste" ? [
+  const inv = st.invite, idr = st.inviteDraft || (st.inviteDraft = { link: "", name: "" });
+  const inviteBody = () => [
+    inv && inv.link ? h("div", { class: "invsec" }, h("span", { class: "invh" }, "Your invite link"),
+        h("div", { class: "cardbox mono", "data-testid": "invite-link" }, inv.link),
+        h("div", { class: "dlg-do", style: "justify-content:flex-start" },
+          h("button", { class: "btn small", type: "button", onclick: async () => { try { await navigator.clipboard.writeText(inv.link); toast("Invite link copied."); } catch (_) { toast("Select the link and copy it."); } } }, "Copy link"),
+          h("button", { class: "btn small", type: "button", onclick: shareInvite }, "New link")))
+      : h("button", { class: "btn", style: "align-self:flex-start", type: "button", disabled: !!(inv && inv.busy), onclick: shareInvite }, inv && inv.busy ? "Making a link…" : "Share an invite link"),
+    h("p", { class: "note", style: "margin:0" }, INVITE_NOTE),
+    h("div", { class: "invsec" }, h("span", { class: "invh" }, "Got a link from someone?"),
+      h("textarea", { class: "cardbox", "aria-label": "Invite link", placeholder: "Paste their invite link (starts with spikeinvite1:)", "data-keep": "inviteLink", oninput: (e) => { idr.link = e.target.value; } }, idr.link)),
+    h("div", { class: "field" }, h("input", { "aria-label": "Invite name", placeholder: "Name (optional: they suggest one)", value: idr.name, "data-keep": "inviteName", oninput: (e) => { idr.name = e.target.value; } })),
+    h("div", { class: "dlg-do" }, h("button", { class: "btn small", type: "button", onclick: close }, "Cancel"),
+      h("button", { class: "btn primary small", type: "button", onclick: () => { if (!idr.link.trim()) return toast("Paste the invite link first."); redeemInvite(idr.link, idr.name); } }, "Open invite"))];
+  const body = tab === "invite" ? inviteBody() : tab === "paste" ? [
       h("div", { class: "field" }, name), card,
       h("p", { class: "note", style: "margin:0" }, `${who || "They"} arrive${who ? "s" : ""} unverified. Compare safety numbers when you next speak.`),
       h("div", { class: "dlg-do" }, h("button", { class: "btn small", type: "button", onclick: close }, "Cancel"),
         h("button", { class: "btn primary small", type: "button", onclick: addContactFromScreen }, who ? `Add ${who}` : "Add contact"))]
     : [h("div", { class: "dlg-code" }, cardQr(st.ov.me.card), h("div", {}, h("p", { style: "margin:0 0 10px" }, "A phone scans this code. On a computer, copy your card and send it to them."), copyCardButton())),
-      h("p", { class: "note", style: "margin:0" }, "Scanning each other in person verifies you both.")];
+      h("p", { class: "note", style: "margin:0" }, "Scanning each other in person verifies you both."),
+      h("button", { class: "btn", style: "align-self:stretch", type: "button", onclick: shareInvite }, "Share an invite link"),
+      h("p", { class: "note", style: "margin:0;text-align:center" }, INVITE_NOTE)];
   return [h("div", { class: "scrim", onclick: (e) => { if (e.target === e.currentTarget) close(); }, onkeydown: (e) => { if (e.key === "Escape") close(); } },
     h("div", { class: "dlg", role: "dialog", "aria-modal": "true", "aria-label": "Add a contact" }, h("h2", {}, "Add a contact"), tabs, ...body))];
 }
 async function addContactFromScreen() {
   const d = st.addDraft || { name: "", card: "" };
   const n = d.name.trim();
+  if (d.card.trim().startsWith("spikeinvite1:")) return redeemInvite(d.card, n);
   try {
     const isNew = !st.ov.contacts.some((c) => c.name === n);
     const msg = await invoke("add_contact", { name: d.name, card: d.card });

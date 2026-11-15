@@ -715,6 +715,26 @@ async fn send_presence(state: State<'_, AppState>, name: String, what: String) -
     session(&state)?.send_presence(&name, &what).await.map_err(err)
 }
 
+/// A one-time invite link, valid 7 days (ADR 0039).
+#[tauri::command]
+async fn create_invite(state: State<'_, AppState>) -> Result<String, String> {
+    session(&state)?.create_invite().await.map_err(err)
+}
+
+/// Open someone's invite link: they become a contact, not verified.
+#[tauri::command]
+async fn redeem_invite(
+    state: State<'_, AppState>,
+    link: String,
+    name: Option<String>,
+) -> Result<spike_app::InviteDto, String> {
+    let name = name.filter(|n| !n.trim().is_empty());
+    session(&state)?
+        .redeem_invite(&link, name.as_deref())
+        .await
+        .map_err(err)
+}
+
 #[tauri::command]
 fn add_contact(state: State<'_, AppState>, name: String, card: String) -> Result<String, String> {
     session(&state)?.add_contact(&name, &card).map_err(err)
@@ -1570,6 +1590,8 @@ pub fn run() {
             sync,
             mark_read,
             add_contact,
+            create_invite,
+            redeem_invite,
             replace_contact_key,
             rename_contact,
             change_passphrase,

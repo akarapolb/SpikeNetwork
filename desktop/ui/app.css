@@ -910,3 +910,10 @@ button { padding: 0; }
 .sendown .att.own > i svg { width: 18px; height: 18px; }
 .sendown .att.own .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sendown .att.own small { color: var(--muted); }
+
+/* One-time invite links (ADR 0039): a quiet ink link under the empty state, the link shown as text to copy. */
+.lnk { color: var(--text); font-weight: 500; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line); }
+.lnk:hover { text-decoration-color: currentColor; }
+div.cardbox { width: 100%; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel-2); padding: 10px 12px; font-size: 12.5px; color: var(--text-2); word-break: break-all; user-select: all; }
+.invsec { display: flex; flex-direction: column; gap: 8px; }
+.invh { font-size: 12.5px; font-weight: 600; color: var(--text-2); }

@@ -67,6 +67,10 @@ class AppModel(private val scope: CoroutineScope) {
     var busy by mutableStateOf(false)
     /** Which tab Add a contact opens on (0 my code, 1 scan, 2 paste, 3 share). */
     var addTab by mutableStateOf(0)
+    /** Open Add a contact making an invite link straight away (the chat list's "Share an invite link"). */
+    var addInvite by mutableStateOf(false)
+    /** An invite link this app was opened with (ADR 0039), waiting on the Paste tab. */
+    var openedInvite by mutableStateOf<String?>(null)
 
     /** Whether the last talk to the relay worked: the chip on the chat list. */
     var relayOk by mutableStateOf<Boolean?>(null)
