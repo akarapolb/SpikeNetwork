@@ -3,7 +3,8 @@
 //! The call screen is an ordinary web page, so the webview asks for the microphone on its behalf. Left to
 //! its default, WebView2 shows its own prompt, and on some machines (a policy, an earlier refusal, a page
 //! with no visible prompt) the answer is "no" and the call has no sound. This answers the request itself:
-//! microphone and camera only, for this app's own page only, and only while a call is up (`set_active`).
+//! microphone and camera only, for this app's own page only, and only while a call is up or Settings > Calls
+//! shows the microphone's level (`set_active`).
 //! Every other permission keeps WebView2's default.
 //!
 //! Two more things help on Windows. Chromium hides a computer's real addresses behind `.local` names

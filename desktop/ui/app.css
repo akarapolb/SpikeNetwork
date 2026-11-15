@@ -801,6 +801,7 @@ button { padding: 0; }
 .setpane .toggle > span > b { font-weight: 500; display: block; }
 .setpane .card > .status, .setpane .card > .field, .setpane .card > .btn, .setpane .card > .note, .setpane .card > .cap, .setpane .card > .keybox, .setpane .card > .devrow, .setpane .card > .relayedit { margin-top: 10px; }
 .ssel { min-height: 32px; border: 1px solid var(--line-2); background: var(--panel); border-radius: 8px; padding: 0 8px; font: inherit; font-size: 13px; color: var(--text); }
+.meter { display: inline-block; width: 140px; height: 6px; border-radius: 3px; background: var(--line-2); overflow: hidden; } .meter i { display: block; height: 100%; width: 0; background: var(--ink, var(--text)); transition: width .08s linear; }
 .idgrid { display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 40px; align-items: start; }
 .idqr { display: flex; flex-direction: column; gap: 10px; }
 .idqr img.qrimg { width: 190px; height: 190px; padding: 12px; background: #fff; border: 1px solid var(--line-2); border-radius: 18px; }
