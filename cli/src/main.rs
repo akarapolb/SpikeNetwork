@@ -955,8 +955,15 @@ async fn run() -> Result<()> {
                         &d.device_id[..8],
                         if d.new_session { " (new session)" } else { "" }
                     ),
+                    Some(e) if d.queued => println!(
+                        "  {who} {}: waiting in the outbox, sent again later: {e}",
+                        &d.device_id[..8]
+                    ),
                     Some(e) => println!("  {who} {}: NOT sent: {e}", &d.device_id[..8]),
                 }
+            }
+            if r.waiting() {
+                println!("waiting to send: {name}'s relay could not be reached; it is sent again on the next sync");
             }
         }
         Cmd::Large { cmd } => {

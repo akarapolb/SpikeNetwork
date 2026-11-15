@@ -193,13 +193,12 @@ async fn with_direct_off_nothing_is_dialled_and_a_dead_relay_still_fails() {
     let _ = relay;
     direct::set_typed_address(&a.home, &b.owner(), Some("127.0.0.1:9")).unwrap();
     assert!(!direct::enabled(&a.home));
-    let err = ops::send(&a.home, DEAD_RELAY, "bob", b"x")
-        .await
-        .unwrap_err();
-    assert!(
-        format!("{err:#}").to_lowercase().contains("connect"),
-        "{err:#}"
-    );
+    // The copy fails on connecting to the relay; since ADR 0040 it waits in the outbox instead of
+    // failing the send.
+    let r = ops::send(&a.home, DEAD_RELAY, "bob", b"x").await.unwrap();
+    assert!(r.waiting() && r.relay_unreachable(), "{r:?}");
+    let err = r.devices[0].error.as_deref().unwrap();
+    assert!(err.to_lowercase().contains("connect"), "{err}");
 }
 
 #[tokio::test]

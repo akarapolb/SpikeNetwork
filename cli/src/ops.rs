@@ -134,9 +134,10 @@ impl<'a> Pool<'a> {
                 url: url.into(),
                 opts: self.base.opts.clone(),
             };
+            // An unreachable relay is marked so a failed copy can wait in the outbox (ADR 0040).
             let r = Relay::connect(t, self.me)
                 .await
-                .with_context(|| format!("connecting to {url}"))?;
+                .map_err(|e| crate::outbox::unreachable(url, e))?;
             self.conns.insert(url.into(), r);
         }
         Ok(self.conns.get_mut(url).expect("just inserted"))
@@ -152,6 +153,8 @@ pub struct DeviceSend {
     pub new_session: bool,
     /// `None` if the relay accepted it.
     pub error: Option<String>,
+    /// It failed, but the copy is kept in the outbox and sent again later (ADR 0040).
+    pub queued: bool,
 }
 
 #[derive(Debug)]
@@ -187,6 +190,19 @@ impl SendReport {
             .filter(|d| !d.own && d.error.is_none())
             .count()
     }
+    /// None of the recipient's devices has it yet, but copies wait in the outbox (ADR 0040).
+    pub fn waiting(&self) -> bool {
+        self.delivered() == 0 && self.devices.iter().any(|d| !d.own && d.queued)
+    }
+    /// Some copy waits because its relay could not be reached at all (rather than refused it).
+    pub fn relay_unreachable(&self) -> bool {
+        self.devices.iter().any(|d| {
+            d.queued
+                && d.error
+                    .as_deref()
+                    .is_some_and(|e| e.starts_with("connecting to"))
+        })
+    }
 }
 
 pub(crate) async fn send_to_device(
@@ -219,7 +235,8 @@ async fn send_to_device_with(
             .get(url)
             .await?
             .claim_prekey(&card.device_id())
-            .await?
+            .await
+            .map_err(|e| crate::outbox::unreachable(url, e))?
             .ok_or_else(|| anyhow!("device has no prekeys on {url}; it must connect once first"))?;
         sessions.start_outbound(me, card, &prekey)?;
     }
@@ -234,10 +251,18 @@ async fn send_to_device_with(
         }
     }
     let relay = pool.get(url).await?;
-    if live && !new {
-        relay.send_live(&card.device_id(), &blob).await?;
+    let sent = if live && !new {
+        relay.send_live(&card.device_id(), &blob).await
     } else {
-        relay.send(&card.device_id(), &blob).await?;
+        relay.send(&card.device_id(), &blob).await
+    };
+    if let Err(e) = sent {
+        let e = crate::outbox::unreachable(url, e);
+        if crate::outbox::is_unreachable(&e) {
+            // A broken connection must not be reused for the next copy.
+            pool.conns.remove(url);
+        }
+        return Err(e);
     }
     Ok(new)
 }
@@ -527,6 +552,13 @@ async fn deliver_to(
     quick: bool,
 ) -> Result<SendReport> {
     use spike_core::call::Target as CallTarget;
+    // Messages, edits, deletions and reactions wait in the outbox when a relay is out of reach (ADR 0040).
+    let keep = only.is_none()
+        && !quick
+        && matches!(
+            env.kind,
+            Kind::Text | Kind::Edit | Kind::Delete | Kind::React
+        );
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
 
@@ -537,7 +569,7 @@ async fn deliver_to(
     } else {
         match housekeeping(home, &base, &mut me, name).await {
             Ok(n) => n,
-            Err(e) if crate::direct::enabled(home) => {
+            Err(e) if crate::direct::enabled(home) || keep => {
                 vec![format!("the relay could not be reached ({e:#})")]
             }
             Err(e) => return Err(e),
@@ -553,6 +585,23 @@ async fn deliver_to(
         .find(|c| c.name == name)
         .with_context(|| format!("no contact '{name}'"))?;
     let peer = c.identity()?;
+    // Older copies for this person go first; a relay found out of reach is not tried twice.
+    let dead = if keep {
+        match crate::outbox::flush_for(home, &base, &peer.owner_hex()).await {
+            Ok(f) => {
+                if f.touched() {
+                    sessions = home.load_sessions()?;
+                }
+                f.unreachable
+            }
+            Err(e) => {
+                eprintln!("note: could not send the messages waiting in the outbox: {e:#}");
+                Default::default()
+            }
+        }
+    } else {
+        Default::default()
+    };
     env.to = Some(peer.owner_hex());
     env.lamport = home.next_lamport()?;
 
@@ -597,27 +646,56 @@ async fn deliver_to(
         conns: HashMap::new(),
     };
     let mut devices = Vec::new();
+    let mut failed = Vec::new();
+    let my_owner = mine.owner_hex();
     for (card, relay, own) in targets {
         let url = relay.unwrap_or_else(|| base.url.clone());
-        let r = send_to_device_with(
-            &mut pool,
-            home,
-            &mut sessions,
-            &card,
-            &url,
-            &plaintext,
-            live,
-        )
-        .await;
+        let r = if dead.contains(&url) {
+            Err(anyhow::Error::new(crate::outbox::Unreachable {
+                url: url.clone(),
+                why: "not reachable a moment ago".into(),
+            }))
+        } else {
+            send_to_device_with(
+                &mut pool,
+                home,
+                &mut sessions,
+                &card,
+                &url,
+                &plaintext,
+                live,
+            )
+            .await
+        };
+        let error = r.as_ref().err().map(|e| format!("{e:#}"));
+        let queued = keep && r.as_ref().err().is_some_and(crate::outbox::retryable);
+        if queued {
+            failed.push(crate::outbox::Failed {
+                card: card.clone(),
+                owner: if own {
+                    my_owner.clone()
+                } else {
+                    peer.owner_hex()
+                },
+                own,
+                counts: !own,
+                error: error.clone().unwrap_or_default(),
+            });
+        }
         devices.push(DeviceSend {
             device_id: card.device_id(),
             own,
             new_session: *r.as_ref().unwrap_or(&false),
-            error: r.err().map(|e| format!("{e:#}")),
+            error,
+            queued,
         });
     }
     let own_only = matches!(only, Some(CallTarget::OwnOthers));
-    if !own_only && !devices.iter().any(|d| !d.own && d.error.is_none()) {
+    if !own_only
+        && !devices
+            .iter()
+            .any(|d| !d.own && (d.error.is_none() || d.queued))
+    {
         let why: Vec<String> = devices
             .iter()
             .filter(|d| !d.own)
@@ -628,6 +706,17 @@ async fn deliver_to(
             why.join("; ")
         );
     }
+    // Copies that wait for their relay are kept before the message is applied here.
+    let accepted = devices.iter().any(|d| !d.own && d.error.is_none());
+    crate::outbox::keep(
+        home,
+        &env.id,
+        &peer.owner_hex(),
+        &plaintext,
+        failed,
+        accepted,
+        now_ms(),
+    )?;
     // Applied locally once at least one of the recipient's devices has it.
     match env.kind {
         Kind::Text => {
@@ -696,7 +785,18 @@ pub async fn recv(
     let started = now_ms();
     let mut me = home.load_identity()?;
     let mut sessions = home.load_sessions()?;
-    let mut relay = Relay::connect(base.clone(), &me).await?;
+    if idle.is_none() {
+        // Listening until stopped: what waits in the outbox goes now (ADR 0040).
+        flush_outbox(home, &base).await;
+    }
+    let mut relay = match Relay::connect(base.clone(), &me).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Our relay is down; a contact's may not be.
+            flush_outbox(home, &base).await;
+            return Err(e);
+        }
+    };
     top_up_prekeys(&mut relay, home, &mut me).await?;
     sync_own_list(&mut relay, home).await?;
     while let Some(d) = relay.next_delivery(idle).await? {
@@ -718,7 +818,19 @@ pub async fn recv(
     if idle.is_some() {
         home.set_last_sync(started)?;
     }
+    // Copies waiting for a relay (ADR 0040), after the device lists above were brought up to date.
+    drop(relay);
+    flush_outbox(home, &base).await;
     Ok(())
+}
+
+/// Send what waits in the outbox (ADR 0040). Failures stay queued; they are only reported.
+async fn flush_outbox(home: &Home, base: &Target) {
+    match crate::outbox::flush(home, base.clone()).await {
+        Ok(f) if f.delivered > 0 => eprintln!("note: sent {} waiting message copies", f.delivered),
+        Ok(_) => {}
+        Err(e) => eprintln!("note: could not send the messages waiting in the outbox: {e:#}"),
+    }
 }
 
 /// Handle one delivery on the connection it arrived on, without disconnecting: open and store it,
@@ -957,7 +1069,7 @@ pub(crate) async fn broadcast_own(home: &Home, base: Target, msg: &SyncMsg) -> R
 
 /// Send an envelope to every other device of ours, and to no one else. Returns how many accepted it.
 pub(crate) async fn deliver_to_own(home: &Home, base: Target, mut env: Envelope) -> Result<usize> {
-    deliver_to_own_mut(home, base, &mut env).await
+    Ok(deliver_to_own_mut(home, base, &mut env, false).await?.0)
 }
 
 /// A note or a file for your own other devices and nobody else ("Send to my devices"). It is kept
@@ -984,8 +1096,8 @@ pub async fn send_to_own(
     }
     let owner = home.load_device_list()?.owner;
     env.to = Some(owner.clone());
-    let ok = deliver_to_own_mut(home, base, &mut env).await?;
-    if ok == 0 {
+    let (ok, queued) = deliver_to_own_mut(home, base, &mut env, true).await?;
+    if ok == 0 && queued == 0 {
         bail!("none of your other devices could be reached");
     }
     home.messages()?.insert(&StoredMessage {
@@ -1011,13 +1123,32 @@ pub async fn send_to_own(
     Ok((env.id, ok))
 }
 
-async fn deliver_to_own_mut(home: &Home, base: Target, env: &mut Envelope) -> Result<usize> {
+/// Returns how many devices accepted it and, with `keep` (a note to yourself), how many copies
+/// wait in the outbox for a relay that could not be reached (ADR 0040).
+async fn deliver_to_own_mut(
+    home: &Home,
+    base: Target,
+    env: &mut Envelope,
+    keep: bool,
+) -> Result<(usize, usize)> {
     let me = home.load_identity()?;
-    let mut sessions = home.load_sessions()?;
-    {
+    let listed = async {
         let mut r = Relay::connect(base.clone(), &me).await?;
-        sync_own_list(&mut r, home).await?;
+        sync_own_list(&mut r, home).await
     }
+    .await;
+    match listed {
+        Ok(_) => {}
+        Err(e) if keep => eprintln!("note: the relay could not be reached ({e:#})"),
+        Err(e) => return Err(e),
+    }
+    let owner = home.load_device_list()?.owner;
+    if keep {
+        if let Err(e) = crate::outbox::flush_for(home, &base, &owner).await {
+            eprintln!("note: could not send the messages waiting in the outbox: {e:#}");
+        }
+    }
+    let mut sessions = home.load_sessions()?;
     env.lamport = home.next_lamport()?;
     let plaintext = env.to_bytes();
     let mut pool = Pool {
@@ -1026,17 +1157,27 @@ async fn deliver_to_own_mut(home: &Home, base: Target, env: &mut Envelope) -> Re
         conns: HashMap::new(),
     };
     let mut ok = 0;
+    let mut failed = Vec::new();
     for (card, relay) in own_other_devices(home, &me)? {
         let url = relay.unwrap_or_else(|| base.url.clone());
         match send_to_device(&mut pool, home, &mut sessions, &card, &url, &plaintext).await {
             Ok(_) => ok += 1,
+            Err(e) if keep && crate::outbox::retryable(&e) => failed.push(crate::outbox::Failed {
+                card,
+                owner: owner.clone(),
+                own: true,
+                counts: true,
+                error: format!("{e:#}"),
+            }),
             Err(e) => eprintln!(
                 "note: could not reach your device {}: {e:#}",
                 &card.device_id()[..8]
             ),
         }
     }
-    Ok(ok)
+    let queued = failed.len();
+    crate::outbox::keep(home, &env.id, &owner, &plaintext, failed, ok > 0, now_ms())?;
+    Ok((ok, queued))
 }
 
 /// Mark a conversation read up to its newest incoming message, here and on

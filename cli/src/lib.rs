@@ -13,6 +13,7 @@ pub mod link;
 pub mod messages;
 pub mod ops;
 pub mod org;
+pub mod outbox;
 pub mod presence;
 pub mod requests;
 pub mod seen;

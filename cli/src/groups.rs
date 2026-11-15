@@ -431,6 +431,7 @@ async fn fan_out(
             own,
             new_session: *r.as_ref().unwrap_or(&false),
             error: r.err().map(|e| format!("{e:#}")),
+            queued: false,
         });
     }
     let all_verified = owners

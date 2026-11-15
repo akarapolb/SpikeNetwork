@@ -148,12 +148,18 @@ async fn conversation_survives_offline_recipient_and_ratchets_both_ways() {
 #[tokio::test]
 async fn cannot_start_session_without_published_prekeys() {
     let url = start_relay(Config::default()).await;
-    let (alice, _bob) = pair("alice", "bob");
-    let e = ops::send(&alice.home, &url, "bob", b"hi")
-        .await
-        .unwrap_err()
-        .to_string();
+    let (alice, bob) = pair("alice", "bob");
+    // No session can start yet; since ADR 0040 the copy waits in the outbox for Bob's device to
+    // connect (which publishes its prekeys) instead of failing the send.
+    let r = ops::send(&alice.home, &url, "bob", b"hi").await.unwrap();
+    assert!(r.waiting() && !r.relay_unreachable(), "{r:?}");
+    let e = r.devices[0].error.as_deref().unwrap();
     assert!(e.contains("no prekeys"), "{e}");
+    // Bob connects; Alice's next sync sends it.
+    assert!(bob.recv(&url).await.is_empty());
+    assert!(alice.recv(&url).await.is_empty());
+    let got = bob.recv(&url).await;
+    assert_eq!((got.len(), msg(&got[0])), (1, ("alice", &b"hi"[..])));
 }
 
 #[tokio::test]
