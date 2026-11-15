@@ -288,6 +288,8 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
             }
         };
         dbg_log!("connected, waiting");
+        // Back after being offline: sync at once, which also sends what waits in the outbox (ADR 0040).
+        let came_back = online == Some(false);
         if online != Some(true) {
             online = Some(true);
             let _ = app.emit("relay-status", json!({ "online": true }));
@@ -299,7 +301,8 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
         // Wait on this connection. The idle window is only a heartbeat: nothing arrived, keep waiting.
         let connected_at = std::time::Instant::now();
         let mut resubscribe = false;
-        let woke = loop {
+        // Back after being offline: no wait, straight to the sync below.
+        let woke = came_back || loop {
             if weak.strong_count() == 0 {
                 return;
             }
@@ -378,6 +381,20 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
         retry = Duration::from_millis(200);
         dbg_log!("woken by the relay; syncing");
         let Some(s) = weak.upgrade() else { return };
+        if came_back {
+            // Whatever waited for the relay goes now, not when its backoff ends (ADR 0040).
+            match s.retry_outbox().await {
+                Ok(0) => {}
+                Ok(n) => {
+                    let _ = n;
+                    dbg_log!("sent {n} waiting copies");
+                }
+                Err(e) => {
+                    let _ = &e;
+                    dbg_log!("outbox retry failed: {e:#}");
+                }
+            }
+        }
         if s.paused() {
             continue;
         }
@@ -640,7 +657,7 @@ async fn send(
     name: String,
     text: String,
     reply_to: Option<String>,
-) -> Result<usize, String> {
+) -> Result<spike_app::SentDto, String> {
     session(&state)?
         .send_reply(&name, &text, reply_to.as_deref())
         .await
@@ -1108,7 +1125,7 @@ fn header(request: &tauri::ipc::Request<'_>, key: &str) -> String {
 async fn send_file(
     state: State<'_, AppState>,
     request: tauri::ipc::Request<'_>,
-) -> Result<usize, String> {
+) -> Result<spike_app::SentDto, String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("expected the file's bytes".into());
     };

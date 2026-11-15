@@ -100,7 +100,10 @@ async fn chat_send_receive_unread_and_verification() {
     assert!(alice.s.send("Bob", &"x".repeat(17 * 1024)).await.is_err());
     assert!(alice.s.send("Nobody", "hi").await.is_err());
 
-    assert_eq!(alice.s.send("Bob", "hello from alice").await.unwrap(), 1);
+    assert_eq!(
+        alice.s.send("Bob", "hello from alice").await.unwrap().delivered,
+        1
+    );
     let got = bob.s.sync(IDLE).await.unwrap();
     assert_eq!(got.received, 1);
 
@@ -464,7 +467,8 @@ async fn files_are_sent_encrypted_and_saved_by_the_receiver() {
             .s
             .send_file("Bob", "..\\evil/report.bin", &data, "here you go")
             .await
-            .unwrap(),
+            .unwrap()
+            .delivered,
         1
     );
     assert_eq!(bob.s.sync(IDLE).await.unwrap().received, 1);

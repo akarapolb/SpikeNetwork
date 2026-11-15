@@ -109,9 +109,12 @@ object Listener {
     }
 
     private suspend fun loop(ctx: Context) {
+        var failing = false
         while (currentCoroutineContext().isActive) {
             try {
                 val w = Bridge.obj("listen_once", args("ms" to 20000))
+                // Back after failing: what waited for the relay goes now (ADR 0040).
+                if (failing) { failing = false; runCatching { Bridge.call("retry_outbox") } }
                 if (w.getBoolean("pushed")) Trace.add("relay says something is waiting")
                 if (!currentCoroutineContext().isActive || paused) break
                 // A one-to-one delivery was already stored on the listener's connection.
@@ -127,6 +130,7 @@ object Listener {
                 android.util.Log.w("SpikeListen", "read failed: ${e.message}")
                 Trace.add("relay read failed: ${e.message?.take(60)}")
                 onRead?.invoke(false, 0)
+                failing = true
                 delay(4000)
             }
         }

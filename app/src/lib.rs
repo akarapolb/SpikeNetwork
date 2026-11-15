@@ -243,6 +243,8 @@ pub struct ContactDto {
     pub verified_at: Option<u64>,
     /// When their device list last changed (ms).
     pub devices_changed: Option<u64>,
+    /// Your messages to them that no device of theirs has yet, waiting for a relay (ADR 0040).
+    pub unsent: usize,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -387,6 +389,32 @@ pub struct MessageDto {
     pub reply: Option<ReplyDto>,
     /// Reactions, most used first: each emoji once, with how many people chose it.
     pub reactions: Vec<ReactionDto>,
+    /// Yours, and no recipient device has it yet: its copies wait for a relay (ADR 0040).
+    pub waiting: bool,
+    /// Yours, and given up on after the outbox expiry without reaching anyone.
+    pub not_sent: bool,
+}
+
+/// What happened to a message just sent (ADR 0040).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct SentDto {
+    /// How many of the recipient's devices' relays accepted a copy (they hand it over when the
+    /// device connects).
+    pub delivered: usize,
+    /// None has it yet: copies wait in the outbox and are sent again on the next sync.
+    pub waiting: bool,
+    /// A copy waits because its relay could not be reached at all.
+    pub relay_unreachable: bool,
+}
+
+impl From<&ops::SendReport> for SentDto {
+    fn from(r: &ops::SendReport) -> Self {
+        Self {
+            delivered: r.delivered(),
+            waiting: r.waiting(),
+            relay_unreachable: r.relay_unreachable(),
+        }
+    }
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -767,6 +795,7 @@ impl Session {
         let unread: BTreeMap<String, usize> = ops::unread_counts(&self.home)?.into_iter().collect();
         let grants = agent::list_grants(&self.home)?;
         let store = self.home.messages()?;
+        let unsent = spike_cli::outbox::waiting_by_conversation(&self.home)?;
         let mut contacts = Vec::new();
         for c in self.home.load_contacts()? {
             let id = c.identity()?;
@@ -785,6 +814,7 @@ impl Session {
                 })
                 .collect();
             contacts.push(ContactDto {
+                unsent: unsent.get(&key).copied().unwrap_or(0),
                 device_list,
                 unread: unread.get(&c.name).copied().unwrap_or(0),
                 agent: grants.iter().any(|g| g.body.agent == key),
@@ -863,12 +893,14 @@ impl Session {
             .messages()?
             .conversation(&key, limit.clamp(1, 500))?;
         let replies = self.replies_in(&key, &msgs, false)?;
+        let states = spike_cli::outbox::states(&self.home)?;
         Ok(msgs
             .into_iter()
             .map(|m| {
                 let reply = replies.get(&m.id).cloned();
                 let mut dto = message_dto(m, None, true, &me);
                 dto.reply = reply;
+                mark_delivery(&mut dto, &states);
                 dto
             })
             .collect())
@@ -1013,7 +1045,7 @@ impl Session {
 
     // ------------------------------------------------------------ network
 
-    pub async fn send(&self, name: &str, text: &str) -> Result<usize> {
+    pub async fn send(&self, name: &str, text: &str) -> Result<SentDto> {
         self.send_reply(name, text, None).await
     }
 
@@ -1023,7 +1055,7 @@ impl Session {
         name: &str,
         text: &str,
         reply_to: Option<&str>,
-    ) -> Result<usize> {
+    ) -> Result<SentDto> {
         let text = text.trim_end();
         if text.trim().is_empty() {
             bail!("nothing to send");
@@ -1040,7 +1072,7 @@ impl Session {
             }
             None => ops::send(&self.home, self.target(), name, text.as_bytes()).await?,
         };
-        Ok(r.delivered())
+        Ok(SentDto::from(&r))
     }
 
     /// A reply must point at a message of the same conversation that is still there.
@@ -1111,6 +1143,15 @@ impl Session {
             out.notes.push(note);
         }
         Ok(out)
+    }
+
+    /// The connection to the relay has just come back: send everything waiting in the outbox now,
+    /// whatever its backoff (ADR 0040). Returns how many copies went.
+    pub async fn retry_outbox(&self) -> Result<usize> {
+        let _net = self.net.lock().await;
+        Ok(spike_cli::outbox::flush_all(&self.home, self.target())
+            .await?
+            .delivered)
     }
 
     /// Large groups (ADR 0025) are polled from their own mailboxes after the one-to-one queue.
@@ -1633,7 +1674,7 @@ impl Session {
         file_name: &str,
         bytes: &[u8],
         caption: &str,
-    ) -> Result<usize> {
+    ) -> Result<SentDto> {
         if bytes.is_empty() {
             bail!("that file is empty");
         }
@@ -1654,7 +1695,7 @@ impl Session {
             caption.trim_end(),
         )
         .await?;
-        Ok(r.delivered())
+        Ok(SentDto::from(&r))
     }
 
     /// The file of message `id` (a full message id): from this device if kept,
@@ -1676,6 +1717,7 @@ impl Session {
             .home
             .messages()?
             .conversation(&me, limit.clamp(1, 500))?;
+        let states = spike_cli::outbox::states(&self.home)?;
         Ok(msgs
             .into_iter()
             .map(|m| {
@@ -1686,6 +1728,7 @@ impl Session {
                 let mut dto = message_dto(m, None, true, &me);
                 dto.out = here;
                 dto.from = from;
+                mark_delivery(&mut dto, &states);
                 dto
             })
             .collect())
@@ -1873,6 +1916,18 @@ fn dto(
     }
 }
 
+/// Whether one of our messages is still waiting in the outbox, or was given up on (ADR 0040).
+fn mark_delivery(dto: &mut MessageDto, states: &spike_cli::outbox::States) {
+    if !dto.out || dto.deleted {
+        return;
+    }
+    match states.of(&dto.id) {
+        spike_cli::outbox::State::Waiting => dto.waiting = true,
+        spike_cli::outbox::State::NotSent => dto.not_sent = true,
+        spike_cli::outbox::State::Sent => {}
+    }
+}
+
 fn message_dto(
     m: spike_cli::messages::StoredMessage,
     from: Option<String>,
@@ -1903,6 +1958,8 @@ fn message_dto(
     MessageDto {
         reply: None,
         reactions,
+        waiting: false,
+        not_sent: false,
         out: m.direction == Direction::Out,
         body: if m.deleted { String::new() } else { m.body },
         file: if m.deleted {

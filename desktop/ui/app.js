@@ -374,10 +374,17 @@ function chatsList() {
         : emptyState("No contacts yet. Add one with the button above: paste their identity card.", "addperson")),
   ];
 }
+/** One of your messages that no recipient device has yet (ADR 0040): amber while it waits, red once given up. */
+function sendState(m) {
+  if (!m.out || m.deleted) return null;
+  if (m.waiting) return h("span", { class: "sendstate", role: "status", title: "Kept on this computer and sent again automatically when their relay can be reached." }, "Waiting to send");
+  if (m.not_sent) return h("span", { class: "sendstate bad", role: "status", title: "Their relay could not be reached for 30 days. It was not delivered." }, "Not sent");
+  return null;
+}
 function contactRow(c) {
   return h("button", { class: "row", type: "button", "aria-current": String(!st.screen && st.chat === c.name), onclick: () => openChat(c.name) }, tile(c),
     h("span", { class: "body" }, h("span", { class: "line1" }, h("b", {}, c.name), c.verified ? vtick() : null),
-      h("span", { class: "preview" }, c.key_changed ? h("span", { class: "flag bad" }, "Safety number changed") : c.verified || c.agent ? (c.last || "No messages yet") : [notVerified(), c.last ? ` · ${c.last}` : ""])),
+      h("span", { class: "preview" }, c.key_changed ? h("span", { class: "flag bad" }, "Safety number changed") : c.unsent ? [h("span", { class: "flag" }, "Waiting to send"), c.last ? ` · ${c.last}` : ""] : c.verified || c.agent ? (c.last || "No messages yet") : [notVerified(), c.last ? ` · ${c.last}` : ""])),
     h("span", { class: "meta" }, c.key_changed ? when(Math.max(c.key_changed, c.last_ts || 0)) : c.last_ts ? when(c.last_ts) : "", c.unread ? h("i", { class: "dot", role: "img", "aria-label": `${c.unread} unread` }) : null));
 }
 /** Delete for everyone, asked in the line under the message. */
@@ -393,6 +400,14 @@ function editBox(m) {
 }
 const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 const MAX_FILE = 100 * 1024 * 1024;
+/** What to say after a send (ADR 0040). `r` is the engine's SentDto: a relay that accepted a copy hands it over
+ *  when the device connects; a relay that could not be reached gets it from the outbox later. */
+function sentNotice(r, ok) {
+  if (!r || r.delivered > 0) return ok;
+  if (r.waiting && r.relay_unreachable) return "Waiting to send: their relay can't be reached right now. It will be sent automatically when it can.";
+  if (r.waiting) return "Waiting to send: it will be delivered when their device connects.";
+  return ok;
+}
 async function sendFile(name, file, caption) {
   if (file.size === 0) return toast("That file is empty.");
   if (file.size > MAX_FILE) return toast("Files are limited to 100 MB.");
@@ -402,7 +417,7 @@ async function sendFile(name, file, caption) {
     const enc = encodeURIComponent;
     const n = await invoke("send_file", bytes, { headers: { "x-contact": enc(name), "x-filename": enc(file.name), "x-caption": enc(caption || "") } });
     const t = $("main").querySelector("textarea"); if (t) t.value = "";
-    toast(n ? "File sent." : "Saved, but no device could be reached yet. It will be delivered when they connect.");
+    toast(sentNotice(n, "File sent."));
     await refresh(); scrollEnd();
   } catch (e) { toast(String(e)); }
 }
@@ -545,6 +560,7 @@ function threadItems(inGroup) {
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       reactionsOf(m),
       h("span", { class: "meta" }, clock(m.ts), m.edited ? " · edited" : "", !inGroup && !m.deleted && typeof m.id === "string" && m.id.startsWith("call-") ? [" · ", h("button", { class: "linkish", type: "button", style: "border:0;background:none;padding:0;color:var(--accent);font-size:11.5px;cursor:pointer", onclick: () => callBack(/video call/i.test(m.body)) }, "Call back")] : null, inGroup && m.shared_by ? ` · shared by ${m.shared_by} when you joined` : ""),
+      sendState(m),
       st.confirmDelete === m.id ? deleteConfirm(m) : null,
       msgTools(m, inGroup)));
   }
@@ -690,7 +706,7 @@ function chatMain() {
   const mention = mentionBox(ta, () => st.ov.contacts.map((x) => x.name));
   async function send() {
     const text = ta.value; if (!text.trim()) return; ta.disabled = true;
-    try { const n = await invoke("send", { name: c.name, text, replyTo: st.replyTo ? st.replyTo.id : null }); ta.value = ""; st.replyTo = null; if (!n) toast("Saved, but no device could be reached yet. It will be delivered when they connect."); await refresh(); scrollEnd(); }
+    try { const n = await invoke("send", { name: c.name, text, replyTo: st.replyTo ? st.replyTo.id : null }); ta.value = ""; st.replyTo = null; const said = sentNotice(n, null); if (said) toast(said); await refresh(); scrollEnd(); }
     catch (e) { toast(String(e)); }
     finally { const t = $("main").querySelector("textarea"); if (t) { t.disabled = false; t.focus(); } }
   }
@@ -996,7 +1012,7 @@ async function sendOwnFile(file) {
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const n = await invoke("send_file_to_devices", bytes, { headers: { "x-filename": encodeURIComponent(file.name) } });
-    toast(`Sent to ${plural(n, "device", "devices")}.`);
+    toast(n ? `Sent to ${plural(n, "device", "devices")}.` : "Waiting to send: the relay can't be reached right now. It will be sent automatically when it can.");
   } catch (e) { toast(String(e)); }
   await loadOwnNotes();
 }
@@ -1011,12 +1027,12 @@ function sendOwnPanel(me) {
     ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove("over"); for (const f of e.dataTransfer.files) sendOwnFile(f); } },
     icon("down"), h("b", {}, "Drop files here"), h("span", { class: "note" }, "or choose a file"));
   const note = h("input", { type: "text", placeholder: "A note for your devices", "aria-label": "A note for your devices" });
-  const sendNote = async () => { const t = note.value; if (!t.trim()) return; try { const n = await invoke("send_note_to_devices", { text: t }); note.value = ""; toast(`Sent to ${plural(n, "device", "devices")}.`); } catch (e) { toast(String(e)); } await loadOwnNotes(); };
+  const sendNote = async () => { const t = note.value; if (!t.trim()) return; try { const n = await invoke("send_note_to_devices", { text: t }); note.value = ""; toast(n ? `Sent to ${plural(n, "device", "devices")}.` : "Waiting to send: the relay can't be reached right now. It will be sent automatically when it can."); } catch (e) { toast(String(e)); } await loadOwnNotes(); };
   note.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendNote(); } });
   const rows = (st.ownNotes || []).slice().reverse().slice(0, 20).map((n) => h("div", { class: "att own" },
     h("i", {}, icon(n.file ? "file" : "chats")),
     h("div", { style: "flex:1;min-width:0" }, h("div", { class: "nm" }, n.file ? n.file.name : n.body),
-      h("small", {}, [n.file ? fmtSize(n.file.size) + " · " : "", n.out ? `sent to ${target}` : `received from ${n.from || "another device"}`, " · ", new Date(n.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })].join(""))),
+      h("small", {}, [n.file ? fmtSize(n.file.size) + " · " : "", n.out ? (n.waiting ? "waiting to send" : n.not_sent ? "not sent" : `sent to ${target}`) : `received from ${n.from || "another device"}`, " · ", new Date(n.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })].join(""))),
     n.file ? h("button", { class: "btn small", type: "button", onclick: () => saveFile(n) }, "Save") : null));
   return h("section", { class: "sendown", "aria-label": "Send to my devices" },
     h("h4", {}, others.length === 1 ? `Send to ${target}` : "Send to my devices"),

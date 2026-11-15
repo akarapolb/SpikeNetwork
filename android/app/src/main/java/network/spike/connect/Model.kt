@@ -25,6 +25,8 @@ data class Contact(
     val keyChanged: Long = 0,
     /** When you last verified them (ms), kept across a key change; 0 when never. */
     val verifiedAt: Long = 0,
+    /** Your messages to them that none of their devices has yet: waiting for a relay (ADR 0040). */
+    val unsent: Int = 0,
 )
 
 /** One of a contact's devices. The signed list has keys only, so it is shown by its short id. */
@@ -84,6 +86,7 @@ fun parseOverview(o: JSONObject): Overview {
                     ContactDevice(d.getString("id"), if (d.isNull("last_heard")) 0 else d.getLong("last_heard"))
                 } ?: emptyList(),
                 it.optLong("key_changed", 0), it.optLong("verified_at", 0),
+                it.optInt("unsent", 0),
             )
         },
         groups = o.getJSONArray("groups").mapObjects {
@@ -114,6 +117,10 @@ data class Message(
     val reply: Quote? = null,
     /** Reactions, most used first. */
     val reactions: List<Reaction> = emptyList(),
+    /** Yours, and none of their devices has it yet: it waits for a relay and is sent automatically (ADR 0040). */
+    val waiting: Boolean = false,
+    /** Yours, and given up on after the outbox expiry without reaching anyone. */
+    val notSent: Boolean = false,
 )
 
 /** A short quote of the message a reply answers: who wrote it ([out]: you) and the start of its text. */
@@ -132,6 +139,7 @@ fun parseMessages(a: JSONArray): List<Message> = a.mapObjects {
             Quote(r.getString("id"), r.getBoolean("out"), r.str("from"), r.getString("text"), r.getBoolean("deleted"))
         },
         it.optJSONArray("reactions")?.mapObjects { r -> Reaction(r.getString("emoji"), r.getInt("count"), r.getBoolean("mine")) } ?: emptyList(),
+        it.optBoolean("waiting", false), it.optBoolean("not_sent", false),
     )
 }
 

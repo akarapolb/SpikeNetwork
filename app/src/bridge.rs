@@ -406,6 +406,8 @@ impl Engine {
                 val(x.set_presence_share(share)?)
             }
             "peer_status" => val(x.peer_status(&s(a, "name")?)?),
+            // The listener's connection came back after failing: send what waits in the outbox (ADR 0040).
+            "retry_outbox" => val(rt.block_on(x.retry_outbox())?),
             "send_presence" => val(rt.block_on(x.send_presence(&s(a, "name")?, &s(a, "what")?))?),
             // Between your own devices only: a note, or a file (by path) with an optional caption.
             "own_notes" => val(x.own_notes(200)?),

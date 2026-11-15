@@ -409,7 +409,8 @@ fun ChatsTab(m: AppModel) {
                     is Item.P -> ChatRow(
                         r.c.name, square = false, verified = r.c.verified,
                         redNote = if (r.c.keyChanged > 0) "Safety number changed" else if (r.c.verified) null else "Not verified",
-                        preview = if (r.c.keyChanged > 0) "" else r.c.last ?: if (r.c.verified) "No messages yet" else "",
+                        preview = if (r.c.keyChanged > 0) "" else if (r.c.unsent > 0) "Waiting to send" + (r.c.last?.let { " · $it" } ?: "") else r.c.last ?: if (r.c.verified) "No messages yet" else "",
+                        previewAmber = r.c.keyChanged == 0L && r.c.unsent > 0,
                         time = listTime(maxOf(r.c.lastTs, r.c.keyChanged)), unread = r.c.unread,
                         on = (m.screen as? Screen.Chat)?.name == r.c.name || (m.screen as? Screen.Verify)?.name == r.c.name,
                     ) { m.open(Screen.Chat(r.c.name)) }
@@ -838,6 +839,20 @@ private fun Bubble(
             }
         }
         if (!mid || msg.edited || read != null) Muted(clock(msg.ts) + (if (msg.edited) " · edited" else "") + (read?.let { " · $it" } ?: ""), 11.5.sp, Modifier.padding(horizontal = 2.dp))
+        if (msg.out && !msg.deleted && (msg.waiting || msg.notSent)) SendState(msg.waiting)
+    }
+}
+
+/** ADR 0040: none of their devices has this message yet. Amber while it waits for the relay, red once given up. */
+@Composable
+private fun SendState(waiting: Boolean) {
+    val color = if (waiting) C.AmberText else C.Danger
+    Row(
+        Modifier.padding(horizontal = 2.dp).semantics(mergeDescendants = true) {},
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+        Text(if (waiting) "Waiting to send" else "Not sent", fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = color)
     }
 }
 
