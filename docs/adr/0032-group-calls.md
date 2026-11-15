@@ -390,3 +390,50 @@ Status stays **proposed** until those are answered.
   restarted), and regions.
 - iOS does not exist yet.
 - The independent security review: group-call keys and the SFrame use need it, as ADR 0028 said of WebRTC.
+
+## Built so far: phase B0 (core and signalling, 2026-11-14)
+
+Messages only. No media, no screen, no relay change, and nothing a front end calls yet.
+
+- **`Kind::GroupCall`** (`core/src/envelope.rs`): must name its group and the member list it was sent with, never
+  carries a target or an attachment, is never stored as a message. Older clients do not know the kind and drop the
+  envelope; no existing kind changed.
+- **`core/src/group_call.rs`**: the signals (`start`, `join`, `leave`, `move`, `key`, `key_ack`, `end`, and the pair
+  signals `invite`, `answer`, `ice`, `pair_end`) with their validation, and a sans-I/O `Machine` that turns signals and
+  user actions into actions (send this to these devices, ring, open a pair, move to a call server, call log lines).
+  It enforces: one device per person; the later joiner dials, ordered by the `at` each device puts in its own
+  `start`/`join` (strictly increasing per device, so a leave always orders after its join); relay-only candidates for a
+  pair with a non-contact; ring policy (up to 8 members, one ring per group per 10 minutes, 3 unanswered per member per
+  hour, mute, busy); a fifth person moves a call to a call server through the host or is refused as full; host
+  handover (longest in the call); an empty call ends after a minute; freshness (60 s, ended calls remembered 24 h).
+  Rules the build found that this ADR did not say:
+  - **Pair signals name their pair.** `invite` carries the dialer's join stamp and `answer`, `ice` and `pair_end`
+    echo it, so a late signal from an earlier join of the same device cannot be taken for one of the current join.
+  - **Signals that depend on something not seen yet are held** (up to 64, 60 s): a pair signal before the sender's
+    `join`, a `join` before the `start`, and an `end` or `move` from someone whose `join` has not arrived. Without
+    this, devices that saw the same signals in another order disagreed about who was in the call.
+  - **`end` and `move` are accepted from a device that is or was in the call**, not only one still in it: the last
+    one out sends its `end` after its own `leave`.
+  - **Two people starting at once:** the later start gives way and joins the earlier one, if nobody else has joined
+    it, as in a one-to-one call.
+- **`cli`**: `Outcome::GroupCall` (a member's signal, with whether the sender is a contact) accepted under ADR 0024
+  section 4: we are a member, the sending device belongs to a member of our current list, an out-of-date list is
+  fine, an unknown list is dropped (a call signal is not worth holding), a non-member is rejected.
+  `groups::send_group_call` sends to every member and our own other devices, or to one device of one member. Both
+  skip the relay housekeeping, as one-to-one call signals do, and fetch member cards only when one is missing.
+- **Tests.** 33 unit tests of the machine; `core/tests/group_call_sim.rs`, a randomized simulation of 3 to 6 people,
+  some with two devices, starting, joining, leaving and dismissing while every signal is late, reordered and
+  duplicated (400 histories by default, `SIM_SEEDS=n` for more; 20,000 pass), checking that nobody rings twice, a
+  ringing device always stops, nobody is in a call on two devices, pairs are never opened twice, and after settling
+  every device agrees on who is in each call and the pairs form a full mesh; `cli/tests/group_call.rs`, 4 tests on a
+  real relay with two members who are not contacts of each other (rung, join, offers reach only the dialed device, a
+  non-contact pair is relay-only, leave and end, nothing stored as a message, a stranger and a former member refused).
+  The simulation found six real ordering bugs before it passed (a leave and a join in the same millisecond, an
+  `end` from someone who had already left, a pair of an earlier join blocking the new one, an older `join` overwriting
+  a newer one, a `move` from a host who had already left, an `end` before the sender's `join`). Each is fixed and is
+  covered by the simulation's seeds; none has its own unit test yet.
+- **Not built:** key distribution and rotation (the signals exist and are passed through, the logic is phase D2); the
+  call server (`Action::MoveToSfu` and `Input::SfuReady` are the seam, phase D3); large (MLS) groups (phase E); the
+  bridge commands, screens and drivers (phase B1); the call log line in the chat. If the host leaves a call that is
+  already on a call server, nothing changes; if it leaves a mesh before the move, the next host asks for the server,
+  but its relay may not have one (it then cannot move the call).

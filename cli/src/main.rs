@@ -1974,7 +1974,7 @@ async fn run() -> Result<()> {
                     "[{name} joined with your invite link and is now a contact (UNVERIFIED): compare safety numbers]"
                 ),
                 Outcome::Invalid => eprintln!("dropped undecryptable or replayed message"),
-                Outcome::Duplicate | Outcome::Ignored | Outcome::Call { .. } => {}
+                Outcome::Duplicate | Outcome::Ignored | Outcome::Call { .. } | Outcome::GroupCall { .. } => {}
                 Outcome::AgentRequest { from, id, scope, action, amount_cents, summary, verdict } => println!(
                     "[agent request {} from {from}: {} - {verdict}{}]",
                     &id[..8],
