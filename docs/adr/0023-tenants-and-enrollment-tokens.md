@@ -64,5 +64,19 @@ New tables: `tenants(id, admin_pub, limits, state)`, `enrollments(device, tenant
 3. The customer holds the admin key.
 4. Operator: commands run on the relay machine for now; signed operator requests over the network later.
 
+## A second build, not kept (2026-11-15)
+
+Commit a8265d5 built this ADR a second time, on a branch that started before ADR 0035 landed: device-bound
+tokens redeemable for 7 days (`core/src/enroll.rs`, `relay/src/tenancy.rs`), its own schema version 5, and signed
+operator requests over the network (`POST /admin`, `spike-relay-admin`). The two cannot both run: they define
+different version-5 tables, and the owner's decisions above (ADR 0035's single-use 24-hour tokens; operator
+commands on the relay machine for now) differ from the ones recorded on that branch. The merge on 2026-11-15
+keeps ADR 0035's build and drops a8265d5's code; it stays in the history.
+
+Already covered by ADR 0035's build: create, limits, suspend, resume, delete, rotating the admin key, usage,
+visitors, revoke and leave. **Not carried over**, and open for a later decision if wanted: signed operator
+requests over the network (decision 4 says later), a strict mode with no visitors, and per-tenant limits on
+live connections, request rate, queue depth and attachment bytes (ADR 0035 limits devices and stored bytes).
+
 ## Not decided here
 Billing and sign-up (slice 2), high availability (slice 3), and the licence of the relay (slice 4).
