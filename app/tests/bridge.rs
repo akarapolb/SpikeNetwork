@@ -353,6 +353,60 @@ fn two_phones_chat_directly_with_no_relay_and_the_screen_hears_about_it() {
     assert_eq!(bob.ok("direct_disable", json!({}))["listening"], false);
 }
 
+/// A relay that cannot be reached is often not refused but silent: the connection hangs (a host that
+/// is gone, a firewall, adb's port forwarding). The phone's listener keeps trying to reach it; a
+/// direct delivery must not wait behind those tries (it is refused as busy after a moment, and the
+/// sender's fallback, the relay, is just as unreachable).
+#[test]
+fn a_direct_message_arrives_while_the_listener_hangs_on_an_unreachable_relay() {
+    let url = relay();
+    let (alice, bob) = (Phone::new("alice", &url), Phone::new("bob", &url));
+    alice.ok("sync", json!({}));
+    bob.ok("sync", json!({}));
+    alice.ok("add_contact", json!({ "name": "Bob", "card": bob.card() }));
+    bob.ok(
+        "add_contact",
+        json!({ "name": "Alice", "card": alice.card() }),
+    );
+    alice.ok("send", json!({ "name": "Bob", "text": "by relay" }));
+    assert_eq!(bob.ok("sync", json!({}))["received"], 1);
+    alice.ok("direct_enable", json!({}));
+    let port = bob.ok("direct_enable", json!({}))["port"].as_u64().unwrap();
+    alice.ok(
+        "direct_set_address",
+        json!({ "name": "Bob", "address": format!("127.0.0.1:{port}") }),
+    );
+
+    // Bob's relay accepts connections and never answers; Alice's is gone.
+    let hole = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let hole_url = format!("ws://{}", hole.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let mut held = vec![];
+        for s in hole.incoming() {
+            held.push(s);
+        }
+    });
+    bob.ok("set_relay", json!({ "url": hole_url }));
+    alice.ok("set_relay", json!({ "url": "ws://127.0.0.1:1" }));
+
+    // Bob's listener is stuck reaching its relay, as the phone's listener loop would be.
+    let bob = Arc::new(bob);
+    {
+        let b = bob.clone();
+        std::thread::spawn(move || b.call("listen_once", json!({ "ms": 20000 })));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let waiting = {
+        let b = bob.clone();
+        std::thread::spawn(move || b.ok("direct_wait", json!({ "ms": 15000 })))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    alice.ok("send", json!({ "name": "Bob", "text": "while the relay hangs" }));
+    assert_eq!(waiting.join().unwrap()["received"], 1);
+    let thread = bob.ok("conversation", json!({ "name": "Alice" }));
+    assert_eq!(thread[1]["body"], "while the relay hangs");
+}
+
 #[test]
 fn an_identity_comes_back_from_a_backup_after_the_phone_is_lost() {
     let url = relay();

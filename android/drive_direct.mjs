@@ -14,6 +14,7 @@
 //   node android/drive_direct.mjs [screenshot-dir]
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import net from "node:net";
 import { join } from "node:path";
 import { createDrive, sleep } from "../desktop/drive_lib.mjs";
 import { createPhone, ADB, APK, PKG } from "./phone_lib.mjs";
@@ -25,7 +26,7 @@ const RELAY = `ws://127.0.0.1:${RELAY_PORT}`;
 const D = createDrive({ relayUrl: RELAY, shotsDir: process.argv[2] });
 const { check } = D;
 mkdirSync(D.shots, { recursive: true });
-const { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, shot, hideKeyboard, touch, debug } = createPhone(D);
+const { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, setField, shot, hideKeyboard, touch, debug } = createPhone(D);
 
 async function until(fn, ms = 20000) {
   const end = Date.now() + ms;
@@ -47,6 +48,7 @@ try {
   await sleep(1000);
   adb("install", "-r", APK);
   sh(`pm clear ${PKG}`);
+  sh(`pm grant ${PKG} android.permission.POST_NOTIFICATIONS`); // its dialog would cover the first screen
   adb("reverse", `tcp:${RELAY_PORT}`, `tcp:${RELAY_PORT}`);
   sh("svc power stayon true; settings put system screen_off_timeout 2147483647; settings put global window_animation_scale 0; settings put global transition_animation_scale 0; settings put global animator_duration_scale 0");
   sh(`am start -n ${PKG}/.MainActivity`);
@@ -62,7 +64,8 @@ try {
   debug("set_relay", { url: RELAY });
 
   console.log("-- the desktop app, and each as the other's contact");
-  const desk = await D.launch("desktop", 9351);
+  // A debug port no other driver uses (9351 is drive_devices' alice): a clash attaches to another run's window.
+  const desk = await D.launch("desktop", 9493);
   const phoneCard = debug("overview").me.card;
   const deskCard = (await desk.invoke("overview")).me.card;
   await desk.invoke("add_contact", { name: "Phone", card: phoneCard });
@@ -82,9 +85,9 @@ try {
   const pd = debug("direct_enable");
   check(dd.listening && pd.listening, `both are listening (desktop :${dd.port}, phone :${pd.port})`);
   check(Array.isArray(dd.addresses), "the desktop shows its own addresses");
-  adb("forward", `tcp:${pd.port}`, `tcp:${pd.port}`);
-  fwd = pd.port;
-  await desk.invoke("direct_set_address", { name: "Phone", address: `127.0.0.1:${pd.port}` });
+  // A host port adb picks itself: the phone's own port number may already be taken on this PC.
+  fwd = Number(String(adb("forward", "tcp:0", `tcp:${pd.port}`)).trim());
+  await desk.invoke("direct_set_address", { name: "Phone", address: `127.0.0.1:${fwd}` });
   debug("direct_set_address", { name: "Alice", address: `10.0.2.2:${dd.port}` });
 
   // The screens: the desktop's Settings and the phone's Settings tab show the card.
@@ -117,14 +120,26 @@ try {
   check(relayDown, "the desktop can no longer reach the relay");
 
   console.log("-- desktop to phone, directly");
-  await desk.invoke("send", { name: "Phone", text: "no relay, desktop to phone" });
+  // If the direct try fails the engine falls back to the (dead) relay and says only that: show what each side saw.
+  const reach = await new Promise((res) => {
+    const s = net.connect(fwd, "127.0.0.1", () => { s.destroy(); res("accepts connections"); });
+    s.on("error", (e) => res(`refuses: ${e.message}`)); s.setTimeout(3000, () => { s.destroy(); res("no answer in 3 s"); });
+  });
+  console.log(`   the phone's direct port through adb forward: ${reach}`);
+  try { await desk.invoke("send", { name: "Phone", text: "no relay, desktop to phone" }); }
+  catch (e) {
+    console.log("   desktop direct:", JSON.stringify(await desk.invoke("direct_status")));
+    console.log("   phone direct:", JSON.stringify(debug("direct_status")));
+    throw e;
+  }
   check(await waitText("no relay, desktop to phone", 20000), "the phone shows the message in its list, with the relay dead");
   shot("3-phone-got-direct");
   await tapText("Alice");
   check(await waitText("no relay, desktop to phone"), "the phone's conversation has it");
 
   console.log("-- phone to desktop, directly (typed on the phone's own screen)");
-  await tapField(0); typeText("no relay, phone to desktop"); hideKeyboard();
+  // Typed and checked: the emulator's keyboard can lose keystrokes, and Send must not go before the text is in.
+  check(await setField(0, "no relay, phone to desktop"), "the phone's message box holds the whole text");
   await tapText("Send", true);
   const got = await until(async () => (await desk.invoke("conversation", { name: "Phone" })).some((m) => m.body === "no relay, phone to desktop"), 20000);
   check(!!got, "the desktop received the phone's message with the relay dead");
@@ -136,7 +151,7 @@ try {
   const ps = debug("direct_status");
   check(ds.sent_direct >= 1 && ds.received >= 1, `the desktop counts direct sends and receives (${ds.sent_direct} out, ${ds.received} in)`);
   check(ps.sent_direct >= 1 && ps.received >= 1, `the phone counts direct sends and receives (${ps.sent_direct} out, ${ps.received} in)`);
-  check(ds.contacts.find((c) => c.name === "Phone").address === `127.0.0.1:${pd.port}`, "the typed address is kept for the contact");
+  check(ds.contacts.find((c) => c.name === "Phone").address === `127.0.0.1:${fwd}`, "the typed address is kept for the contact");
 
   console.log("-- the relay comes back and is still the fallback when direct is not available");
   startRelay();

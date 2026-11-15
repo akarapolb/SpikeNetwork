@@ -660,11 +660,13 @@ impl Session {
         }
     }
 
+    /// The listener's own connection. Opening it does not take the network lock: the connection
+    /// lives outside the lock anyway (`listener_receive` takes it for the work), and a relay that
+    /// cannot be reached can hang the attempt for a long time, during which a direct delivery,
+    /// which needs the lock, would be turned away as busy (ADR 0027).
     pub async fn listener_connect(&self) -> Result<Relay> {
         let me = self.home.load_identity()?;
-        let target = self.target();
-        let _net = self.net.lock().await;
-        Relay::connect(target, &me).await
+        Relay::connect(self.target(), &me).await
     }
 
     /// Handle a delivery the listener received, on the listener's own open connection (ADR 0030,
