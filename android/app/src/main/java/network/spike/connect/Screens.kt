@@ -1167,6 +1167,7 @@ fun SettingsTab(m: AppModel) {
     var relay by remember(o.relay) { mutableStateOf(o.relay) }
     var insecure by remember { mutableStateOf(o.relay.startsWith("ws://")) }
     var editing by remember { mutableStateOf(false) }
+    val join = remember { JoinState() }
     val act = ctx as androidx.fragment.app.FragmentActivity
     val bioAvailable = remember { BioLock.available(act) }
     var bio by remember { mutableStateOf(BioLock.enabled(act)) }
@@ -1229,7 +1230,8 @@ fun SettingsTab(m: AppModel) {
             Box(Modifier.size(40.dp).offset(x = (-10).dp).clip(CircleShape).clickable { sec = null }.semantics { contentDescription = "Back to Settings" }, contentAlignment = Alignment.Center) { Ico(Ic.Back) }
             Text(sections.first { it.first == sec }.second, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
         }
-        if (sec == "relay") CardBox {
+        if (sec == "relay" && join.preview != null) JoinConfirm(m, join)
+        if (sec == "relay" && join.preview == null) CardBox {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Ico(Ic.Server, C.AvatarText, 26.dp)
                 Column(Modifier.weight(1f)) {
@@ -1277,6 +1279,7 @@ fun SettingsTab(m: AppModel) {
                 }
             }
         }
+        if (sec == "relay" && join.preview == null) OrganisationSection(m, o, join)
         if (sec == "backup") BackupCard(m)
         if (sec == "direct") DirectCard(m)
         if (sec == "apps") AppsCard(m)

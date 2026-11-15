@@ -78,8 +78,10 @@ screen): it shows this computer's full device id to send to the admin, takes the
 address, shows what joining means, then enrolls and makes that relay home; nothing changes if the relay
 refuses (`Session::preview_join`, `join_relay`, `leave_relay` in `app`; `app/tests/join.rs`;
 `desktop/drive_join.mjs` in a real window). The token does not carry the organisation's name or the
-relay's address, so the screen shows the tenant id and asks for the address. Android has no join screen
-yet.
+relay's address, so the screen shows the tenant id and asks for the address. Android has the same step
+on its Home relay page (`android/.../Organisation.kt`, through the bridge commands `preview_join`,
+`join_relay`, `leave_relay`; `android/drive_join.mjs` on the emulator), with a button to scan the token
+from a QR code; nothing makes such a code yet, so scanning is untested.
 
 **Relay flags.** `--require-enrollment` switches enrollment on (open mode stays the default, and tokens
 are ignored there); `--enroll-no-visitors` makes a closed relay; `--enroll-max-token-days` (7);
@@ -132,7 +134,8 @@ connection and blocks the old token; visitors reach members but store nothing; o
 ignores tokens; operator requests need the operator key, cannot be replayed or be stale; the join step's
 storage is sealed and per relay. Format tests in `core/src/enroll.rs`.
 
-**Not done.** No join screen on Android, and no QR scan on either platform. No independent review. The
+**Not done.** Nothing shows a token as a QR code (the admin's tools print text), so scanning on Android
+is untested and the desktop has no scan. No independent review. The
 operator listener is plain HTTP like `/metrics`: keep it on loopback or a private network. The operator
 key is a file on the operator's machine (no hardware key, no two-person rule). Tenant usage numbers live
 in memory and in the database, not in Prometheus. No per-tenant storage limit on group mailboxes beyond

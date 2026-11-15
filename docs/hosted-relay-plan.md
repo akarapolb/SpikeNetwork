@@ -8,7 +8,7 @@ A hosted relay is still a **content-blind pipe**: it never sees message text, fi
 ## Slices, in order
 
 ### Slice 0: make one relay safe to share (M). Needed before any tenant
-**Built (ADR 0022): per-address limits, per-connection request rate, trusted-proxy address handling, database work off the async threads, schema migrations with backup, `/healthz` and content-free `/metrics`.** The list below is what it was asked to cover. Slice 1 is built (ADR 0023, accepted 2026-11-15; not independently reviewed; join screen on desktop, not yet on Android).
+**Built (ADR 0022): per-address limits, per-connection request rate, trusted-proxy address handling, database work off the async threads, schema migrations with backup, `/healthz` and content-free `/metrics`.** The list below is what it was asked to cover. Slice 1 is built (ADR 0023, accepted 2026-11-15; not independently reviewed; join screens on desktop and Android).
 Engineering the single-node relay already needs (the session 1 and ADR 0004 gap lists):
 - Per-IP connection and rate limits, plus per-device rate limits (the relay cannot see senders, so limits attach to the connection and to the recipient queue).
 - Move SQLite calls off the async threads (`spawn_blocking` or a pool); schema migrations; startup checks.

@@ -36,6 +36,8 @@ data class DeviceInfo(val id: String, val self: Boolean, val approver: Boolean)
 
 data class Me(
     val fingerprint: String,
+    /** This device's full id: what an organisation's admin needs to issue an enrollment token (ADR 0023). */
+    val deviceId: String,
     val card: String,
     val devices: Int,
     val deviceList: List<DeviceInfo>,
@@ -49,13 +51,15 @@ data class Overview(
     val groups: List<Group>,
     val requests: Int,
     val relay: String,
+    /** The tenant id of the organisation whose relay this is, if this phone joined it with a token. */
+    val organisation: String? = null,
 )
 
 fun parseOverview(o: JSONObject): Overview {
     val me = o.getJSONObject("me")
     return Overview(
         me = Me(
-            me.getString("fingerprint"), me.getString("card"), me.getInt("devices"),
+            me.getString("fingerprint"), me.optString("device_id"), me.getString("card"), me.getInt("devices"),
             me.getJSONArray("device_list").mapObjects {
                 DeviceInfo(it.getString("id"), it.getBoolean("this"), it.getBoolean("approver"))
             },
@@ -78,6 +82,7 @@ fun parseOverview(o: JSONObject): Overview {
         },
         requests = o.getInt("requests"),
         relay = o.getString("relay"),
+        organisation = o.optJSONObject("organisation")?.optString("tenant"),
     )
 }
 
