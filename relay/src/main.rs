@@ -92,6 +92,21 @@ struct Args {
     /// Require `Authorization: Bearer <token>` for /metrics. Needed on a non-loopback address.
     #[arg(long, env = "SPIKE_RELAY_METRICS_TOKEN")]
     metrics_token: Option<String>,
+    /// Admit only devices enrolled in a tenant (ADR 0023). Without it the relay is open: anyone may
+    /// register, which is right for a private relay and for local development.
+    #[arg(long)]
+    require_enrollment: bool,
+    /// With --require-enrollment, refuse devices from elsewhere entirely. By default they may sign
+    /// in as visitors that can only reach this relay's members (so outsiders can message them).
+    #[arg(long, requires = "require_enrollment")]
+    enroll_no_visitors: bool,
+    /// Longest an enrollment token may still be valid for when it is presented, in days.
+    #[arg(long, default_value_t = 7)]
+    enroll_max_token_days: u64,
+    /// The operator's Ed25519 public key (hex, from `spike-relay-admin keygen`). Enables signed
+    /// operator requests (`POST /admin`) on the --metrics-listen address.
+    #[arg(long, env = "SPIKE_RELAY_OPERATOR_KEY", requires = "metrics_listen")]
+    operator_key: Option<String>,
 }
 
 #[tokio::main]
@@ -139,6 +154,23 @@ async fn main() -> std::io::Result<()> {
         }
         None => None,
     };
+    if let Some(k) = &a.operator_key {
+        let k = k.trim();
+        if k.len() != 64 || hex::decode(k).is_err() {
+            eprintln!("--operator-key must be a 64-character hex Ed25519 public key");
+            std::process::exit(2);
+        }
+    }
+    if a.require_enrollment {
+        eprintln!(
+            "spike-relay: enrollment required ({})",
+            if a.enroll_no_visitors {
+                "closed: unenrolled devices are refused"
+            } else {
+                "unenrolled devices may only reach members"
+            }
+        );
+    }
     let cfg = Config {
         max_conns_per_ip: a.max_conns_per_ip,
         conn_rate_per_ip: a.conn_rate_per_ip,
@@ -163,6 +195,10 @@ async fn main() -> std::io::Result<()> {
         push_min_interval: Duration::from_secs(a.push_min_interval_secs),
         db_path: a.db,
         tls,
+        require_enrollment: a.require_enrollment,
+        enroll_visitors: !a.enroll_no_visitors,
+        enroll_max_token_secs: a.enroll_max_token_days * 24 * 3600,
+        operator_key: a.operator_key.map(|k| k.trim().to_lowercase()),
         ..Config::default()
     };
     serve_with_metrics(listener, metrics_listener, cfg).await

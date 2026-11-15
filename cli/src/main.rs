@@ -185,6 +185,55 @@ enum Cmd {
         #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
         relay: String,
     },
+    /// Join an organisation's relay with the enrollment token its admin gave you (ADR 0023). The
+    /// token is stored sealed with your other settings and shown only to that relay.
+    Join {
+        /// The `spike-enroll1:` token.
+        token: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// Forget the enrollment token for a relay on this device. The relay keeps the enrollment
+    /// until the organisation's admin revokes it.
+    Leave {
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
+    /// List the organisation relays this device joined.
+    Enrollments,
+    /// Organisation admin: make a tenant admin key. The private half goes to --out; give the
+    /// printed public half to the relay operator.
+    TenantKeygen {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Organisation admin: sign an enrollment token for one device (its device id, from `spike card`).
+    TenantToken {
+        /// The admin key file from `tenant-keygen`.
+        #[arg(long)]
+        key: PathBuf,
+        /// The tenant id the operator registered.
+        #[arg(long)]
+        tenant: String,
+        /// The device to admit.
+        #[arg(long)]
+        device: String,
+        /// Days the token may be redeemed for (the relay accepts at most its own limit, 7 by default).
+        #[arg(long, default_value_t = 7)]
+        days: u64,
+    },
+    /// Organisation admin: remove a device from the tenant. The relay refuses it from then on and
+    /// deletes what it holds for it.
+    TenantRevoke {
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        tenant: String,
+        #[arg(long)]
+        device: String,
+        #[arg(long, env = "SPIKE_RELAY", default_value = "ws://127.0.0.1:8787")]
+        relay: String,
+    },
     /// Agent: show your requests and the receipts you got.
     AgentStatus,
     /// List the known typed actions and their fields.
@@ -719,6 +768,24 @@ fn passphrase(file: &Option<PathBuf>, confirm: bool) -> Result<Zeroizing<String>
     Ok(p)
 }
 
+/// Write a private key file readable only by its owner (where the platform allows).
+fn write_secret(path: &std::path::Path, hex: &str) -> Result<()> {
+    std::fs::write(path, hex).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn read_admin_key(path: &std::path::Path) -> Result<spike_core::enroll::SigningKey> {
+    let hex =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    spike_core::enroll::SigningKey::from_hex(&hex)
+        .map_err(|_| anyhow::anyhow!("{} does not hold an admin key", path.display()))
+}
+
 async fn run() -> Result<()> {
     let cli = Cli::parse();
     // Services verify without an identity of their own: no vault to unlock.
@@ -743,6 +810,40 @@ async fn run() -> Result<()> {
             input.as_deref(),
             *check_only,
         );
+    }
+    // An organisation admin's key work needs no identity of its own.
+    if let Cmd::TenantKeygen { out } = &cli.cmd {
+        if out.exists() {
+            bail!("{} exists; not overwriting a key", out.display());
+        }
+        let k = spike_core::enroll::SigningKey::generate();
+        write_secret(out, &k.to_hex())?;
+        println!("{}", k.public_hex());
+        eprintln!(
+            "admin key written to {}. Keep it safe: whoever holds it can admit devices to your organisation.",
+            out.display()
+        );
+        eprintln!("Give the public key above to the relay operator.");
+        return Ok(());
+    }
+    if let Cmd::TenantToken {
+        key,
+        tenant,
+        device,
+        days,
+    } = &cli.cmd
+    {
+        let k = read_admin_key(key)?;
+        let not_after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs()
+            + days * 24 * 3600;
+        let t = k
+            .issue(tenant, device.trim(), not_after)
+            .context("tenant id or device id is not valid")?;
+        println!("{}", t.encode());
+        eprintln!("valid for {days} days, for device {device} only. The device runs: spike join <token> --relay <url>");
+        return Ok(());
     }
     if let Cmd::AgentTypes = &cli.cmd {
         for t in spike_core::action::REGISTRY {
@@ -801,6 +902,8 @@ async fn run() -> Result<()> {
             opts: TransportOpts {
                 ca_file: cli.relay_ca.clone(),
                 allow_insecure: cli.allow_insecure_transport,
+                // A restored device has a new device id, so no old token would fit it.
+                ..TransportOpts::default()
             },
         };
         let r = opened
@@ -837,6 +940,7 @@ async fn run() -> Result<()> {
     let opts = TransportOpts {
         ca_file: cli.relay_ca,
         allow_insecure: cli.allow_insecure_transport,
+        enroll: home.load_enrollments()?,
     };
     let target = |url: String| Target {
         url,
@@ -844,8 +948,89 @@ async fn run() -> Result<()> {
     };
 
     match cli.cmd {
-        Cmd::Init { .. } | Cmd::Restore { .. } | Cmd::VerifyReceipt { .. } | Cmd::AgentTypes => {
+        Cmd::Init { .. }
+        | Cmd::Restore { .. }
+        | Cmd::VerifyReceipt { .. }
+        | Cmd::AgentTypes
+        | Cmd::TenantKeygen { .. }
+        | Cmd::TenantToken { .. } => {
             unreachable!("handled above")
+        }
+        Cmd::Join { token, relay } => {
+            let tok = spike_core::enroll::EnrollToken::decode(&token)
+                .context("that is not an enrollment token (it starts with spike-enroll1:)")?;
+            let me = home.load_identity()?;
+            if tok.device_id != me.device_id() {
+                bail!(
+                    "this token was issued for device {}, but this device is {}: ask for a token for this device",
+                    tok.device_id,
+                    me.device_id()
+                );
+            }
+            let mut opts = opts.clone();
+            opts.enroll.insert(&relay, &token);
+            let r = spike_cli::client::Relay::connect(
+                Target {
+                    url: relay.clone(),
+                    opts: opts.clone(),
+                },
+                &me,
+            )
+            .await?;
+            match &r.tenant {
+                Some(t) if *t == tok.tenant => {}
+                Some(t) => bail!(
+                    "the relay enrolled this device in '{t}', not '{}'",
+                    tok.tenant
+                ),
+                None => bail!(
+                    "this relay does not require enrollment, so the token is not needed there"
+                ),
+            }
+            home.save_enrollments(&opts.enroll)?;
+            println!("joined organisation '{}' on {relay}", tok.tenant);
+            println!(
+                "The relay now knows this device id belongs to '{}', and nothing else about you.",
+                tok.tenant
+            );
+            println!("Use it as your home relay: --relay {relay} (or SPIKE_RELAY).");
+        }
+        Cmd::Leave { relay } => {
+            let mut e = home.load_enrollments()?;
+            if e.remove(&relay) {
+                home.save_enrollments(&e)?;
+                println!("forgot the token for {relay}; the organisation's admin can revoke the enrollment");
+            } else {
+                println!("this device holds no token for {relay}");
+            }
+        }
+        Cmd::Enrollments => {
+            let mut any = false;
+            for (relay, token) in home.load_enrollments()?.relays() {
+                any = true;
+                match spike_core::enroll::EnrollToken::decode(token) {
+                    Ok(t) => println!("{relay}  organisation '{}'", t.tenant),
+                    Err(_) => println!("{relay}  (unreadable token)"),
+                }
+            }
+            if !any {
+                println!("no organisation relays joined");
+            }
+        }
+        Cmd::TenantRevoke {
+            key,
+            tenant,
+            device,
+            relay,
+        } => {
+            let k = read_admin_key(&key)?;
+            let rev = k
+                .revoke(&tenant, device.trim())
+                .context("tenant id or device id is not valid")?;
+            let me = home.load_identity()?;
+            let mut r = spike_cli::client::Relay::connect(target(relay.clone()), &me).await?;
+            r.revoke(&rev.encode()).await?;
+            println!("device {device} removed from '{tenant}' on {relay}");
         }
         Cmd::Card => {
             let card = home.identity_card()?;

@@ -94,6 +94,42 @@ pub struct Relay<S: Socket = WsSocket, C: Clock + Clone = TokioClock> {
     pong_due: Option<u64>,
     /// Group entries pushed while this connection was waiting for something else.
     group_pending: VecDeque<(String, GroupEntry, bool)>,
+    /// On a relay that requires enrollment (ADR 0023): the organisation this device is enrolled
+    /// in; `None` on an open relay or when signed in as a visitor.
+    pub tenant: Option<String>,
+}
+
+/// Words for a refusal at sign-in that the person can act on (ADR 0023: "the app says so in words").
+pub fn explain_refusal(code: &str, message: &str) -> String {
+    let hint = match code {
+        "not_enrolled" => {
+            "this relay only admits devices of its organisation: ask its admin for an enrollment token, then run `spike join <token> --relay <url>`"
+        }
+        "enroll_expired" => "the enrollment token expired before it was used: ask for a new one",
+        "enroll_invalid" => {
+            "the enrollment token is not valid here (another device's, another relay's, or altered)"
+        }
+        "enroll_revoked" => "this device was removed from the organisation by its admin",
+        "enroll_conflict" => "this device already belongs to another organisation on this relay",
+        "tenant_suspended" => {
+            "the relay operator has suspended this organisation; nothing was deleted"
+        }
+        "tenant_over_limit" => {
+            let limit = message.split(':').next().unwrap_or("").trim();
+            return match limit {
+                "devices" => {
+                    "the organisation has no room for another device: ask its admin".into()
+                }
+                "connections" => {
+                    "the organisation has as many connections open as its plan allows: try again shortly"
+                        .into()
+                }
+                _ => format!("an organisation limit was reached ({message})"),
+            };
+        }
+        _ => return message.to_string(),
+    };
+    hint.to_string()
 }
 
 /// Ping every 25 s (under the 60 s idle timeout many proxies use) and give up after 15 s of silence.
@@ -134,6 +170,7 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
             pong_wait: PONG_WAIT,
             pong_due: None,
             group_pending: VecDeque::new(),
+            tenant: None,
         };
         let ServerMsg::Challenge { nonce } = r.read().await? else {
             bail!("relay did not send a challenge")
@@ -142,6 +179,12 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
         r.write(&ClientMsg::Auth {
             ed25519: hex::encode(me.ed_public()),
             sig: hex::encode(me.sign_auth(&nonce, &audience)),
+            // Only the token stored for this relay, so no other relay learns the tenant.
+            enroll: target
+                .opts
+                .enroll
+                .for_audience(&audience)
+                .map(str::to_string),
         })
         .await?;
         loop {
@@ -150,13 +193,39 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
                     device_id,
                     prekeys,
                     fallback_age_secs,
+                    tenant,
                 } => {
                     r.device_id = device_id;
                     r.prekeys = prekeys;
                     r.fallback_age_secs = fallback_age_secs;
+                    r.tenant = tenant;
                     return Ok(r);
                 }
+                ServerMsg::Error { code, message } => {
+                    bail!(
+                        "relay refused: {code}: {}",
+                        explain_refusal(&code, &message)
+                    )
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Hand the relay a tenant admin's signed revocation (`spike-revoke1:...`, ADR 0023).
+    pub async fn revoke(&mut self, revocation: &str) -> Result<()> {
+        self.write(&ClientMsg::Revoke {
+            revocation: revocation.into(),
+        })
+        .await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::Revoked { .. } => return Ok(()),
                 ServerMsg::Error { code, message } => bail!("relay refused: {code}: {message}"),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
                 _ => {}
             }
         }

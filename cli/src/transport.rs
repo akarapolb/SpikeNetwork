@@ -26,6 +26,48 @@ pub struct TransportOpts {
     /// Permit plain `ws://` to non-loopback hosts. Content stays end-to-end
     /// encrypted, but metadata and the connection itself are exposed.
     pub allow_insecure: bool,
+    /// Enrollment tokens for organisation relays this device joined (ADR 0023). Each is presented
+    /// only to the relay it was stored for, so other relays never learn the tenant.
+    pub enroll: Enrollments,
+}
+
+/// Enrollment tokens by relay: the relay's sign-in audience (`host[:port]`) to a `spike-enroll1:`
+/// token. Stored sealed in the state directory (`Home::save_enrollments`). `Debug` shows only
+/// which relays have one: tokens never go in logs.
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Enrollments(std::collections::BTreeMap<String, String>);
+
+impl std::fmt::Debug for Enrollments {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
+}
+
+impl Enrollments {
+    /// The token for the relay at `url`, if this device joined it.
+    pub fn for_url(&self, url: &str) -> Option<&str> {
+        self.for_audience(&Target::from(url).audience())
+    }
+
+    pub fn for_audience(&self, audience: &str) -> Option<&str> {
+        self.0.get(audience).map(String::as_str)
+    }
+
+    /// Remember `token` for the relay at `url` (replacing an older one).
+    pub fn insert(&mut self, url: &str, token: &str) {
+        self.0
+            .insert(Target::from(url).audience(), token.trim().to_string());
+    }
+
+    /// Forget the token for the relay at `url`. True if there was one.
+    pub fn remove(&mut self, url: &str) -> bool {
+        self.0.remove(&Target::from(url).audience()).is_some()
+    }
+
+    /// The relays (audiences) this device holds a token for, with the tokens.
+    pub fn relays(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0.iter().map(|(a, t)| (a.as_str(), t.as_str()))
+    }
 }
 
 #[derive(Clone, Debug)]

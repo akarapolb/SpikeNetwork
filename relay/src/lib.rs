@@ -7,11 +7,17 @@
 //! Abuse limits (per-address connection caps, per-connection request rates) live in
 //! [`limits`], and content-free counters in [`metrics`]. Every request is processed on a
 //! blocking thread so a slow disk cannot stall the connections of everyone else (ADR 0022).
+//!
+//! Tenants and enrollment (ADR 0023) live in [`tenancy`]: with `require_enrollment` on, only
+//! devices enrolled in a tenant (or visitors reaching them) may sign in, each tenant is held to its
+//! own limits, and the operator manages tenants with signed requests on the operator listener.
 
+pub mod admin_client;
 pub mod limits;
 pub mod metrics;
 pub mod push;
 pub mod store;
+mod tenancy;
 pub mod tls;
 
 use futures_util::{SinkExt, StreamExt};
@@ -105,6 +111,17 @@ pub struct Config {
     /// Terminate TLS in the relay. Without it the relay speaks plain WebSocket
     /// and must sit behind a TLS-terminating proxy or on loopback.
     pub tls: Option<tls::TlsFiles>,
+    /// Only devices enrolled in a tenant may sign in as members (ADR 0023). Off means open mode:
+    /// anyone may register, as before.
+    pub require_enrollment: bool,
+    /// With enrollment on, let other devices sign in as visitors that can only reach members
+    /// (send to them, claim their keys, read their attachments). Off is a closed relay.
+    pub enroll_visitors: bool,
+    /// Longest a token may still be valid for when presented (ADR 0023: short-lived to redeem).
+    pub enroll_max_token_secs: u64,
+    /// The operator's Ed25519 public key (hex). With it, `POST /admin` on the operator listener
+    /// accepts requests signed by the matching private key.
+    pub operator_key: Option<String>,
 }
 
 impl Default for Config {
@@ -139,6 +156,10 @@ impl Default for Config {
             push_min_interval: Duration::from_secs(5),
             db_path: None,
             tls: None,
+            require_enrollment: false,
+            enroll_visitors: true,
+            enroll_max_token_secs: spike_core::enroll::DEFAULT_REDEEM_SECS,
+            operator_key: None,
         }
     }
 }
@@ -171,6 +192,8 @@ struct Shared {
     started: Instant,
     /// Devices to wake (their ids); `None` when pushes are off. A worker task reads it (see `push_worker`).
     push_tx: Option<mpsc::Sender<String>>,
+    /// Per-tenant connection counts, request budgets and refusals. Never held with `state`.
+    tenancy: tenancy::Tenancy,
 }
 
 pub async fn serve(listener: TcpListener, cfg: Config) -> std::io::Result<()> {
@@ -198,6 +221,7 @@ pub async fn serve_with_metrics(
         limits: IpLimits::new(cfg.max_conns_per_ip, cfg.conn_rate_per_ip),
         started: Instant::now(),
         push_tx,
+        tenancy: Mutex::default(),
     });
     if let Some(rx) = push_rx {
         tokio::spawn(push_worker(
@@ -225,7 +249,7 @@ pub async fn serve_with_metrics(
         });
     }
     if let Some(ml) = metrics_listener {
-        tokio::spawn(serve_metrics(ml, state.clone(), cfg.metrics_token.clone()));
+        tokio::spawn(serve_metrics(ml, state.clone(), cfg.clone()));
     }
     loop {
         // An accept error (out of file descriptors, a client that reset while queued) is routine
@@ -313,6 +337,10 @@ struct Peer {
     out: mpsc::WeakSender<ServerMsg>,
     /// The mailboxes this connection is subscribed to.
     subs: Mutex<HashSet<String>>,
+    /// The tenant this device is enrolled in (enrolled mode only).
+    tenant: Option<String>,
+    /// Signed in on an enrolled relay without being enrolled: may only reach members.
+    visitor: bool,
 }
 
 /// What a request costs the connection's token bucket.
@@ -324,6 +352,7 @@ fn cost(m: &ClientMsg) -> f64 {
         ClientMsg::Ack { .. } | ClientMsg::GroupUnsubscribe { .. } => 0.25,
         ClientMsg::TurnCredentials => 5.0,
         ClientMsg::RegisterPush { .. } | ClientMsg::UnregisterPush => 3.0,
+        ClientMsg::Revoke { .. } => 5.0,
         _ => 1.0,
     }
 }
@@ -419,7 +448,12 @@ where
     let Some(Ok(Message::Text(text))) = first else {
         return Err(());
     };
-    let Ok(ClientMsg::Auth { ed25519, sig }) = serde_json::from_str::<ClientMsg>(&text) else {
+    let Ok(ClientMsg::Auth {
+        ed25519,
+        sig,
+        enroll,
+    }) = serde_json::from_str::<ClientMsg>(&text)
+    else {
         let _ = send_json(&mut tx, &err("bad_request", "expected auth")).await;
         state.metrics.error("bad_request");
         return Err(());
@@ -445,6 +479,32 @@ where
     };
     Metrics::inc(&state.metrics.auth_ok);
 
+    // Enrolled mode: a member (enrolling now if it brought a token), a visitor, or refused.
+    let admitted = {
+        let (st, cf, dev) = (state.clone(), cfg.clone(), me.clone());
+        tokio::task::spawn_blocking(move || tenancy::admit(&st, &cf, &dev, enroll.as_deref()))
+            .await
+            .map_err(|_| ())?
+    };
+    let (admitted, _tenant_conn) = match admitted {
+        Ok(a) => a,
+        Err(refusal) => {
+            if let ServerMsg::Error { code, .. } = &refusal {
+                state.metrics.error(code);
+            }
+            let _ = send_json(&mut tx, &refusal).await;
+            return Err(());
+        }
+    };
+    let (tenant, visitor) = match admitted {
+        tenancy::Admitted::Open => (None, false),
+        tenancy::Admitted::Member(t) => (Some(t), false),
+        tenancy::Admitted::Visitor => {
+            Metrics::inc(&state.metrics.visitors_signed_in);
+            (None, true)
+        }
+    };
+
     // 2. Register (a device may hold a few live connections; the oldest beyond the cap is closed)
     // and flush the queue. The database work runs on a blocking thread.
     let (out_tx, mut out_rx) = mpsc::channel(OUT_QUEUE);
@@ -464,6 +524,8 @@ where
         conn_id,
         out: out_for_peer,
         subs: Mutex::new(HashSet::new()),
+        tenant: tenant.clone(),
+        visitor,
     });
     let run = async {
         send_json(
@@ -472,6 +534,7 @@ where
                 device_id: me.clone(),
                 prekeys,
                 fallback_age_secs,
+                tenant: tenant.clone(),
             },
         )
         .await?;
@@ -610,8 +673,22 @@ fn dispatch(
     msg: ClientMsg,
 ) -> Option<ServerMsg> {
     let m = &state.metrics;
+    if p.visitor && !tenancy::visitor_may(&msg) && !matches!(msg, ClientMsg::Ack { .. }) {
+        return Some(tenancy::visitor_refusal());
+    }
+    // A member's requests also draw on its tenant's shared budget.
+    if let Some(t) = &p.tenant {
+        if !tenancy::allow_request(state, t, cost(&msg)) {
+            return Some(tenancy::over_limit(
+                state,
+                t,
+                spike_core::enroll::limit_name::REQ_RATE,
+            ));
+        }
+    }
     match msg {
-        ClientMsg::Send { to, blob, live } => on_send(state, cfg, &to, &blob, live),
+        ClientMsg::Send { to, blob, live } => on_send(state, cfg, p, &to, &blob, live),
+        ClientMsg::Revoke { revocation } => Some(tenancy::on_revoke(state, &revocation)),
         ClientMsg::Ack { id } => {
             Metrics::inc(&m.acks);
             on_ack(state, &p.me, &id);
@@ -676,7 +753,7 @@ fn dispatch(
             total,
             data,
         } => {
-            let r = on_put_chunk(state, cfg, &p.me, &blob, index, total, &data);
+            let r = on_put_chunk(state, cfg, p, &blob, index, total, &data);
             if matches!(r, ServerMsg::BlobChunkStored { .. }) {
                 Metrics::inc(&m.chunks_stored);
             }
@@ -763,6 +840,7 @@ fn internal() -> ServerMsg {
 fn on_send(
     state: &Shared,
     cfg: &Config,
+    p: &Peer,
     to: &str,
     blob_hex: &str,
     live: bool,
@@ -770,12 +848,20 @@ fn on_send(
     if !is_valid_device_id(to) {
         return Some(err("bad_request", "invalid recipient id"));
     }
+    if p.visitor && !tenancy::is_member(state, to) {
+        return Some(err(
+            "not_enrolled",
+            "a visitor may only send to devices enrolled on this relay",
+        ));
+    }
     if blob_hex.len() > cfg.max_blob * 2 {
         return Some(err("too_large", "blob exceeds relay limit"));
     }
     let Ok(blob) = hex::decode(blob_hex) else {
         return Some(err("bad_request", "blob is not hex"));
     };
+    // Looked up before taking the state lock: the store is always locked after it, never before.
+    let (cap, binding_tenant) = tenancy::queue_cap(state, cfg, to);
     let st = state.state.lock().unwrap();
     if live {
         // Never stored and never a wake-up push: connected devices get it now, others never.
@@ -796,10 +882,18 @@ fn on_send(
     }
     let id = match state
         .store
-        .enqueue(to, &blob, cfg.ttl.as_millis() as i64, cfg.queue_cap)
+        .enqueue(to, &blob, cfg.ttl.as_millis() as i64, cap)
     {
         Ok(Enqueued::Id(id)) => id.to_string(),
-        Ok(Enqueued::Full) => return Some(err("queue_full", "recipient queue is full")),
+        Ok(Enqueued::Full) => {
+            drop(st);
+            return Some(match binding_tenant {
+                Some(t) => {
+                    tenancy::over_limit(state, &t, spike_core::enroll::limit_name::QUEUE_DEPTH)
+                }
+                None => err("queue_full", "recipient queue is full"),
+            });
+        }
         Err(_) => return Some(internal()),
     };
     Metrics::inc(&state.metrics.messages_accepted);
@@ -1321,7 +1415,7 @@ fn is_blob_id(s: &str) -> bool {
 fn on_put_chunk(
     state: &Shared,
     cfg: &Config,
-    me: &str,
+    p: &Peer,
     blob: &str,
     index: u32,
     total: u32,
@@ -1340,14 +1434,28 @@ fn on_put_chunk(
     if data.len() < OVERHEAD {
         return err("bad_request", "chunk too short");
     }
+    let tenant_limit = match &p.tenant {
+        Some(t) => match state.store.tenant(t) {
+            Ok(Some(row)) => Some((t.as_str(), row.limits.attachment_bytes)),
+            Ok(None) => {
+                return err(
+                    "not_enrolled",
+                    "this device's organisation no longer exists here",
+                )
+            }
+            Err(_) => return internal(),
+        },
+        None => None,
+    };
     match state.store.put_chunk(
         blob,
         index,
         total,
-        me,
+        &p.me,
         &data,
         cfg.blob_ttl.as_millis() as i64,
         cfg.blob_quota,
+        tenant_limit,
     ) {
         Ok(PutChunk::Stored) => ServerMsg::BlobChunkStored {
             blob: blob.into(),
@@ -1361,6 +1469,11 @@ fn on_put_chunk(
         Ok(PutChunk::OverQuota) => {
             err("quota_exceeded", "this device's attachment storage is full")
         }
+        Ok(PutChunk::TenantOverQuota) => tenancy::over_limit(
+            state,
+            p.tenant.as_deref().unwrap_or_default(),
+            spike_core::enroll::limit_name::ATTACHMENT_BYTES,
+        ),
         Err(_) => internal(),
     }
 }
@@ -1419,25 +1532,27 @@ fn same_secret(a: &str, b: &str) -> bool {
     diff == 0
 }
 
-async fn serve_metrics(listener: TcpListener, state: Arc<Shared>, token: Option<String>) {
+async fn serve_metrics(listener: TcpListener, state: Arc<Shared>, cfg: Arc<Config>) {
     loop {
         let Ok((mut sock, _)) = listener.accept().await else {
             return;
         };
-        let (state, token) = (state.clone(), token.clone());
+        let (state, cfg) = (state.clone(), cfg.clone());
         tokio::spawn(async move {
-            let _ = tokio::time::timeout(
-                Duration::from_secs(5),
-                http_once(&mut sock, &state, token.as_deref()),
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(Duration::from_secs(5), http_once(&mut sock, &state, &cfg))
+                    .await;
         });
     }
 }
 
-/// Answer one HTTP/1.1 request on a socket, then close it. Only `GET /healthz` and
-/// `GET /metrics`; there is nothing else to serve.
-async fn http_once(sock: &mut tokio::net::TcpStream, state: &Arc<Shared>, token: Option<&str>) {
+/// Largest operator request body.
+const MAX_ADMIN_BODY: usize = 32 * 1024;
+
+/// Answer one HTTP/1.1 request on a socket, then close it. `GET /healthz`, `GET /metrics` and,
+/// with an operator key configured, `POST /admin` (a signed operator request, ADR 0023).
+async fn http_once(sock: &mut tokio::net::TcpStream, state: &Arc<Shared>, cfg: &Arc<Config>) {
+    let token = cfg.metrics_token.as_deref();
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
@@ -1447,16 +1562,59 @@ async fn http_once(sock: &mut tokio::net::TcpStream, state: &Arc<Shared>, token:
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
         }
     }
-    let head = String::from_utf8_lossy(&buf).into_owned();
+    let split = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+        .unwrap_or(buf.len());
+    let head = String::from_utf8_lossy(&buf[..split]).into_owned();
     let mut lines = head.split("\r\n");
     let request = lines.next().unwrap_or("");
     let mut parts = request.split(' ');
     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-    let bearer = lines
-        .filter_map(|l| l.split_once(':'))
+    let headers: Vec<(&str, &str)> = lines.filter_map(|l| l.split_once(':')).collect();
+    let bearer = headers
+        .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
         .and_then(|(_, v)| v.trim().strip_prefix("Bearer "))
         .map(str::trim);
+    if method == "POST" && path == "/admin" {
+        let len = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.trim().parse::<usize>().ok());
+        let (status, body) = match len {
+            Some(n) if n <= MAX_ADMIN_BODY => {
+                let mut body = buf[split..].to_vec();
+                while body.len() < n {
+                    match sock.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(k) => body.extend_from_slice(&chunk[..k]),
+                    }
+                }
+                body.truncate(n);
+                let (s, c) = (state.clone(), cfg.clone());
+                tokio::task::spawn_blocking(move || tenancy::admin(&s, &c, &body))
+                    .await
+                    .unwrap_or((
+                        "500 Internal Server Error",
+                        "{\"ok\":false,\"error\":\"internal\"}".to_string(),
+                    ))
+            }
+            _ => (
+                "413 Payload Too Large",
+                "{\"ok\":false,\"error\":\"a content length up to 32 KiB is required\"}"
+                    .to_string(),
+            ),
+        };
+        let reply = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = sock.write_all(reply.as_bytes()).await;
+        let _ = sock.shutdown().await;
+        return;
+    }
     let (status, body) = if method != "GET" {
         ("405 Method Not Allowed", "method not allowed\n".to_string())
     } else if path == "/healthz" {

@@ -66,6 +66,7 @@ fn target(url: String, ca: Option<&Path>) -> Target {
         opts: TransportOpts {
             ca_file: ca.map(Path::to_path_buf),
             allow_insecure: false,
+            ..TransportOpts::default()
         },
     }
 }

@@ -12,6 +12,10 @@ name = "spike_relay"
 name = "spike-relay"
 path = "src/main.rs"
 
+[[bin]]
+name = "spike-relay-admin"
+path = "src/bin/admin.rs"
+
 [dependencies]
 spike-core = { path = "../core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
