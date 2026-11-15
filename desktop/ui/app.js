@@ -359,7 +359,10 @@ async function shareInvite() {
   try {
     const link = await invoke("create_invite");
     st.invite = { link };
-    try { await navigator.clipboard.writeText(link); toast("Invite link copied. Send it to one person."); } catch (_) {}
+    render();
+    // Not awaited before showing the link: in a window without focus the write may never settle.
+    navigator.clipboard.writeText(link).then(() => toast("Invite link copied. Send it to one person."), () => {});
+    return;
   } catch (e) { st.invite = null; toast(String(e)); }
   render();
 }
