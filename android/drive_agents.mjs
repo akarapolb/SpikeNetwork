@@ -152,7 +152,7 @@ try {
   await tapText("Pay up to 500.00 · 5 an hour");
   check(await waitText("Allowed until"), "the grant opens its limits screen");
   t = screenText();
-  check(t.includes("Each request") && t.includes("500.00") && t.includes("Up to 100.00"), "the limits screen shows the amounts");
+  check(t.includes("Each request") && t.includes("500.00") && t.includes("100.00") && t.includes("Without asking"), "the limits screen shows the amounts");
   check(t.includes("Stop this agent"), "and offers to stop the agent");
   shot("agents-4-limits");
 
@@ -175,7 +175,6 @@ try {
   await tapText("Back", true); await sleep(600);
   t = await reopenAgents();
   check(t.includes("Pay up to 250.50 · 5 an hour"), "the tab shows the changed grant");
-  await tapText("Back", true); await sleep(600);
   await tapText("Activity log", true);
   check(await waitText("Hash-chained, no message content"), "the activity log opens");
   t = screenText();
