@@ -445,13 +445,13 @@ if (navigator.mediaDevices && navigator.mediaDevices.addEventListener)
 
 /* The live microphone level while Settings > Calls is on screen. The microphone is let go as soon as the section is
    left (checked every frame) or a call takes it. */
-const meter = { stream: null, ctx: null, raf: 0, el: null, gone: 0, mic: null };
+const micLevel = { stream: null, ctx: null, raf: 0, el: null, gone: 0, mic: null };
 async function startMeter() {
   if (cs) return; // a call has the microphone
-  if (meter.stream && meter.mic === chosen("mic")) return;
+  if (micLevel.stream && micLevel.mic === chosen("mic")) return;
   stopMeter();
   const mic = chosen("mic");
-  meter.mic = mic;
+  micLevel.mic = mic;
   await invoke("set_media_access", { on: true }).catch(() => {});
   let stream;
   try { stream = await withChosen((m) => navigator.mediaDevices.getUserMedia({ audio: m ? { deviceId: { exact: m } } : true, video: false })); }
@@ -462,34 +462,34 @@ async function startMeter() {
   }
   if (cs || !document.getElementById("calls-card")) { stream.getTracks().forEach((t) => t.stop()); if (!cs) invoke("set_media_access", { on: false }).catch(() => {}); return; }
   devs.problem = null;
-  meter.stream = stream;
+  micLevel.stream = stream;
   try {
-    meter.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const an = meter.ctx.createAnalyser(); an.fftSize = 512;
-    meter.ctx.createMediaStreamSource(stream).connect(an);
+    micLevel.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const an = micLevel.ctx.createAnalyser(); an.fftSize = 512;
+    micLevel.ctx.createMediaStreamSource(stream).connect(an);
     const buf = new Uint8Array(an.fftSize);
     const tick = () => {
-      if (!meter.stream) return;
-      if (!meter.el || !meter.el.isConnected) { if (++meter.gone > 20) { stopMeter(); return; } }
+      if (!micLevel.stream) return;
+      if (!micLevel.el || !micLevel.el.isConnected) { if (++micLevel.gone > 20) { stopMeter(); return; } }
       else {
-        meter.gone = 0;
+        micLevel.gone = 0;
         an.getByteTimeDomainData(buf);
         let sum = 0; for (const v of buf) { const x = (v - 128) / 128; sum += x * x; }
         const level = Math.min(1, Math.sqrt(sum / buf.length) * 4);
-        meter.el.firstChild.style.width = Math.round(level * 100) + "%";
-        meter.el.setAttribute("aria-valuenow", String(Math.round(level * 100)));
+        micLevel.el.firstChild.style.width = Math.round(level * 100) + "%";
+        micLevel.el.setAttribute("aria-valuenow", String(Math.round(level * 100)));
       }
-      meter.raf = requestAnimationFrame(tick);
+      micLevel.raf = requestAnimationFrame(tick);
     };
-    meter.raf = requestAnimationFrame(tick);
+    micLevel.raf = requestAnimationFrame(tick);
   } catch (_) {}
 }
 function stopMeter() {
-  cancelAnimationFrame(meter.raf);
-  const had = !!meter.stream;
-  if (meter.stream) meter.stream.getTracks().forEach((t) => t.stop());
-  if (meter.ctx) { try { meter.ctx.close(); } catch (_) {} }
-  meter.stream = meter.ctx = null; meter.gone = 0; meter.mic = null;
+  cancelAnimationFrame(micLevel.raf);
+  const had = !!micLevel.stream;
+  if (micLevel.stream) micLevel.stream.getTracks().forEach((t) => t.stop());
+  if (micLevel.ctx) { try { micLevel.ctx.close(); } catch (_) {} }
+  micLevel.stream = micLevel.ctx = null; micLevel.gone = 0; micLevel.mic = null;
   if (had && !cs) invoke("set_media_access", { on: false }).catch(() => {});
 }
 
@@ -519,7 +519,7 @@ function callsCard() {
   }).catch(() => { note.textContent = "Could not ask the relay about TURN."; });
 
   if (!devs.list && !devs.loading) loadDevices();
-  else if (devs.list && !meter.stream && !cs) startMeter();
+  else if (devs.list && !micLevel.stream && !cs) startMeter();
   const of = (kind) => (devs.list || []).filter((d) => d.kind === kind && d.deviceId !== "default" && d.deviceId !== "communications");
   const NAMES = { audioinput: "Microphone", audiooutput: "Speaker", videoinput: "Camera" };
   const pickFor = (kind, key, label) => {
@@ -533,7 +533,7 @@ function callsCard() {
     return s;
   };
   const bar = h("span", { class: "meter", id: "calls-meter", role: "meter", "aria-label": "Microphone level", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, h("i", { style: "width:0%" }));
-  meter.el = bar;
+  micLevel.el = bar;
   const canSink = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
 
   const box = h("input", { type: "checkbox", id: "calls-relay-only" });

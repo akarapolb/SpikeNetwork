@@ -52,7 +52,7 @@ try {
   let peak = 0;
   for (let i = 0; i < 25 && peak === 0; i++) { peak = Math.max(peak, Number(await alice.eval(`const m=document.getElementById('calls-meter'); return m ? m.getAttribute('aria-valuenow') : 0`))); await sleep(120); }
   check(peak > 0, `the microphone level moves while the section is open (${peak})`);
-  check(await alice.eval(`return !!(meter.stream && meter.stream.getAudioTracks()[0].readyState==='live')`), "the meter holds the microphone while the section is open");
+  check(await alice.eval(`return !!(micLevel.stream && micLevel.stream.getAudioTracks()[0].readyState==='live')`), "the meter holds the microphone while the section is open");
 
   // the Test button plays without an error
   await alice.eval(`document.getElementById('calls-test').click()`);
@@ -65,14 +65,14 @@ try {
   await alice.eval(`const s=document.getElementById('calls-cam'); s.value=${JSON.stringify(pickCam.v)}; s.dispatchEvent(new Event('change'));`);
   check((await alice.eval(`return localStorage.getItem('callMic')`)) === pickMic.v, `the microphone choice is kept (${pickMic.t})`);
   check((await alice.eval(`return localStorage.getItem('callCam')`)) === pickCam.v, `the camera choice is kept (${pickCam.t})`);
-  check(await until(() => alice.eval(`return !!(meter.stream && meter.stream.getAudioTracks()[0].getSettings().deviceId===${JSON.stringify(pickMic.v)})`), "meter on chosen mic", 5000), "the meter switches to the chosen microphone");
+  check(await until(() => alice.eval(`return !!(micLevel.stream && micLevel.stream.getAudioTracks()[0].getSettings().deviceId===${JSON.stringify(pickMic.v)})`), "meter on chosen mic", 5000), "the meter switches to the chosen microphone");
   await alice.eval(`render();`); await sleep(300);
   check((await alice.eval(`return document.getElementById('calls-mic').value`)) === pickMic.v, "the list shows the chosen microphone after a redraw");
   await alice.shot("settings-calls");
 
   // leaving the section lets the microphone go
   await alice.eval(`st.section='chats'; render();`);
-  check(await until(() => alice.eval(`return !meter.stream`), "meter stops", 5000), "leaving the section lets the microphone go");
+  check(await until(() => alice.eval(`return !micLevel.stream`), "meter stops", 5000), "leaving the section lets the microphone go");
 
   // --- a video call uses the chosen microphone and camera
   await alice.click("Bob");
