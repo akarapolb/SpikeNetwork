@@ -3,7 +3,7 @@
 //! computer that holds the admin key.
 
 use crate::{Session, DEFAULT_RELAY};
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use spike_cli::org::{self, AdminRelay, Membership};
 use spike_cli::transport::Target;
@@ -160,6 +160,15 @@ async fn timed<T>(what: &str, f: impl std::future::Future<Output = Result<T>>) -
     }
 }
 
+/// Take the app's network lock, giving up at `deadline`: a call stuck on a dead connection must not
+/// leave the join screen waiting forever (the time limit on the join itself only starts once it has
+/// the lock).
+async fn lock_net(net: &tokio::sync::Mutex<()>, deadline: tokio::time::Instant) -> Result<tokio::sync::MutexGuard<'_, ()>> {
+    tokio::time::timeout_at(deadline, net.lock())
+        .await
+        .map_err(|_| anyhow!("the app is still busy with another connection: try again in a moment"))
+}
+
 impl Session {
     /// The same trust settings (extra certificate, plain ws) as the home relay, for another address.
     fn target_at(&self, url: &str) -> Target {
@@ -186,10 +195,15 @@ impl Session {
     /// device's home relay.
     pub async fn org_join(&self, token: &str) -> Result<OrgDto> {
         let body = org::inspect(token)?;
-        let _net = self.net.lock().await;
+        // One deadline for both the wait for the network and the join itself.
+        let deadline = tokio::time::Instant::now() + NET_TIMEOUT;
+        let _net = lock_net(&self.net, deadline).await?;
         let new = self.target_at(&body.relay);
         let old = self.target();
-        let m = timed(&body.relay, org::join(&self.home, token, new, Some(old))).await?;
+        let m = match tokio::time::timeout_at(deadline, org::join(&self.home, token, new, Some(old))).await {
+            Ok(r) => r?,
+            Err(_) => bail!("no answer from {} within {} seconds: check the connection and try again", body.relay, NET_TIMEOUT.as_secs()),
+        };
         self.set_relay(&m.relay)?;
         Ok(org_dto(&m))
     }
@@ -367,5 +381,17 @@ mod tests {
         assert!(bad.to_rules().is_err());
         let blank = RulesDto { backups: Some(" ".into()), ..Default::default() };
         assert_eq!(blank.to_rules().unwrap().backups, None);
+    }
+
+    #[tokio::test]
+    async fn waiting_for_the_network_gives_up() {
+        let net = tokio::sync::Mutex::new(());
+        let held = net.lock().await;
+        let soon = tokio::time::Instant::now() + Duration::from_millis(50);
+        let e = lock_net(&net, soon).await.err().expect("a held lock times out");
+        assert!(e.to_string().contains("busy"));
+        drop(held);
+        let later = tokio::time::Instant::now() + Duration::from_millis(50);
+        assert!(lock_net(&net, later).await.is_ok());
     }
 }
