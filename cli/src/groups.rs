@@ -365,9 +365,30 @@ async fn fan_out(
     env: &mut Envelope,
     own_copies: bool,
 ) -> Result<GroupSend> {
+    fan_out_with(home, base, owners, env, own_copies, FanOut::default()).await
+}
+
+/// How a send differs from the usual one.
+#[derive(Default)]
+struct FanOut {
+    /// A live signal (a call): skip the relay housekeeping, which opens extra connections that displace the
+    /// listener's (as for one-to-one calls, ADR 0028). Device lists then come from what is already stored.
+    quick: bool,
+    /// Only this device (by id), not every device of `owners`.
+    only_device: Option<String>,
+}
+
+async fn fan_out_with(
+    home: &Home,
+    base: &Target,
+    owners: &[String],
+    env: &mut Envelope,
+    own_copies: bool,
+    opts: FanOut,
+) -> Result<GroupSend> {
     let mut me = home.load_identity()?;
-    let mut notes;
-    {
+    let mut notes = vec![];
+    if !opts.quick {
         let mut r = Relay::connect(base.clone(), &me).await?;
         ops::top_up_prekeys(&mut r, home, &mut me).await?;
         notes = ops::sync_own_list(&mut r, home).await?;
@@ -376,7 +397,16 @@ async fn fan_out(
     if !home.this_device_is_listed()? {
         bail!("this device has been removed from your identity and can no longer send");
     }
-    notes.extend(refresh_member_cards(home, base, &me).await?);
+    if !opts.quick {
+        notes.extend(refresh_member_cards(home, base, &me).await?);
+    } else if cards_for(home, owners)?.iter().any(|(_, c)| c.is_none()) {
+        // A live signal still needs a member we have never written to: fetch the cards, best effort.
+        notes.extend(
+            refresh_member_cards(home, base, &me)
+                .await
+                .unwrap_or_default(),
+        );
+    }
     let mut sessions = home.load_sessions()?;
     env.lamport = home.next_lamport()?;
 
@@ -402,6 +432,9 @@ async fn fan_out(
                 .filter(|(d, _)| d.device_id() != my_id)
                 .map(|(d, r)| (d, r, true, usize::MAX)),
         );
+    }
+    if let Some(only) = &opts.only_device {
+        targets.retain(|(d, _, _, _)| &d.device_id() == only);
     }
     // Someone who has never had a session with us needs to know who we are (ADR 0021).
     if matches!(env.kind, Kind::Text | Kind::GroupState)
@@ -559,6 +592,58 @@ pub async fn send_app(
     let report = fan_out(home, base, &[member.to_string()], &mut env, false).await?;
     if report.reached == 0 {
         bail!("could not reach {}", display_name(home, member));
+    }
+    Ok(report)
+}
+
+/// Send one group call signal (ADR 0032) to a small group you are in: to every member and your own other
+/// devices (`Target::AllMembers`), or to one device of one member (`Target::Device`, with that member's owner
+/// key in `owner`). Calls skip the relay housekeeping and are never stored.
+pub async fn send_group_call(
+    home: &Home,
+    base: &Target,
+    group: &str,
+    signal: &spike_core::group_call::Signal,
+    to: &spike_core::group_call::Target,
+    owner: Option<&str>,
+) -> Result<GroupSend> {
+    use spike_core::group_call::Target as To;
+    let rec = find(home, group)?;
+    if rec.status != Status::Joined {
+        bail!("you are not in this group (see `spike group list`)");
+    }
+    let cur = rec.chain()?.current().clone();
+    let me = my_owner(home)?;
+    if !cur.is_member(&me) {
+        bail!("you are no longer a member of this group");
+    }
+    let mut env = Envelope::group_call(signal)?;
+    env.group = Some(cur.group.clone());
+    env.gstate = Some(cur.hash());
+    let report = match to {
+        To::AllMembers => {
+            let owners = others(&cur, &me);
+            let quick = FanOut {
+                quick: true,
+                only_device: None,
+            };
+            fan_out_with(home, base, &owners, &mut env, true, quick).await?
+        }
+        To::Device(device) => {
+            let owner =
+                owner.context("a call signal for one device needs the member who owns it")?;
+            if !cur.is_member(owner) || owner == me {
+                bail!("that person is not another member of this group");
+            }
+            let opts = FanOut {
+                quick: true,
+                only_device: Some(device.clone()),
+            };
+            fan_out_with(home, base, &[owner.to_string()], &mut env, false, opts).await?
+        }
+    };
+    if report.reached == 0 && report.people > 0 {
+        bail!("could not reach anyone in the group with that call signal");
     }
     Ok(report)
 }
@@ -1386,6 +1471,53 @@ pub fn on_envelope(home: &Home, sender: Sender<'_>, env: &Envelope) -> Result<Ou
                 group: cur.name,
                 from: display_name(home, sender.owner),
                 added,
+            })
+        }
+        Kind::GroupCall => {
+            // A call signal is time-sensitive and never stored: no holding for a missing member list, no reply.
+            let Some(rec) = rec else {
+                return Ok(Outcome::Ignored);
+            };
+            if rec.status != Status::Joined {
+                return Ok(Outcome::Ignored);
+            }
+            let Ok(signal) = spike_core::group_call::Signal::parse(&env.body) else {
+                return Ok(Outcome::Invalid);
+            };
+            let chain = rec.chain()?;
+            let name = chain.current().name.clone();
+            if !sender.own {
+                match chain.check_message(env.gstate.as_deref().unwrap_or_default(), sender.owner) {
+                    MessageCheck::NotMember => {
+                        return Ok(Outcome::Rejected {
+                            reason: format!(
+                                "{} is not a member of {name}",
+                                display_name(home, sender.owner)
+                            ),
+                        })
+                    }
+                    MessageCheck::Unknown => return Ok(Outcome::Ignored),
+                    MessageCheck::Current | MessageCheck::Earlier | MessageCheck::OutOfDate => {}
+                }
+            }
+            let contact = sender.own
+                || home
+                    .load_contacts()?
+                    .iter()
+                    .any(|c| c.conversation_key().ok().as_deref() == Some(sender.owner));
+            Ok(Outcome::GroupCall {
+                group: gid,
+                owner: sender.owner.to_string(),
+                name: if sender.own {
+                    "you".to_string()
+                } else {
+                    display_name(home, sender.owner)
+                },
+                device: sender.device.to_string(),
+                contact,
+                own: sender.own,
+                signal,
+                ts: env.ts,
             })
         }
         Kind::Text

@@ -132,6 +132,20 @@ pub enum Outcome {
         by_policy: bool,
         note: String,
     },
+    /// A group call signal (ADR 0032) from a member of a group you are in (`own`: from one of your other
+    /// devices). Never stored as a message; hand it to `spike_core::group_call::Machine`.
+    GroupCall {
+        group: String,
+        /// The sender's owner key, and how to show them.
+        owner: String,
+        name: String,
+        device: String,
+        /// The sender is in your contacts (a pair that is not two contacts connects through the relay only).
+        contact: bool,
+        own: bool,
+        signal: spike_core::group_call::Signal,
+        ts: u64,
+    },
     /// A message in a group you are in (ADR 0024).
     GroupMessage {
         group: String,

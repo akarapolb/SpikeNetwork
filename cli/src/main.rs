@@ -1926,7 +1926,7 @@ async fn run() -> Result<()> {
                     &id[..8]
                 ),
                 Outcome::Invalid => eprintln!("dropped undecryptable or replayed message"),
-                Outcome::Duplicate | Outcome::Ignored | Outcome::Call { .. } => {}
+                Outcome::Duplicate | Outcome::Ignored | Outcome::Call { .. } | Outcome::GroupCall { .. } => {}
                 Outcome::AgentRequest { from, id, scope, action, amount_cents, summary, verdict } => println!(
                     "[agent request {} from {from}: {} - {verdict}{}]",
                     &id[..8],

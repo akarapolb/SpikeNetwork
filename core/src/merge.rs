@@ -63,6 +63,7 @@ pub fn decide(
         Kind::Text
         | Kind::Sync
         | Kind::Call
+        | Kind::GroupCall
         | Kind::AgentRequest
         | Kind::AgentReceipt
         | Kind::GroupState

@@ -639,6 +639,7 @@ async fn deliver_to(
         // Sync messages change nothing in the sender's own history; group control goes through `groups`.
         Kind::Sync
         | Kind::Call
+        | Kind::GroupCall
         | Kind::AgentRequest
         | Kind::AgentReceipt
         | Kind::GroupState

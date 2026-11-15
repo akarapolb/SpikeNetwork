@@ -15,6 +15,7 @@ pub mod clock;
 pub mod direct;
 pub mod envelope;
 pub mod group;
+pub mod group_call;
 pub mod identity;
 pub mod link;
 pub mod mailbox;

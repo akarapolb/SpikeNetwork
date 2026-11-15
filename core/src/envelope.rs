@@ -46,6 +46,9 @@ pub enum Kind {
     LargeLists,
     /// Call setup (ADR 0028): the body is a `call::Signal` as JSON. Never stored as a message.
     Call,
+    /// Group call signalling (ADR 0032): the body is a `group_call::Signal` as JSON. Names its group and the member
+    /// list it was sent with, like a group message; never stored as a message.
+    GroupCall,
     /// A reaction to message `target`: the body is one emoji, or empty to take the reaction back.
     /// Each person has at most one reaction on a message; the newest replaces the last.
     React,
@@ -162,6 +165,13 @@ impl Envelope {
     pub fn call(signal: &crate::call::Signal) -> Result<Self> {
         let mut e = Self::text(&signal.to_json())?;
         e.kind = Kind::Call;
+        Ok(e)
+    }
+
+    /// A group call signal (ADR 0032). The caller sets `group` and `gstate` when it sends.
+    pub fn group_call(signal: &crate::group_call::Signal) -> Result<Self> {
+        let mut e = Self::text(&signal.to_json())?;
+        e.kind = Kind::GroupCall;
         Ok(e)
     }
 
@@ -287,6 +297,8 @@ impl Envelope {
                 | Kind::GroupStateRequest
                 | Kind::GroupHistoryRequest
                 | Kind::GroupHistory => e.group.is_some(),
+                // A group call signal names its group and the member list it was sent with.
+                Kind::GroupCall => e.group.is_some() && e.gstate.is_some(),
                 Kind::Sync
                 | Kind::Call
                 | Kind::AgentRequest
@@ -307,6 +319,7 @@ impl Envelope {
             Kind::Text
             | Kind::Sync
             | Kind::Call
+            | Kind::GroupCall
             | Kind::AgentRequest
             | Kind::AgentReceipt
             | Kind::GroupState
@@ -337,6 +350,7 @@ impl Envelope {
             }
             Kind::Sync
             | Kind::Call
+            | Kind::GroupCall
             | Kind::AgentRequest
             | Kind::AgentReceipt
             | Kind::GroupState
