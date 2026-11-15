@@ -7,6 +7,7 @@
 //! encryption is the operator's responsibility.
 
 use rusqlite::{params, Connection, OptionalExtension};
+use spike_core::enroll::TenantLimits;
 use spike_core::wire::{GroupKind, WirePrekey};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -18,7 +19,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// - 1: the original tables (databases from before versioning are treated as version 1).
 /// - 2: indexes on `expires`, so the expiry purge no longer scans whole tables.
 /// - 3: group mailboxes and their entries (ADR 0025).
-pub const SCHEMA_VERSION: i64 = 4;
+/// - 4: push endpoints (ADR 0028).
+/// - 5: tenants, enrollments and revocations (ADR 0023).
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -84,6 +87,8 @@ pub enum PutChunk {
     NotOwner,
     TotalMismatch,
     OverQuota,
+    /// The uploader's tenant has used its attachment bytes.
+    TenantOverQuota,
 }
 
 pub struct Stored {
@@ -184,6 +189,31 @@ const V4: &str = "CREATE TABLE IF NOT EXISTS push_endpoints (
          updated INTEGER NOT NULL
      );";
 
+/// Version 5: tenants (ADR 0023). The relay learns which tenant a device id belongs to, and
+/// nothing about the people behind either. `limits` is the JSON of `TenantLimits`; `state` is
+/// `active` or `suspended`. A revocation is kept so the token that admitted the device cannot
+/// admit it again.
+const V5: &str = "CREATE TABLE IF NOT EXISTS tenants (
+         id        TEXT PRIMARY KEY,
+         admin_pub TEXT    NOT NULL,
+         limits    TEXT    NOT NULL,
+         state     TEXT    NOT NULL,
+         created   INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS enrollments (
+         device      TEXT PRIMARY KEY,
+         tenant      TEXT    NOT NULL,
+         token_id    TEXT    NOT NULL,
+         enrolled_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS enrollments_tenant ON enrollments(tenant);
+     CREATE TABLE IF NOT EXISTS revocations (
+         tenant     TEXT    NOT NULL,
+         device     TEXT    NOT NULL,
+         revoked_at INTEGER NOT NULL,
+         PRIMARY KEY (tenant, device)
+     );";
+
 /// Version 3: group mailboxes. A mailbox is an append-only log with relay-assigned positions and
 /// one public key every request must be signed with; its entries are opaque to the relay. The
 /// relay stores no member list and no group id, only these random mailbox ids.
@@ -254,7 +284,7 @@ fn migrate(conn: &mut Connection, path: Option<&Path>) -> Result<(), StoreError>
             }
         }
     }
-    let steps: [(i64, &str); 4] = [(1, V1), (2, V2), (3, V3), (4, V4)];
+    let steps: [(i64, &str); 5] = [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5)];
     for (version, sql) in steps {
         if found >= version {
             continue;
@@ -557,6 +587,7 @@ impl Store {
         data: &[u8],
         ttl_ms: i64,
         quota: usize,
+        tenant: Option<(&str, u64)>,
     ) -> rusqlite::Result<PutChunk> {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction()?;
@@ -584,6 +615,19 @@ impl Store {
         )?;
         if used as usize + data.len() > quota {
             return Ok(PutChunk::OverQuota);
+        }
+        // The tenant's limit covers all its devices together (0 = unlimited).
+        if let Some((tenant, limit)) = tenant.filter(|(_, l)| *l > 0) {
+            let used: i64 = tx.query_row(
+                "SELECT COALESCE(SUM(length(data)), 0) FROM blob_chunks
+                 WHERE uploader IN (SELECT device FROM enrollments WHERE tenant = ?1)
+                   AND NOT (blob = ?2 AND idx = ?3)",
+                params![tenant, blob, idx],
+                |r| r.get(0),
+            )?;
+            if used as u64 + data.len() as u64 > limit {
+                return Ok(PutChunk::TenantOverQuota);
+            }
         }
         tx.execute(
             "INSERT OR REPLACE INTO blob_chunks (blob, idx, total, uploader, data, expires) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -926,6 +970,275 @@ impl Store {
             sealed,
         }))
     }
+}
+
+// ---------------------------------------------------------------- tenants (ADR 0023)
+
+/// A tenant as stored: its admin public key, limits and whether it is suspended.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TenantRow {
+    pub id: String,
+    pub admin_pub: String,
+    pub limits: TenantLimits,
+    pub suspended: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Enrolled {
+    /// Recorded now, or already recorded for this tenant.
+    Ok,
+    /// The device belongs to another tenant.
+    OtherTenant,
+    /// The tenant has as many devices as its limit allows.
+    OverDeviceLimit,
+    /// The tenant's admin revoked this device.
+    Revoked,
+}
+
+/// Totals for one tenant (the live connection count is the caller's).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TenantTotals {
+    pub devices: u64,
+    pub queued_messages: u64,
+    pub queued_bytes: u64,
+    pub attachment_bytes: u64,
+}
+
+fn tenant_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TenantRow> {
+    let limits: String = r.get(2)?;
+    Ok(TenantRow {
+        id: r.get(0)?,
+        admin_pub: r.get(1)?,
+        limits: serde_json::from_str(&limits).unwrap_or_default(),
+        suspended: r.get::<_, String>(3)? == "suspended",
+    })
+}
+
+impl Store {
+    /// Register a tenant. False if the id is taken.
+    pub fn create_tenant(
+        &self,
+        id: &str,
+        admin_pub: &str,
+        limits: &TenantLimits,
+    ) -> rusqlite::Result<bool> {
+        let n = self.conn.lock().unwrap().execute(
+            "INSERT OR IGNORE INTO tenants (id, admin_pub, limits, state, created)
+             VALUES (?1, ?2, ?3, 'active', ?4)",
+            params![
+                id,
+                admin_pub,
+                serde_json::to_string(limits).expect("limits serialize"),
+                now_ms()
+            ],
+        )?;
+        Ok(n == 1)
+    }
+
+    pub fn tenant(&self, id: &str) -> rusqlite::Result<Option<TenantRow>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id, admin_pub, limits, state FROM tenants WHERE id = ?1",
+                [id],
+                tenant_row,
+            )
+            .optional()
+    }
+
+    pub fn tenants(&self) -> rusqlite::Result<Vec<TenantRow>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare("SELECT id, admin_pub, limits, state FROM tenants ORDER BY id")?;
+        let rows = stmt.query_map([], tenant_row)?;
+        rows.collect()
+    }
+
+    /// Change a tenant's limits. False if there is no such tenant.
+    pub fn set_tenant_limits(&self, id: &str, limits: &TenantLimits) -> rusqlite::Result<bool> {
+        let n = self.conn.lock().unwrap().execute(
+            "UPDATE tenants SET limits = ?2 WHERE id = ?1",
+            params![id, serde_json::to_string(limits).expect("limits serialize")],
+        )?;
+        Ok(n == 1)
+    }
+
+    pub fn set_tenant_admin_key(&self, id: &str, admin_pub: &str) -> rusqlite::Result<bool> {
+        let n = self.conn.lock().unwrap().execute(
+            "UPDATE tenants SET admin_pub = ?2 WHERE id = ?1",
+            params![id, admin_pub],
+        )?;
+        Ok(n == 1)
+    }
+
+    pub fn set_tenant_suspended(&self, id: &str, suspended: bool) -> rusqlite::Result<bool> {
+        let n = self.conn.lock().unwrap().execute(
+            "UPDATE tenants SET state = ?2 WHERE id = ?1",
+            params![id, if suspended { "suspended" } else { "active" }],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// The tenant a device is enrolled in, if any.
+    pub fn enrollment(&self, device: &str) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT tenant FROM enrollments WHERE device = ?1",
+                [device],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
+    /// The devices enrolled in a tenant (for closing their connections on suspend or delete).
+    pub fn tenant_devices(&self, tenant: &str) -> rusqlite::Result<Vec<String>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare("SELECT device FROM enrollments WHERE tenant = ?1")?;
+        let rows = stmt.query_map([tenant], |r| r.get(0))?;
+        rows.collect()
+    }
+
+    /// Record that `device` belongs to `tenant` (redeeming a token the caller has verified), within
+    /// the tenant's device limit (0 = unlimited). All in one transaction, so two devices racing for
+    /// the last place cannot both get it.
+    pub fn enroll(
+        &self,
+        device: &str,
+        tenant: &str,
+        token_id: &str,
+        max_devices: u64,
+    ) -> rusqlite::Result<Enrolled> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT tenant FROM enrollments WHERE device = ?1",
+                [device],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match current {
+            Some(t) if t == tenant => return Ok(Enrolled::Ok),
+            Some(_) => return Ok(Enrolled::OtherTenant),
+            None => {}
+        }
+        let revoked: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM revocations WHERE tenant = ?1 AND device = ?2)",
+            params![tenant, device],
+            |r| r.get(0),
+        )?;
+        if revoked {
+            return Ok(Enrolled::Revoked);
+        }
+        if max_devices > 0 {
+            let n: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM enrollments WHERE tenant = ?1",
+                [tenant],
+                |r| r.get(0),
+            )?;
+            if n as u64 >= max_devices {
+                return Ok(Enrolled::OverDeviceLimit);
+            }
+        }
+        tx.execute(
+            "INSERT INTO enrollments (device, tenant, token_id, enrolled_at) VALUES (?1, ?2, ?3, ?4)",
+            params![device, tenant, token_id, now_ms()],
+        )?;
+        tx.commit()?;
+        Ok(Enrolled::Ok)
+    }
+
+    /// Revoke `device` from `tenant`: remember the revocation, end the enrollment and delete what
+    /// the relay holds for the device (ADR 0023: revocation deletes the queue). Returns whether the
+    /// device was enrolled in that tenant.
+    pub fn revoke(&self, tenant: &str, device: &str) -> rusqlite::Result<bool> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO revocations (tenant, device, revoked_at) VALUES (?1, ?2, ?3)",
+            params![tenant, device, now_ms()],
+        )?;
+        let was: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM enrollments WHERE device = ?1 AND tenant = ?2)",
+            params![device, tenant],
+            |r| r.get(0),
+        )?;
+        if was {
+            tx.execute("DELETE FROM enrollments WHERE device = ?1", [device])?;
+            forget_device(&tx, device)?;
+        }
+        tx.commit()?;
+        Ok(was)
+    }
+
+    /// Delete a tenant and everything the relay holds for its devices: queued messages, attachment
+    /// chunks, prekeys, key packages, push endpoints and the group mailboxes they created. Returns
+    /// the device ids that were enrolled (to close their connections), or `None` if there is no
+    /// such tenant. Signed device lists are public and belong to owners, not devices, so they stay.
+    pub fn delete_tenant(&self, tenant: &str) -> rusqlite::Result<Option<Vec<String>>> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tenants WHERE id = ?1)",
+            [tenant],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        let devices: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT device FROM enrollments WHERE tenant = ?1")?;
+            let rows = stmt.query_map([tenant], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for d in &devices {
+            forget_device(&tx, d)?;
+        }
+        tx.execute("DELETE FROM enrollments WHERE tenant = ?1", [tenant])?;
+        tx.execute("DELETE FROM revocations WHERE tenant = ?1", [tenant])?;
+        tx.execute("DELETE FROM tenants WHERE id = ?1", [tenant])?;
+        tx.commit()?;
+        Ok(Some(devices))
+    }
+
+    /// Totals for one tenant: counts and bytes only.
+    pub fn tenant_totals(&self, tenant: &str) -> rusqlite::Result<TenantTotals> {
+        let c = self.conn.lock().unwrap();
+        let one = |sql: &str| -> rusqlite::Result<u64> {
+            c.query_row(sql, [tenant], |r| r.get::<_, i64>(0))
+                .map(|v| v.max(0) as u64)
+        };
+        Ok(TenantTotals {
+            devices: one("SELECT COUNT(*) FROM enrollments WHERE tenant = ?1")?,
+            queued_messages: one("SELECT COUNT(*) FROM messages
+                 WHERE recipient IN (SELECT device FROM enrollments WHERE tenant = ?1)")?,
+            queued_bytes: one("SELECT COALESCE(SUM(LENGTH(blob)), 0) FROM messages
+                 WHERE recipient IN (SELECT device FROM enrollments WHERE tenant = ?1)")?,
+            attachment_bytes: one("SELECT COALESCE(SUM(LENGTH(data)), 0) FROM blob_chunks
+                 WHERE uploader IN (SELECT device FROM enrollments WHERE tenant = ?1)")?,
+        })
+    }
+}
+
+/// Delete everything stored for one device (not its enrollment row).
+fn forget_device(tx: &rusqlite::Transaction<'_>, device: &str) -> rusqlite::Result<()> {
+    for sql in [
+        "DELETE FROM messages WHERE recipient = ?1",
+        "DELETE FROM blob_chunks WHERE uploader = ?1",
+        "DELETE FROM prekeys WHERE device = ?1",
+        "DELETE FROM fallbacks WHERE device = ?1",
+        "DELETE FROM key_packages WHERE device = ?1",
+        "DELETE FROM key_package_last_resort WHERE device = ?1",
+        "DELETE FROM push_endpoints WHERE device = ?1",
+        "DELETE FROM group_entries WHERE mailbox IN
+             (SELECT mailbox FROM group_mailboxes WHERE creator = ?1)",
+        "DELETE FROM group_mailboxes WHERE creator = ?1",
+    ] {
+        tx.execute(sql, [device])?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

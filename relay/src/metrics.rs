@@ -8,7 +8,7 @@ use crate::store::Stats;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 /// The error codes the relay can answer with (anything else is counted as `other`).
-const ERROR_CODES: [&str; 19] = [
+const ERROR_CODES: [&str; 26] = [
     "bad_request",
     "too_large",
     "queue_full",
@@ -27,6 +27,13 @@ const ERROR_CODES: [&str; 19] = [
     "exists",
     "mailbox_full",
     "internal",
+    "not_enrolled",
+    "enroll_invalid",
+    "enroll_expired",
+    "enroll_revoked",
+    "enroll_conflict",
+    "tenant_suspended",
+    "tenant_over_limit",
     "other",
 ];
 
@@ -60,6 +67,10 @@ pub struct Metrics {
     pub group_reads: AtomicU64,
     pub key_packages_published: AtomicU64,
     pub key_package_claims: AtomicU64,
+    /// Enrollment tokens redeemed (ADR 0023).
+    pub enrollments_redeemed: AtomicU64,
+    /// Sign-ins by devices not enrolled on an enrolled relay.
+    pub visitors_signed_in: AtomicU64,
     errors: [AtomicU64; ERROR_CODES.len()],
 }
 
@@ -209,6 +220,16 @@ impl Metrics {
             "key_package_claims_total",
             "Key packages handed to someone adding a device to a group.",
             g(&self.key_package_claims),
+        );
+        counter(
+            "enrollments_redeemed_total",
+            "Enrollment tokens redeemed.",
+            g(&self.enrollments_redeemed),
+        );
+        counter(
+            "visitors_signed_in_total",
+            "Sign-ins by devices not enrolled here (enrolled mode).",
+            g(&self.visitors_signed_in),
         );
         out.push_str("# HELP spike_relay_errors_total Error replies by code.\n# TYPE spike_relay_errors_total counter\n");
         for (code, n) in ERROR_CODES.iter().zip(&self.errors) {

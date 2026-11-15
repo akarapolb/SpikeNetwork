@@ -61,6 +61,11 @@ pub enum ClientMsg {
     Auth {
         ed25519: String,
         sig: String,
+        /// An enrollment token (`spike-enroll1:...`, ADR 0023) for a relay that requires one. Sent
+        /// only to the relay it was issued for; a relay that is already holding this device's
+        /// enrollment ignores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enroll: Option<String>,
     },
     /// Queue `blob` for the device with id `to`. With `live` the relay never stores it: it goes
     /// to the device's open connections if there are any and is dropped otherwise (ADR 0030,
@@ -171,6 +176,12 @@ pub enum ClientMsg {
     },
     /// Forget this device's push endpoint.
     UnregisterPush,
+    /// Revoke a device from a tenant (ADR 0023): a `spike-revoke1:` revocation signed by the
+    /// tenant's admin key. Any signed-in connection may hand one in; the signature is what counts.
+    /// The relay answers `Revoked`.
+    Revoke {
+        revocation: String,
+    },
     /// Keepalive: the relay answers `Pong`. A client waiting for deliveries sends one now
     /// and then, so a connection that died silently (a router dropped it) is noticed, and
     /// so the relay can close connections that have gone quiet.
@@ -190,6 +201,10 @@ pub enum ServerMsg {
         prekeys: usize,
         #[serde(default)]
         fallback_age_secs: Option<u64>,
+        /// On a relay that requires enrollment: the tenant this device is enrolled in, or `None`
+        /// for a visitor (a device from elsewhere that may only reach this relay's members).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant: Option<String>,
     },
     Accepted {
         id: String,
@@ -292,6 +307,10 @@ pub enum ServerMsg {
     PushCleared,
     /// Reply to `Ping`.
     Pong,
+    /// Reply to `Revoke`: the device is no longer enrolled (also if it already was not).
+    Revoked {
+        device_id: String,
+    },
     Error {
         code: String,
         message: String,

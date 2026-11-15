@@ -94,6 +94,7 @@ fn target_for(rs: &RelaySettings, home: &Home) -> Target {
         opts: TransportOpts {
             ca_file: rs.ca_pem.is_some().then(|| home.path().join(CA_FILE)),
             allow_insecure: rs.allow_insecure,
+            enroll: home.load_enrollments().unwrap_or_default(),
         },
     }
 }

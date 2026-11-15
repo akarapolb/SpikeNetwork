@@ -33,6 +33,7 @@ const READ: &str = "read.enc";
 const LAST_SYNC: &str = "lastsync.enc";
 const DEVICE_LIST: &str = "devicelist.enc";
 const QUARANTINE: &str = "requests-sessions.enc";
+const ENROLLMENTS: &str = "enrollments.enc";
 
 /// An unlocked state: a vault key and the store its sealed files live in. Without a type argument this is the
 /// state directory (`Home<FileStore>`), so existing code reads as before.
@@ -608,6 +609,16 @@ impl Home<FileStore> {
 
     pub fn save_json<T: serde::Serialize>(&self, name: &str, value: &T) -> Result<()> {
         ready(self.save_json_async(name, value))
+    }
+
+    /// Enrollment tokens for organisation relays this device joined (ADR 0023), sealed like every
+    /// other setting.
+    pub fn load_enrollments(&self) -> Result<crate::transport::Enrollments> {
+        self.load_json(ENROLLMENTS)
+    }
+
+    pub fn save_enrollments(&self, e: &crate::transport::Enrollments) -> Result<()> {
+        self.save_json(ENROLLMENTS, e)
     }
 
     /// Encrypted message history (see [`crate::messages`]). SQLite, so it stays with the state directory.

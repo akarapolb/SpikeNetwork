@@ -13,6 +13,7 @@ pub mod backup;
 pub mod call;
 pub mod clock;
 pub mod direct;
+pub mod enroll;
 pub mod envelope;
 pub mod group;
 pub mod group_call;

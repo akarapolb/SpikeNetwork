@@ -1,6 +1,6 @@
 # ADR 0023: Tenants and enrollment tokens
 
-Status: **Proposed. For your review; not built.**
+Status: **Accepted** by the owner on 2026-11-15, as written. Built (see "Built" below).
 Date: 2026-10-20
 
 This is slice 1 of `docs/hosted-relay-plan.md`. It changes what the relay stores about devices, so it is written for a decision before any code.
@@ -57,6 +57,81 @@ New tables: `tenants(id, admin_pub, limits, state)`, `enrollments(device, tenant
 3. **Who holds the admin key in the first customers:** the customer (proposed), or Spike on their behalf at first?
 4. **Operator key custody:** a single key on the host is simple but weak for a service; a hardware key or a two-person rule is stronger and more work.
 5. Plan decisions 1 to 7 (customers, legal entity, payments, pricing, hosting, service level, licence) still gate slice 2; this ADR does not depend on them.
+
+## Built (2026-11-15)
+
+The owner's answers to the questions above are the proposals as written: members may talk to anyone (1);
+7 days to redeem and revocation deletes the device's queue (2); the customer holds the admin key (3); a
+single operator key whose public half is given to the relay at start (4).
+
+**Code.** Token, revocation, limits and operator-request formats: `core/src/enroll.rs` (`spike-enroll-v1`,
+`spike-enroll-revoke-v1`, `spike-relay-admin-v1`, length-prefixed fields; a token prints as one
+`spike-enroll1:` line and its `Debug` hides the signature and id). Relay: `relay/src/tenancy.rs`
+(admission, limits, operator requests), schema version 5 in `relay/src/store.rs` (`tenants`,
+`enrollments`, `revocations`; upgraded with the ADR 0022 backup), `relay/src/admin_client.rs` and the
+`spike-relay-admin` binary. Client: `ClientMsg::Auth` carries an optional `enroll` token;
+`TransportOpts::enroll` holds tokens by relay, so a token is only ever presented to the relay it was
+stored for; `Home::save_enrollments` keeps them sealed (`enrollments.enc`); `spike join`, `leave`,
+`enrollments`, and for the customer's admin `spike tenant-keygen`, `tenant-token`, `tenant-revoke`.
+The shared `app` crate presents stored tokens too, but the desktop and Android apps have no join
+screen yet.
+
+**Relay flags.** `--require-enrollment` switches enrollment on (open mode stays the default, and tokens
+are ignored there); `--enroll-no-visitors` makes a closed relay; `--enroll-max-token-days` (7);
+`--operator-key <hex>` enables `POST /admin` on the `--metrics-listen` address.
+
+**Refusals** a client can act on: `not_enrolled`, `enroll_invalid` (bad signature, another device's
+token, unknown tenant, or valid for longer than the relay allows), `enroll_expired`, `enroll_revoked`,
+`enroll_conflict` (already in another tenant), `tenant_suspended`, and `tenant_over_limit` whose message
+starts with the limit's name (`devices`, `queue_depth`, `attachment_bytes`, `connections`, `req_rate`).
+The CLI turns each into a sentence.
+
+**Changes agreed while building, where this ADR was silent** (raised by the builder and **approved by
+the owner on 2026-11-15**; they are part of this decision):
+- **Visitors.** A sender delivers through the *recipient's* home relay, so "only enrolled devices may
+  sign in" would stop anyone outside a tenant from messaging its members, against answer 1. On an
+  enrolled relay an unenrolled device therefore signs in as a **visitor** that may only reach members:
+  send to an enrolled device, claim its prekeys and key packages, fetch device lists, read attachment
+  chunks, use existing group mailboxes it holds a key for, hand in a revocation, ping, and acknowledge
+  anything already queued for it. It may not publish keys or lists, upload, create mailboxes, register
+  a push endpoint or ask for TURN credentials, and it may not send to devices that are not enrolled.
+  Visitors keep the per-address and per-connection limits of ADR 0022 (so a visitor can claim at most
+  `max_claims_per_conn` prekeys or key packages per connection), and a visitor's send counts against the
+  recipient tenant's queue-depth limit. Visitors are allowed by default; `--enroll-no-visitors` turns
+  them off (strict mode).
+- **Revocations** are a new frame (`Revoke`) that any signed-in connection may hand in; the admin key's
+  signature is what authorises it. A revocation is kept, so the token that admitted the device cannot
+  admit it again; re-admitting a revoked device id is not possible in this slice.
+- **Operator requests** are `POST /admin` on the operator listener: JSON `{body, sig}` where `body` is
+  the exact signed text, holding the operation, `issued_at` (within 5 minutes of the relay's clock) and
+  a random nonce the relay refuses to see twice. Operations: create tenant, set limits, set admin key
+  (rotation), suspend, resume, delete, usage. Usage is counts and bytes per tenant (devices, live
+  connections, queued messages and bytes, attachment bytes, refusals since start), never device ids.
+  `/metrics` stays tenant-free.
+- **Already enrolled devices** may present their token again (ignored, even when expired); a token for
+  another tenant is refused. Suspending, deleting or revoking closes the affected live connections.
+- **Delete** removes the tenant, its enrollments and revocations, and for each of its devices: queued
+  messages, attachment chunks, prekeys, key packages, push endpoints and the group mailboxes they
+  created. Signed device lists stay (they are public and belong to owners, not devices).
+- **Request rate** is one token bucket per tenant shared by all its connections (burst four seconds'
+  worth, at least 50), on top of the per-connection bucket of ADR 0022. Pings are free.
+
+**Tested** in `cli/tests/enrollment.rs`: enrolled device admitted and stays enrolled without the token;
+unenrolled, expired, too-long, wrong-tenant, unknown-tenant, conflicting, borrowed, rewritten and garbage
+tokens refused; each limit (devices, queue depth, attachment bytes across devices, connections and their
+release, shared request rate with pings exempt); the visitor boundary (each storage action refused,
+reaching actions not refused, a visitor's sends counted against the recipient tenant's queue depth,
+strict mode); suspend closes connections and keeps data, resume
+restores; delete removes queued ciphertext and chunks; revocation needs the admin key, closes the
+connection and blocks the old token; visitors reach members but store nothing; open mode unchanged and
+ignores tokens; operator requests need the operator key, cannot be replayed or be stale; the join step's
+storage is sealed and per relay. Format tests in `core/src/enroll.rs`.
+
+**Not done.** No join screen in the desktop or Android apps (and no QR scan). No independent review. The
+operator listener is plain HTTP like `/metrics`: keep it on loopback or a private network. The operator
+key is a file on the operator's machine (no hardware key, no two-person rule). Tenant usage numbers live
+in memory and in the database, not in Prometheus. No per-tenant storage limit on group mailboxes beyond
+the existing per-device ones.
 
 ## Not decided here
 Billing and sign-up (slice 2), high availability (slice 3), and the licence of the relay (slice 4).
