@@ -49,7 +49,7 @@ function newPeer(servers) {
   pc.ontrack = (e) => {
     if (!cs.remote) cs.remote = new MediaStream();
     cs.remote.addTrack(e.track);
-    const v = callEls.remote; if (v) { v.srcObject = cs.remote; v.play().catch(() => {}); }
+    const v = callEls.remote; if (v) { toSpeaker(v); v.srcObject = cs.remote; v.play().catch(() => {}); }
     drawCall();
   };
   pc.onconnectionstatechange = () => {
@@ -90,7 +90,9 @@ function mediaProblem(e, video) {
   return `${what} is not available (${n || e}).`;
 }
 async function getMedia(video) {
-  try { return await navigator.mediaDevices.getUserMedia({ audio: true, video: video ? { width: 1280, height: 720 } : false }); }
+  stopMeter(); // the Settings level meter gives the microphone back before a call takes it
+  const vid = (cam) => (video ? Object.assign({ width: 1280, height: 720 }, cam ? { deviceId: { exact: cam } } : {}) : false);
+  try { return await withChosen((mic, cam) => navigator.mediaDevices.getUserMedia({ audio: mic ? { deviceId: { exact: mic } } : true, video: vid(cam) })); }
   catch (e) { throw new Error(mediaProblem(e, video)); }
 }
 function fingerprintOf(sdp) { const m = /a=fingerprint:sha-256 ([0-9A-Fa-f:]+)/.exec(sdp || ""); return m ? m[1].toUpperCase() : ""; }
@@ -271,6 +273,9 @@ function endLocal(message) {
 async function onCallEvent(ev) {
   if (ev.type === "ring") {
     if (cs) return; // the backend only rings when idle; a stale event
+    // "Ring on this computer" off: the call rings only on the person's other devices; a missed call is still told when
+    // it ends. Two people calling each other at once (glare) is answered as usual.
+    if (!ringHere() && !ev.glare) return;
     const c = st.ov && st.ov.contacts.find((x) => x.name === ev.name);
     cs = { id: ev.call, name: ev.name, video: ev.video, incoming: true, status: "ringing", offer: ev.sdp, verified: !!(c && c.verified) };
     startRing(); drawCall();
@@ -327,6 +332,7 @@ function startRing() {
   stopRing();
   try {
     ringCtx = new (window.AudioContext || window.webkitAudioContext)();
+    toSpeaker(ringCtx);
     const beep = () => { const o = ringCtx.createOscillator(), g = ringCtx.createGain(); o.frequency.value = 440; g.gain.value = 0.05; o.connect(g); g.connect(ringCtx.destination); o.start(); o.stop(ringCtx.currentTime + 0.4); };
     beep(); ringTimer = setInterval(beep, 2000);
   } catch (_) {}
@@ -363,6 +369,7 @@ function drawCall() {
   const self = h("video", { class: "self", autoplay: "", playsinline: "", muted: "" });
   self.muted = true;
   callEls.remote = remote; callEls.self = self;
+  toSpeaker(remote);
   if (c.remote) remote.srcObject = c.remote;
   if (c.local && c.video) self.srcObject = c.sharing && c.shareStream ? c.shareStream : c.local;
   if (c.sharing) self.classList.add("sharing");
@@ -396,20 +403,156 @@ function drawCall() {
   if (c.connectedAt) { drawCall.t = setInterval(showSub, 1000); showSub(); }
 }
 
-/** Settings card: where calls may connect, and whether to hide this computer's address from the other person. */
+/* ---------- devices: microphone, speaker and camera ---------- */
+/* The choice is kept on this computer only (localStorage), by the browser's device id. An empty choice is the system
+   default. A chosen device that is unplugged later is asked for as "ideal", so the call falls back to the default. */
+const DEV_KEY = { mic: "callMic", spk: "callSpeaker", cam: "callCam" };
+function chosen(kind) { try { return localStorage.getItem(DEV_KEY[kind]) || ""; } catch (_) { return ""; } }
+function choose(kind, id) { try { localStorage.setItem(DEV_KEY[kind], id || ""); } catch (_) {} }
+/* Ask for the chosen microphone and camera exactly; if one of them is gone (unplugged), ask again for the default. */
+async function withChosen(get) {
+  const mic = chosen("mic"), cam = chosen("cam");
+  try { return await get(mic, cam); }
+  catch (e) {
+    if (!(mic || cam) || (e && e.name !== "OverconstrainedError" && e.name !== "NotFoundError")) throw e;
+    return await get("", "");
+  }
+}
+function ringHere() { try { return localStorage.getItem("callsRing") !== "0"; } catch (_) { return true; } }
+/* Send an element's (or an AudioContext's) sound to the chosen speaker. Not every webview has setSinkId; then the
+   system default plays it. */
+function toSpeaker(el) {
+  const id = chosen("spk");
+  if (!el || !id || typeof el.setSinkId !== "function") return Promise.resolve();
+  return el.setSinkId(id).catch(() => {});
+}
+
+// What the lists show. Labels are only given to a page that may use the microphone, so the lists are read after the
+// level meter has opened it.
+const devs = { list: null, problem: null, loading: false };
+async function loadDevices() {
+  if (devs.loading) return;
+  devs.loading = true;
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) { devs.list = []; devs.problem = "This computer offers no microphone, speaker or camera to the app."; return; }
+    await startMeter();
+    devs.list = await navigator.mediaDevices.enumerateDevices();
+  } catch (_) { devs.list = devs.list || []; }
+  finally { devs.loading = false; if (document.getElementById("calls-card")) render(); }
+}
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener)
+  navigator.mediaDevices.addEventListener("devicechange", () => { if (document.getElementById("calls-card")) { devs.list = null; render(); } });
+
+/* The live microphone level while Settings > Calls is on screen. The microphone is let go as soon as the section is
+   left (checked every frame) or a call takes it. */
+const meter = { stream: null, ctx: null, raf: 0, el: null, gone: 0, mic: null };
+async function startMeter() {
+  if (cs) return; // a call has the microphone
+  if (meter.stream && meter.mic === chosen("mic")) return;
+  stopMeter();
+  const mic = chosen("mic");
+  meter.mic = mic;
+  await invoke("set_media_access", { on: true }).catch(() => {});
+  let stream;
+  try { stream = await withChosen((m) => navigator.mediaDevices.getUserMedia({ audio: m ? { deviceId: { exact: m } } : true, video: false })); }
+  catch (e) {
+    if (!cs) invoke("set_media_access", { on: false }).catch(() => {});
+    devs.problem = mediaProblem(e, false);
+    return;
+  }
+  if (cs || !document.getElementById("calls-card")) { stream.getTracks().forEach((t) => t.stop()); if (!cs) invoke("set_media_access", { on: false }).catch(() => {}); return; }
+  devs.problem = null;
+  meter.stream = stream;
+  try {
+    meter.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const an = meter.ctx.createAnalyser(); an.fftSize = 512;
+    meter.ctx.createMediaStreamSource(stream).connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    const tick = () => {
+      if (!meter.stream) return;
+      if (!meter.el || !meter.el.isConnected) { if (++meter.gone > 20) { stopMeter(); return; } }
+      else {
+        meter.gone = 0;
+        an.getByteTimeDomainData(buf);
+        let sum = 0; for (const v of buf) { const x = (v - 128) / 128; sum += x * x; }
+        const level = Math.min(1, Math.sqrt(sum / buf.length) * 4);
+        meter.el.firstChild.style.width = Math.round(level * 100) + "%";
+        meter.el.setAttribute("aria-valuenow", String(Math.round(level * 100)));
+      }
+      meter.raf = requestAnimationFrame(tick);
+    };
+    meter.raf = requestAnimationFrame(tick);
+  } catch (_) {}
+}
+function stopMeter() {
+  cancelAnimationFrame(meter.raf);
+  const had = !!meter.stream;
+  if (meter.stream) meter.stream.getTracks().forEach((t) => t.stop());
+  if (meter.ctx) { try { meter.ctx.close(); } catch (_) {} }
+  meter.stream = meter.ctx = null; meter.gone = 0; meter.mic = null;
+  if (had && !cs) invoke("set_media_access", { on: false }).catch(() => {});
+}
+
+/* A short two-note chime on the chosen speaker. */
+async function testSpeaker() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await toSpeaker(ctx);
+    [660, 880].forEach((f, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + i * 0.35;
+      o.frequency.value = f; g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.15, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      o.connect(g); g.connect(ctx.destination); o.start(t); o.stop(t + 0.32);
+    });
+    setTimeout(() => { try { ctx.close(); } catch (_) {} }, 1200);
+  } catch (_) { toast("The test sound could not be played."); }
+}
+
+/** Settings card, as in the design: microphone (with its level), speaker (with a test sound), camera, whether calls go
+    through the relay, and whether this computer rings. */
 function callsCard() {
-  const note = h("p", { class: "secsub" }, "Checking whether your relay offers a TURN server…");
+  const note = h("span", { class: "note", style: "display:block" }, "Checking whether your relay offers a TURN server…");
   invoke("call_ice_servers").then((s) => {
     note.textContent = s.length
       ? "Your relay offers a TURN server, so calls can connect between different networks. It only forwards encrypted packets."
       : "Your relay has no TURN server: calls work only between devices that can reach each other directly, such as on the same Wi-Fi.";
     if (s.length) note.dataset.turn = "1";
   }).catch(() => { note.textContent = "Could not ask the relay about TURN."; });
+
+  if (!devs.list && !devs.loading) loadDevices();
+  else if (devs.list && !meter.stream && !cs) startMeter();
+  const of = (kind) => (devs.list || []).filter((d) => d.kind === kind && d.deviceId !== "default" && d.deviceId !== "communications");
+  const NAMES = { audioinput: "Microphone", audiooutput: "Speaker", videoinput: "Camera" };
+  const pickFor = (kind, key, label) => {
+    const list = of(kind);
+    if (devs.list && !list.length) return h("span", { class: "note", id: `calls-no-${key}` }, kind === "audiooutput" ? "The system's default speaker" : `No ${NAMES[kind].toLowerCase()} found`);
+    const cur = chosen(key);
+    const s = h("select", { class: "ssel", id: `calls-${key}`, "aria-label": label, disabled: devs.list ? null : "",
+      onchange: (e) => { choose(key, e.target.value); if (key === "mic") { stopMeter(); startMeter(); } if (key === "spk" && cs && callEls.remote) toSpeaker(callEls.remote); toast(`${NAMES[kind]}: ${e.target.selectedOptions[0].text}.`); } },
+      h("option", { value: "" }, devs.list ? "System default" : "Loading…"),
+      list.map((d, i) => h("option", { value: d.deviceId, selected: d.deviceId === cur || null }, d.label || `${NAMES[kind]} ${i + 1}`)));
+    return s;
+  };
+  const bar = h("span", { class: "meter", id: "calls-meter", role: "meter", "aria-label": "Microphone level", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": "0" }, h("i", { style: "width:0%" }));
+  meter.el = bar;
+  const canSink = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
+
   const box = h("input", { type: "checkbox", id: "calls-relay-only" });
   box.checked = relayOnly();
   box.addEventListener("change", () => { try { localStorage.setItem("callsRelayOnly", box.checked ? "1" : "0"); } catch (_) {} toast(box.checked ? "Calls will go through the relay's TURN server when it has one." : "Calls may connect directly."); });
-  return h("section", { class: "card", id: "calls-card" }, h("h2", { class: "eyebrow" }, "Calls"), note,
-    h("label", { class: "toggle" }, box, h("span", {}, h("b", {}, "Always use the relay for calls"), h("span", { class: "note", style: "display:block" }, "The other person then never sees this computer's own address, and your relay's operator sees that a call took place and how much data it carried. Needs a TURN server on the relay."))));
+  const ring = h("input", { type: "checkbox", id: "calls-ring" });
+  ring.checked = ringHere();
+  ring.addEventListener("change", () => { try { localStorage.setItem("callsRing", ring.checked ? "1" : "0"); } catch (_) {} toast(ring.checked ? "Calls ring on this computer." : "Calls ring only on your other devices. A missed call is still shown here."); });
+
+  return h("section", { class: "card", id: "calls-card" },
+    ...secHead("Calls", "The camera and microphone are used only while a call is on screen, and the microphone while this section is open, to show its level."),
+    devs.problem ? h("p", { class: "status soft", id: "calls-problem", role: "status" }, devs.problem) : null,
+    srow("Microphone", null, devs.problem ? null : bar, pickFor("audioinput", "mic", "Microphone")),
+    srow("Speaker", canSink ? null : "This computer plays calls on its default speaker.",
+      h("button", { class: "btn", type: "button", id: "calls-test", onclick: testSpeaker }, "Test"),
+      canSink ? pickFor("audiooutput", "spk", "Speaker") : null),
+    srow("Camera", null, pickFor("videoinput", "cam", "Camera")),
+    h("label", { class: "toggle" }, box, h("span", {}, h("b", {}, "Always call through the relay"), h("span", { class: "note", style: "display:block" }, "Hides your address from the other person. The relay then sees both addresses. Needs a TURN server on the relay."), note)),
+    h("label", { class: "toggle" }, ring, h("span", {}, h("b", {}, "Ring on this computer"), h("span", { class: "note", style: "display:block" }, "Your other devices ring too; the first to answer silences the rest. Off: calls ring only on your other devices."))));
 }
 
 window.addEventListener("DOMContentLoaded", () => { callLoop(); });
