@@ -218,6 +218,54 @@ pub fn on_stranger(home: &Home, me: &mut Identity, blob: &[u8], key: [u8; 32]) -
             None => refuse(&mut q),
         };
     }
+    if env.kind == Kind::InviteHello {
+        // Someone opened our invite link (ADR 0039): introduced and bound like any request, and
+        // carrying the token of an invite that is still open. Anything else is dropped.
+        let Some(card) = env
+            .intro
+            .as_deref()
+            .and_then(|c| IdentityCard::decode(c).ok())
+        else {
+            return refuse(&mut q);
+        };
+        let token = serde_json::from_str::<spike_core::invite::Hello>(&env.body)
+            .map(|h| h.token)
+            .unwrap_or_default();
+        if !card.devices().iter().any(|d| d.x25519 == key)
+            || !crate::invites::is_open(home, &token)?
+        {
+            return refuse(&mut q);
+        }
+        let owner = card.owner_hex();
+        let name =
+            crate::invites::free_name(home, env.intro_name.as_deref().unwrap_or("New contact"))?;
+        home.save_quarantine(&q)?;
+        if !known {
+            all.push(Request {
+                key: key_hex.clone(),
+                owner: owner.clone(),
+                card: env.intro.clone().expect("checked above"),
+                fingerprint: card.fingerprint(),
+                received: now_ms(),
+                held: vec![],
+                name: env.intro_name.clone(),
+            });
+            home.save_json(REQUESTS, &all)?;
+        }
+        return match accept(home, &key_hex, &name) {
+            Ok(_) => {
+                crate::invites::use_up(home, &token, &owner)?;
+                Ok(Outcome::InviteJoined { name, peer: owner })
+            }
+            // Already a contact by another device of theirs, say: leave it as a request.
+            Err(_) => Ok(Outcome::MessageRequest {
+                id: key_hex,
+                fingerprint: card.fingerprint(),
+                held: 0,
+                new: !known,
+            }),
+        };
+    }
     if env.kind != Kind::Text || env.group.is_some() {
         return refuse(&mut q);
     }

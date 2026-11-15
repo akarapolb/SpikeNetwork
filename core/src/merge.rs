@@ -76,7 +76,8 @@ pub fn decide(
         | Kind::App
         | Kind::AppStateRequest
         | Kind::AppState
-        | Kind::Status => Action::Ignore,
+        | Kind::Status
+        | Kind::InviteHello => Action::Ignore,
     }
 }
 

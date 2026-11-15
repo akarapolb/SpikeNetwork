@@ -24,7 +24,8 @@ pub use tenants::{Redeem, Tenant};
 /// - 3: group mailboxes and their entries (ADR 0025).
 /// - 4: push endpoints (ADR 0028).
 /// - 5: organisations: tenants, enrolments, token uses, revoked devices (ADR 0023, ADR 0035).
-pub const SCHEMA_VERSION: i64 = 5;
+/// - 6: one-time invites (ADR 0039).
+pub const SCHEMA_VERSION: i64 = 6;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -90,6 +91,15 @@ pub enum PutChunk {
     NotOwner,
     TotalMismatch,
     OverQuota,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PutInvite {
+    Stored,
+    /// Another invite already has this id.
+    Exists,
+    /// The device already holds as many open invites as it may.
+    TooMany,
 }
 
 pub struct Stored {
@@ -190,6 +200,16 @@ const V4: &str = "CREATE TABLE IF NOT EXISTS push_endpoints (
          updated INTEGER NOT NULL
      );";
 
+/// Version 6: one-time invites (ADR 0039). Sealed blobs, opaque to the relay, deleted when taken.
+const V6: &str = "CREATE TABLE IF NOT EXISTS invites (
+         id      TEXT PRIMARY KEY,
+         creator TEXT    NOT NULL,
+         blob    BLOB    NOT NULL,
+         expires INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS invites_creator ON invites(creator);
+     CREATE INDEX IF NOT EXISTS invites_expires ON invites(expires);";
+
 /// Version 3: group mailboxes. A mailbox is an append-only log with relay-assigned positions and
 /// one public key every request must be signed with; its entries are opaque to the relay. The
 /// relay stores no member list and no group id, only these random mailbox ids.
@@ -260,7 +280,14 @@ fn migrate(conn: &mut Connection, path: Option<&Path>) -> Result<(), StoreError>
             }
         }
     }
-    let steps: [(i64, &str); 5] = [(1, V1), (2, V2), (3, V3), (4, V4), (5, tenants::V5)];
+    let steps: [(i64, &str); 6] = [
+        (1, V1),
+        (2, V2),
+        (3, V3),
+        (4, V4),
+        (5, tenants::V5),
+        (6, V6),
+    ];
     for (version, sql) in steps {
         if found >= version {
             continue;
@@ -345,7 +372,8 @@ impl Store {
         let mut c = self.conn.lock().unwrap();
         let now = now_ms();
         let mut n = c.execute("DELETE FROM messages WHERE expires <= ?1", [now])?
-            + c.execute("DELETE FROM blob_chunks WHERE expires <= ?1", [now])?;
+            + c.execute("DELETE FROM blob_chunks WHERE expires <= ?1", [now])?
+            + c.execute("DELETE FROM invites WHERE expires <= ?1", [now])?;
         let tx = c.transaction()?;
         n += purge_groups(&tx, now)?;
         n += Self::purge_tokens(&tx, now)?;
@@ -598,6 +626,57 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(PutChunk::Stored)
+    }
+
+    /// Store a sealed invite for `ttl_ms` (ADR 0039). Refused if the id is taken, or if `creator`
+    /// already holds `max_open` unexpired invites.
+    pub fn put_invite(
+        &self,
+        id: &str,
+        creator: &str,
+        blob: &[u8],
+        ttl_ms: i64,
+        max_open: usize,
+    ) -> rusqlite::Result<PutInvite> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let now = now_ms();
+        tx.execute("DELETE FROM invites WHERE expires <= ?1", [now])?;
+        let open: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM invites WHERE creator = ?1",
+            [creator],
+            |r| r.get(0),
+        )?;
+        if open as usize >= max_open {
+            return Ok(PutInvite::TooMany);
+        }
+        let n = tx.execute(
+            "INSERT OR IGNORE INTO invites (id, creator, blob, expires) VALUES (?1, ?2, ?3, ?4)",
+            params![id, creator, blob, now + ttl_ms],
+        )?;
+        tx.commit()?;
+        Ok(if n == 1 {
+            PutInvite::Stored
+        } else {
+            PutInvite::Exists
+        })
+    }
+
+    /// Hand out an invite once: it is returned and deleted in one step, so a second take (even at
+    /// the same moment) finds nothing. `None` if taken, expired or never stored.
+    pub fn take_invite(&self, id: &str) -> rusqlite::Result<Option<Vec<u8>>> {
+        let mut c = self.conn.lock().unwrap();
+        let tx = c.transaction()?;
+        let blob: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT blob FROM invites WHERE id = ?1 AND expires > ?2",
+                params![id, now_ms()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        tx.execute("DELETE FROM invites WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(blob)
     }
 
     pub fn get_chunk(&self, blob: &str, idx: u32) -> rusqlite::Result<Option<Vec<u8>>> {
@@ -938,6 +1017,62 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_invite_is_handed_out_once() {
+        let s = Store::open(None).unwrap();
+        let id = "ab".repeat(16);
+        assert_eq!(
+            s.put_invite(&id, "dev", b"sealed", 60_000, 20).unwrap(),
+            PutInvite::Stored
+        );
+        assert_eq!(
+            s.put_invite(&id, "other", b"x", 60_000, 20).unwrap(),
+            PutInvite::Exists
+        );
+        assert_eq!(s.take_invite(&id).unwrap().as_deref(), Some(&b"sealed"[..]));
+        assert_eq!(
+            s.take_invite(&id).unwrap(),
+            None,
+            "a second take finds nothing"
+        );
+    }
+
+    #[test]
+    fn invites_expire_and_are_capped_per_device() {
+        let s = Store::open(None).unwrap();
+        let old = "cd".repeat(16);
+        s.put_invite(&old, "dev", b"x", -1, 20).unwrap();
+        assert_eq!(
+            s.take_invite(&old).unwrap(),
+            None,
+            "an expired invite is not handed out"
+        );
+        for i in 0..3 {
+            let id = format!("{i:032x}");
+            assert_eq!(
+                s.put_invite(&id, "dev", b"x", 60_000, 3).unwrap(),
+                PutInvite::Stored
+            );
+        }
+        assert_eq!(
+            s.put_invite(&"ee".repeat(16), "dev", b"x", 60_000, 3)
+                .unwrap(),
+            PutInvite::TooMany
+        );
+        assert_eq!(
+            s.put_invite(&"ee".repeat(16), "another", b"x", 60_000, 3)
+                .unwrap(),
+            PutInvite::Stored
+        );
+        s.take_invite(&format!("{:032x}", 0)).unwrap();
+        assert_eq!(
+            s.put_invite(&"ff".repeat(16), "dev", b"x", 60_000, 3)
+                .unwrap(),
+            PutInvite::Stored,
+            "a taken invite frees its place"
+        );
+    }
 
     fn temp_db(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("spike-store-{name}-{}", std::process::id()));

@@ -1391,7 +1391,7 @@ pub fn on_envelope(home: &Home, sender: Sender<'_>, env: &Envelope) -> Result<Ou
             })
         }
         // Never valid in a group (the envelope check refuses it); nothing to do.
-        Kind::Status => Ok(Outcome::Ignored),
+        Kind::Status | Kind::InviteHello => Ok(Outcome::Ignored),
         Kind::Text
         | Kind::Edit
         | Kind::Delete

@@ -32,7 +32,12 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use store::{Enqueued, GroupAppended, GroupCreated, GroupLimits, PutChunk, Store};
+use store::{Enqueued, GroupAppended, GroupCreated, GroupLimits, PutChunk, PutInvite, Store};
+
+/// Open invites one device may hold on the relay at once (ADR 0039).
+const MAX_OPEN_INVITES: usize = 20;
+/// Largest sealed invite: a card with many devices, an offered name and the seal.
+const MAX_INVITE_BYTES: usize = 16 * 1024;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -106,6 +111,8 @@ pub struct Config {
     /// Terminate TLS in the relay. Without it the relay speaks plain WebSocket
     /// and must sit behind a TLS-terminating proxy or on loopback.
     pub tls: Option<tls::TlsFiles>,
+    /// How long an untaken invite is kept (ADR 0039). The design promises 7 days.
+    pub invite_ttl: Duration,
     /// Enrolled mode (ADR 0023): only devices enrolled in a tenant may sign in. Sends and prekey
     /// claims *to* other devices are still allowed, so members can reach anyone.
     pub enrolled: bool,
@@ -143,6 +150,7 @@ impl Default for Config {
             push_min_interval: Duration::from_secs(5),
             db_path: None,
             tls: None,
+            invite_ttl: Duration::from_secs(7 * 24 * 3600),
             enrolled: false,
         }
     }
@@ -335,6 +343,9 @@ fn visitor_may(m: &ClientMsg) -> bool {
             | ClientMsg::ClaimKeyPackage { .. }
             | ClientMsg::FetchDeviceList { .. }
             | ClientMsg::GetBlobChunk { .. }
+            // Opening someone's invite link (ADR 0039) is done with a throwaway key, which an
+            // organisation's relay sees as a visitor.
+            | ClientMsg::InviteTake { .. }
             | ClientMsg::GroupRead { .. }
             | ClientMsg::GroupAppend { .. }
             | ClientMsg::FetchRules
@@ -769,6 +780,18 @@ fn dispatch(
             }
             Some(r)
         }
+        ClientMsg::InvitePut { id, blob } => Some(on_put_invite(state, cfg, &p.me, &id, &blob)),
+        ClientMsg::InviteTake { id } => Some(if !is_blob_id(&id) {
+            err("bad_request", "invalid invite id")
+        } else {
+            match state.store.take_invite(&id) {
+                Ok(blob) => ServerMsg::Invite {
+                    id,
+                    blob: blob.map(hex::encode),
+                },
+                Err(_) => internal(),
+            }
+        }),
         ClientMsg::PublishKeyPackages { packages } => {
             Some(on_publish_key_packages(state, &p.me, &packages))
         }
@@ -1452,6 +1475,36 @@ fn on_put_chunk(
         Ok(PutChunk::OverQuota) => {
             err("quota_exceeded", "this device's attachment storage is full")
         }
+        Err(_) => internal(),
+    }
+}
+
+fn on_put_invite(state: &Shared, cfg: &Config, me: &str, id: &str, hex_blob: &str) -> ServerMsg {
+    if !is_blob_id(id) {
+        return err("bad_request", "invalid invite id");
+    }
+    if hex_blob.len() > MAX_INVITE_BYTES * 2 {
+        return err("too_large", "invite exceeds relay limit");
+    }
+    let Ok(blob) = hex::decode(hex_blob) else {
+        return err("bad_request", "invite is not hex");
+    };
+    if blob.is_empty() {
+        return err("bad_request", "empty invite");
+    }
+    match state.store.put_invite(
+        id,
+        me,
+        &blob,
+        cfg.invite_ttl.as_millis() as i64,
+        MAX_OPEN_INVITES,
+    ) {
+        Ok(PutInvite::Stored) => ServerMsg::InviteStored { id: id.into() },
+        Ok(PutInvite::Exists) => err("exists", "an invite with this id exists"),
+        Ok(PutInvite::TooMany) => err(
+            "too_many_invites",
+            "this device already has as many open invite links as it may",
+        ),
         Err(_) => internal(),
     }
 }

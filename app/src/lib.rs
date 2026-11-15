@@ -113,6 +113,12 @@ pub(crate) fn tally(out: &mut SyncDto, o: &Outcome) -> bool {
             out.changed += 1
         }
         Outcome::GroupInvite { .. } => out.message_requests += 1,
+        Outcome::InviteJoined { name, .. } => {
+            out.received += 1;
+            out.notes.push(format!(
+                "{name} joined with your invite link. Not verified yet: compare safety numbers."
+            ));
+        }
         Outcome::GroupJoined { .. }
         | Outcome::GroupChanged { .. }
         | Outcome::GroupHistory { .. }
@@ -448,6 +454,15 @@ pub struct SyncDto {
     /// Messages already shown that changed: edited, deleted, or reacted to.
     pub changed: usize,
     pub notes: Vec<String>,
+}
+
+/// What opening an invite link did (ADR 0039).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct InviteDto {
+    /// The contact's name here.
+    pub name: String,
+    /// They were already a contact.
+    pub existing: bool,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -984,6 +999,24 @@ impl Session {
             }
             Added::Upgraded => format!("{name} upgraded to a signed identity. Verify again."),
             Added::Replaced => format!("{name}'s safety number changed. Verify again."),
+        })
+    }
+
+    /// Make a one-time invite link, valid 7 days (ADR 0039). Whoever opens it first becomes a
+    /// contact, not verified, on both sides.
+    pub async fn create_invite(&self) -> Result<String> {
+        let _net = self.net.lock().await;
+        spike_cli::invites::create(&self.home, self.target()).await
+    }
+
+    /// Open someone's invite link: they become a contact (not verified) called `name`, or the name
+    /// they offer, and are told. Fails if the link was already used or has expired.
+    pub async fn redeem_invite(&self, link: &str, name: Option<&str>) -> Result<InviteDto> {
+        let _net = self.net.lock().await;
+        let r = spike_cli::invites::redeem(&self.home, self.target(), link, name).await?;
+        Ok(InviteDto {
+            name: r.name,
+            existing: r.existing,
         })
     }
 

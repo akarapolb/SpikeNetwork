@@ -168,6 +168,15 @@ pub enum ClientMsg {
         blob: String,
         index: u32,
     },
+    /// Store a sealed invite (ADR 0039) under a random 32-hex id, for at most 7 days.
+    InvitePut {
+        id: String,
+        blob: String,
+    },
+    /// Take an invite: the relay returns it and deletes it, so it is handed out once.
+    InviteTake {
+        id: String,
+    },
     /// Upload MLS key packages (opaque to the relay) so others can add this device to a group
     /// while it is offline. Each is handed out once.
     PublishKeyPackages {
@@ -279,6 +288,15 @@ pub enum ServerMsg {
         blob: String,
         index: u32,
         data: Option<String>,
+    },
+    /// Reply to `InvitePut`.
+    InviteStored {
+        id: String,
+    },
+    /// Reply to `InviteTake`; `blob` is `None` if it was already taken, expired or never existed.
+    Invite {
+        id: String,
+        blob: Option<String>,
     },
     /// Reply to `FetchDeviceList`; `list` is the signed list JSON, if the relay has one.
     DeviceList {

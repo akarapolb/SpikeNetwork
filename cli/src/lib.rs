@@ -6,6 +6,7 @@ pub mod direct;
 pub mod directory;
 pub mod groups;
 pub mod history;
+pub mod invites;
 pub mod large;
 #[cfg(feature = "test-hooks")]
 pub mod large_testing;
@@ -91,6 +92,12 @@ pub enum Outcome {
         held: usize,
         /// The first message of a new request, not a follow-up.
         new: bool,
+    },
+    /// Someone opened your invite link (ADR 0039) and is now a contact called `name`, not verified.
+    InviteJoined {
+        name: String,
+        /// Their conversation key (owner key, hex).
+        peer: String,
     },
     /// Another of your devices marked a conversation read (merged by max).
     ReadSynced { peer: String },
@@ -462,8 +469,9 @@ pub fn process(
                         persist(sessions, me)?;
                         return Ok(Outcome::Ignored);
                     }
-                    if env.kind == Kind::Status {
-                        // Statuses go to contacts only (ADR 0037); our own devices have nothing to keep.
+                    if matches!(env.kind, Kind::Status | Kind::InviteHello) {
+                        // Statuses go to contacts only (ADR 0037), and so does the hello that opens
+                        // an invite (ADR 0039); our own devices have nothing to keep.
                         persist(sessions, me)?;
                         return Ok(Outcome::Ignored);
                     }
@@ -572,6 +580,12 @@ pub fn process(
                         let outcome = large::on_welcome(home, &contacts[contact].name, &env)?;
                         persist(sessions, me)?;
                         return Ok(outcome);
+                    }
+                    if env.kind == Kind::InviteHello {
+                        // Someone already in our contacts opened our invite link: it is used up.
+                        invites::on_contact_hello(home, &env.body)?;
+                        persist(sessions, me)?;
+                        return Ok(Outcome::Ignored);
                     }
                     if env.kind == Kind::Status {
                         // Read receipt, online or typing (ADR 0037): kept only if we share the same.

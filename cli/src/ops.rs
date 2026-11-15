@@ -628,7 +628,7 @@ async fn deliver_to(
 
     // Starting a session with someone who may not know us: say who we are (ADR 0021). A contact
     // who already has a session with us ignores it; a stranger needs it to treat this as a request.
-    if env.kind == Kind::Text
+    if matches!(env.kind, Kind::Text | Kind::InviteHello)
         && targets
             .iter()
             .any(|(d, _, own)| !*own && !sessions.has_session(d))
@@ -760,7 +760,8 @@ async fn deliver_to(
         | Kind::App
         | Kind::AppStateRequest
         | Kind::AppState
-        | Kind::Status => {}
+        | Kind::Status
+        | Kind::InviteHello => {}
     }
     Ok(SendReport {
         id: env.id,

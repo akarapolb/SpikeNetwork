@@ -59,6 +59,9 @@ pub enum Kind {
     /// What a person chose to share about using the app (ADR 0037): a read receipt, "online now"
     /// or typing. The body is a [`Status`] as JSON. One to one only; never stored as a message.
     Status,
+    /// The first message from someone who opened your invite link (ADR 0039): the body is an
+    /// `invite::Hello` (the invite's one-time token) as JSON. One to one only; never stored.
+    InviteHello,
 }
 
 /// The body of a `Kind::Status` envelope (ADR 0037). Each is sent only while its sender's
@@ -276,6 +279,17 @@ impl Envelope {
     }
 
     /// A delete of message `target`.
+    /// The hello that redeems an invite (ADR 0039).
+    pub fn invite_hello(token: &str) -> Result<Self> {
+        let mut e = Self::text("")?;
+        e.kind = Kind::InviteHello;
+        e.body = serde_json::to_string(&crate::invite::Hello {
+            token: token.into(),
+        })
+        .map_err(|_| Error::Malformed)?;
+        Ok(e)
+    }
+
     /// A read receipt, online or typing signal (ADR 0037).
     pub fn status(s: Status) -> Result<Self> {
         let mut e = Self::text("")?;
@@ -309,10 +323,11 @@ impl Envelope {
                     .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
         });
         let att_ok = e.attachment.as_ref().is_none_or(|a| a.validate().is_ok());
-        // Only a text message or a group invite introduces its sender, and the card must be a sane size.
+        // Only a text message, a group invite or an invite link's hello introduces its sender, and
+        // the card must be a sane size.
         let intro_ok = e.intro.as_ref().is_none_or(|c| {
             c.len() <= MAX_INTRO
-                && matches!(e.kind, Kind::Text | Kind::GroupState)
+                && matches!(e.kind, Kind::Text | Kind::GroupState | Kind::InviteHello)
                 && !c.chars().any(char::is_control)
         });
         // A name comes only with an introduction.
@@ -340,7 +355,8 @@ impl Envelope {
                 | Kind::LargeWelcome
                 | Kind::LargeLeave
                 | Kind::LargeLists
-                | Kind::Status => e.group.is_none() && e.gstate.is_none(),
+                | Kind::Status
+                | Kind::InviteHello => e.group.is_none() && e.gstate.is_none(),
                 // A group message says which member list it was sent with.
                 Kind::Text
                 | Kind::Edit
@@ -366,7 +382,8 @@ impl Envelope {
             | Kind::App
             | Kind::AppStateRequest
             | Kind::AppState
-            | Kind::Status => e.target.is_none(),
+            | Kind::Status
+            | Kind::InviteHello => e.target.is_none(),
             Kind::Edit | Kind::Delete | Kind::React => e.target.as_ref().is_some_and(|t| {
                 t.len() == 32
                     && t.bytes()
@@ -403,6 +420,11 @@ impl Envelope {
                 e.attachment.is_none()
                     && e.intro.is_none()
                     && serde_json::from_str::<Status>(&e.body).is_ok()
+            }
+            Kind::InviteHello => {
+                e.attachment.is_none()
+                    && serde_json::from_str::<crate::invite::Hello>(&e.body)
+                        .is_ok_and(|h| h.valid())
             }
             Kind::AppStateRequest | Kind::AppState => {
                 e.attachment.is_some() == (e.kind == Kind::AppState)

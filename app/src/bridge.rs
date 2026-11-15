@@ -191,6 +191,15 @@ impl Engine {
             "sync" => val(rt.block_on(x.sync(Duration::from_millis(700)))?),
             "mark_read" => val(rt.block_on(x.mark_read(&s(a, "name")?))?),
             "add_contact" => val(x.add_contact(&s(a, "name")?, &s(a, "card")?)?),
+            "create_invite" => val(rt.block_on(x.create_invite())?),
+            "redeem_invite" => val(rt.block_on(
+                x.redeem_invite(
+                    &s(a, "link")?,
+                    a.get("name")
+                        .and_then(Value::as_str)
+                        .filter(|n| !n.trim().is_empty()),
+                ),
+            )?),
             "replace_contact_key" => {
                 val(x.replace_contact_key(&s(a, "name")?, &s(a, "card")?)?)
             }

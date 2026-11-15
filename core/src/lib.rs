@@ -16,6 +16,7 @@ pub mod direct;
 pub mod envelope;
 pub mod group;
 pub mod identity;
+pub mod invite;
 pub mod link;
 pub mod listing;
 pub mod mailbox;

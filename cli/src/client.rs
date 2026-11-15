@@ -832,6 +832,42 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
         }
     }
 
+    /// Store a sealed invite (ADR 0039).
+    pub async fn put_invite(&mut self, id: &str, blob: &[u8]) -> Result<()> {
+        self.write(&ClientMsg::InvitePut {
+            id: id.into(),
+            blob: hex::encode(blob),
+        })
+        .await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::InviteStored { .. } => return Ok(()),
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                _ => {}
+            }
+        }
+    }
+
+    /// Take an invite: the relay hands it out once. `None` if it was taken, expired or never was.
+    pub async fn take_invite(&mut self, id: &str) -> Result<Option<Vec<u8>>> {
+        self.write(&ClientMsg::InviteTake { id: id.into() }).await?;
+        loop {
+            match self.read().await? {
+                ServerMsg::Invite { blob, .. } => return Ok(blob.map(hex::decode).transpose()?),
+                ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
+                _ => {}
+            }
+        }
+    }
+
     /// Download one encrypted attachment chunk; `None` if the relay no longer has it.
     pub async fn get_blob_chunk(&mut self, blob: &str, index: u32) -> Result<Option<Vec<u8>>> {
         self.write(&ClientMsg::GetBlobChunk {
