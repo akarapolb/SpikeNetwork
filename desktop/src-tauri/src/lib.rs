@@ -724,6 +724,31 @@ async fn test_relay(state: State<'_, AppState>) -> Result<String, String> {
     session(&state)?.test_relay().await.map_err(err)
 }
 
+/// What joining an organisation's relay with this token would do (ADR 0023). Stores nothing.
+#[tauri::command]
+fn preview_join(
+    state: State<'_, AppState>,
+    token: String,
+    url: String,
+) -> Result<api::JoinPreview, String> {
+    session(&state)?.preview_join(&token, &url).map_err(err)
+}
+
+/// Join an organisation's relay: enroll there with the token and make it the home relay.
+#[tauri::command]
+async fn join_relay(
+    state: State<'_, AppState>,
+    token: String,
+    url: String,
+) -> Result<String, String> {
+    session(&state)?.join_relay(&token, &url).await.map_err(err)
+}
+
+#[tauri::command]
+fn leave_relay(state: State<'_, AppState>) -> Result<(), String> {
+    session(&state)?.leave_relay().map_err(err)
+}
+
 #[tauri::command]
 async fn edit_message(state: State<'_, AppState>, id: String, text: String) -> Result<(), String> {
     session(&state)?.edit(&id, &text).await.map_err(err)
@@ -1297,7 +1322,10 @@ mod single {
         if found.is_empty() {
             return true;
         }
-        let apps = found.iter().filter(|(_, n)| n == "spike-desktop.exe").count();
+        let apps = found
+            .iter()
+            .filter(|(_, n)| n == "spike-desktop.exe")
+            .count();
         let text = format!(
             "Spike Connect is already running, or did not close completely ({} app and {} helper process(es) found).
 
@@ -1417,6 +1445,9 @@ pub fn run() {
             set_relay_ca,
             set_allow_insecure,
             test_relay,
+            preview_join,
+            join_relay,
+            leave_relay,
             edit_message,
             delete_message,
             remove_device,

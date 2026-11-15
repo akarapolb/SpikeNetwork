@@ -73,8 +73,13 @@ single operator key whose public half is given to the relay at start (4).
 `TransportOpts::enroll` holds tokens by relay, so a token is only ever presented to the relay it was
 stored for; `Home::save_enrollments` keeps them sealed (`enrollments.enc`); `spike join`, `leave`,
 `enrollments`, and for the customer's admin `spike tenant-keygen`, `tenant-token`, `tenant-revoke`.
-The shared `app` crate presents stored tokens too, but the desktop and Android apps have no join
-screen yet.
+The desktop app joins in Settings, Home relay (after the design's "Joining an organisation's relay"
+screen): it shows this computer's full device id to send to the admin, takes the token and relay
+address, shows what joining means, then enrolls and makes that relay home; nothing changes if the relay
+refuses (`Session::preview_join`, `join_relay`, `leave_relay` in `app`; `app/tests/join.rs`;
+`desktop/drive_join.mjs` in a real window). The token does not carry the organisation's name or the
+relay's address, so the screen shows the tenant id and asks for the address. Android has no join screen
+yet.
 
 **Relay flags.** `--require-enrollment` switches enrollment on (open mode stays the default, and tokens
 are ignored there); `--enroll-no-visitors` makes a closed relay; `--enroll-max-token-days` (7);
@@ -127,7 +132,7 @@ connection and blocks the old token; visitors reach members but store nothing; o
 ignores tokens; operator requests need the operator key, cannot be replayed or be stale; the join step's
 storage is sealed and per relay. Format tests in `core/src/enroll.rs`.
 
-**Not done.** No join screen in the desktop or Android apps (and no QR scan). No independent review. The
+**Not done.** No join screen on Android, and no QR scan on either platform. No independent review. The
 operator listener is plain HTTP like `/metrics`: keep it on loopback or a private network. The operator
 key is a file on the operator's machine (no hardware key, no two-person rule). Tenant usage numbers live
 in memory and in the database, not in Prometheus. No per-tenant storage limit on group mailboxes beyond
