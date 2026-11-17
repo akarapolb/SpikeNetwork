@@ -1241,6 +1241,29 @@ async fn save_attachment(
     write_unique(&dir, &name, &bytes).map(|p| p.display().to_string())
 }
 
+/// Open a web link from a message in the system browser. Only plain http(s) addresses are accepted, and no shell is
+/// involved: the address is passed as a single argument to the system's own URL handler.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    let web = url.starts_with("https://") || url.starts_with("http://");
+    if !web || url.len() > 2048 || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("Only web links (http or https) can be opened.".into());
+    }
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .creation_flags(0x0800_0000)
+            .spawn()
+    };
+    #[cfg(target_os = "macos")]
+    let spawned = std::process::Command::new("open").arg(&url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let spawned = std::process::Command::new("xdg-open").arg(&url).spawn();
+    spawned.map(|_| ()).map_err(|e| format!("Could not open the browser: {e}"))
+}
+
 /// Fetch (and check) a message's file and hand the bytes to the window, for the image viewer. Nothing is saved.
 #[tauri::command]
 async fn attachment_bytes(
@@ -1627,6 +1650,7 @@ pub fn run() {
             send_note_to_devices,
             send_file_to_devices,
             attachment_bytes,
+            open_url,
             link_offer,
             qr_svg,
             update_check,

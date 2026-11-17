@@ -584,7 +584,7 @@ function threadItems(inGroup) {
     items.push(h("div", { class: "msg" + (m.out ? " out" : "") + (cont ? " cont" : "") + (mid ? " mid" : "") + (hit ? " hit" : "") + (hit && m.id === current ? " current" : ""), "data-id": m.id },
       m.body && !m.deleted && st.editing !== m.id ? null : quoteOf(m),
       inGroup && !m.out && m.from && !cont ? h("span", { class: "sender", title: m.shared_by ? `Shared with you by ${m.shared_by}. Nobody can prove who wrote it.` : null }, m.from, m.from_verified ? null : h("span", { class: "flag bad", style: "margin-left:6px" }, "Not verified")) : null,
-      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, quoteOf(m), hit ? marked(m.body) : mentioned(m.body)) : null),
+      m.deleted ? h("div", { class: "bubble" }, h("i", {}, "Message deleted")) : st.editing === m.id ? editBox(m) : (m.body ? h("div", { class: "bubble" }, quoteOf(m), hit ? marked(m.body) : richText(m.body)) : null),
       imageThumb(m),
       m.file ? h("div", { class: "file" }, h("span", { class: "fi" }, icon("file")), h("span", { style: "flex:1;min-width:0" }, h("div", { style: "font-weight:600" }, m.file.name), h("div", { class: "note" }, fmtSize(m.file.size))), h("button", { class: "btn", type: "button", onclick: () => saveFile(m) }, "Save")) : null,
       reactionsOf(m),
@@ -640,6 +640,22 @@ function mentionNames() {
   return [...new Set(names)].filter(Boolean);
 }
 /** Message text with each known "@Name" shown as a highlighted mention. */
+/* Links in messages: plain http(s) addresses become clickable and open in the system browser, never inside this window.
+   They carry no href on purpose, so a middle click or a drag can never navigate the app itself. */
+async function openLink(url) { try { await invoke("open_url", { url }); } catch (e) { toast(String(e)); } }
+function richText(text) {
+  const re = /https?:\/\/[^\s<>"]+/giu, out = []; let last = 0, m;
+  while ((m = re.exec(text))) {
+    const url = m[0].replace(/[.,;:!?)\]}'’]+$/u, "");
+    if (url.length < 8) continue;
+    if (m.index > last) out.push(mentioned(text.slice(last, m.index)));
+    out.push(h("a", { class: "msglink", role: "link", tabindex: "0", title: url, onclick: () => openLink(url), onkeydown: (e) => { if (e.key === "Enter") openLink(url); } }, url));
+    last = m.index + url.length; re.lastIndex = last;
+  }
+  if (!out.length) return mentioned(text);
+  if (last < text.length) out.push(mentioned(text.slice(last)));
+  return out;
+}
 function mentioned(text) {
   const names = mentionNames().sort((a, b) => b.length - a.length);
   if (!names.length || !text.includes("@")) return text;
