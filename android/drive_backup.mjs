@@ -104,6 +104,7 @@ try {
   await sleep(500);
   check(!screenText().includes("Save to"), "saving without ticking 'I wrote the key down' does nothing");
   await tapText("I wrote the key down");
+  await tapText("Include my message history"); // off by default; the restore below checks the history comes back
   await tapText("Save backup file");
   check(await waitText("Your backup is sealed", 30000), "the backup is sealed (Argon2id, 256 MiB)");
   shot("backup-3-sealed");
@@ -121,7 +122,10 @@ try {
     try { saved = sh(`ls -l /sdcard/Download/${FILE}`); } catch (_) {}
   }
   check(saved.includes(FILE), "the file is in the phone's Downloads");
-  check(await waitText("Last backup", 10000), "Settings now shows the date of the last backup");
+  // After saving, the card is shorter and the date line can sit above the visible part: scroll up to it.
+  let dated = await waitText("Last backup", 4000);
+  for (let i = 0; i < 4 && !dated; i++) { sh("input swipe 540 900 540 1700 300"); await sleep(400); dated = screenText().includes("Last backup"); }
+  check(dated, "Settings now shows the date of the last backup");
   shot("backup-5-saved");
   const local = join(D.tmp, FILE);
   adb("pull", `/sdcard/Download/${FILE}`, local);

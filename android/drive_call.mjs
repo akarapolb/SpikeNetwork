@@ -109,6 +109,11 @@ try {
   const routes = (au.audio.match(/available=(\S*)/) || [])[1].split(",");
   const first = (au.audio.match(/route=(\w+)/) || [])[1];
   check(first === (routes.includes("Earpiece") ? "Earpiece" : "Speaker") && au.mic === "true", `a voice call starts on ${first} with the microphone open`);
+  // On the loudspeaker the far end gets a software gain and the call volume is not left near zero (the speaker was too quiet).
+  if (first === "Speaker") {
+    const [vol, max] = (au.audio.match(/volume=(\d+)\/(\d+)/) || []).slice(1).map(Number);
+    check(vol >= Math.ceil(max * 0.7) && /gain=2\.0/.test(au.audio) && /remote=true/.test(au.audio), `the speaker has a boosted far end and a usable call volume (${au.audio})`);
+  }
   au = debug("_audio", "next");
   const want = routes[(routes.indexOf(first) + 1) % routes.length];
   check(au.audio.includes(`route=${want}`), `the sound button steps from ${first} to ${want} (${au.audio})`);
