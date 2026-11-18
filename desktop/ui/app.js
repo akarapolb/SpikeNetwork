@@ -1099,10 +1099,53 @@ function settingsMain() {
         h("button", { class: "btn primary", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relayIn.value }); toast("Relay saved."); st.relayEdit = false; await refresh(); syncNow(); } catch (e) { toast(String(e)); } } }, "Save relay"),
         h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("set_relay", { url: relayIn.value }); toast("Connecting…"); toast(await invoke("test_relay")); } catch (e) { toast(String(e)); } } }, "Test connection"),
         h("button", { class: "btn", type: "button", onclick: () => { st.relayEdit = false; render(); } }, "Cancel"))) : null,
+    ...orgRows(),
     h("div", { class: "relaysee" },
       h("div", {}, h("span", { class: "cap" }, "A relay can see"), h("span", {}, "Which device a message is for"), h("span", {}, "When, and how large"), h("span", {}, "Your network address")),
       h("div", {}, h("span", { class: "cap" }, "A relay cannot see"), h("span", {}, "What a message says"), h("span", {}, "Who sent it"), h("span", {}, "Your contacts or groups"))));
 
+  // An organisation's relay (ADR 0023): join with a token made for this computer, as in the design's
+  // "Joining an organisation's relay" screen. The relay learns this device id belongs to the
+  // organisation, nothing else.
+  function orgRows() {
+    const org = st.ov.organisation, j = st.join;
+    if (org) return [srow(`Organisation · ${org.tenant}`, `This computer is enrolled on this relay. The relay knows it belongs to ${org.tenant}, and nothing about you.`,
+      h("button", { class: "btn", type: "button", onclick: async () => { try { await invoke("leave_relay"); toast("Token forgotten. The organisation can remove this computer from its relay."); await refresh(); } catch (e) { toast(String(e)); } } }, "Forget token"))];
+    if (!j) return [srow("Join an organisation's relay", "For a relay your organisation runs. Its admin gives you a token made for this computer.",
+      h("button", { class: "btn", type: "button", onclick: () => { st.join = { token: "", url: st.ov.relay.startsWith("wss://") ? "" : "wss://", preview: null }; render(); } }, "Join"))];
+    if (j.preview) {
+      const p = j.preview;
+      const until = new Date(p.valid_until_ms).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+      return [h("div", { class: "joinconf", role: "group", "aria-label": `Join ${p.tenant}'s relay` },
+        h("div", { class: "joinhead" }, h("span", { class: `tile lg sq ${tint(p.tenant)}`, "aria-hidden": "true" }, ini2(p.tenant.replace(/[-_]+/g, " "))),
+          h("b", {}, `Join ${p.tenant}'s relay`), h("span", { class: "note mono" }, p.relay_host)),
+        h("div", { class: "kv2" },
+          h("div", {}, h("span", {}, "Enrols"), h("span", {}, "This computer only")),
+          h("div", {}, h("span", {}, "Token valid until"), h("span", {}, until)),
+          h("div", {}, h("span", {}, `${p.tenant} can see`), h("span", {}, "That this device exists")),
+          h("div", {}, h("span", {}, `${p.tenant} cannot see`), h("span", {}, "Your name, contacts, messages"))),
+        h("button", { class: "btn primary big", type: "button", disabled: j.busy || null, onclick: async () => {
+          j.busy = true; render();
+          try { const t = await invoke("join_relay", { token: j.token, url: p.relay }); st.join = null; toast(`Joined ${t}'s relay. It is your home relay now.`); await refresh(); syncNow(); }
+          catch (e) { j.busy = false; j.preview = null; j.err = String(e); render(); } } }, j.busy ? "Joining…" : "Use this relay"),
+        h("button", { class: "btn quiet", type: "button", onclick: () => { st.join = null; render(); } }, "Not now"))];
+    }
+    const tok = h("textarea", { class: "cardbox mono", "aria-label": "Enrollment token", placeholder: "spike-enroll1:…", "data-keep": "jointok", oninput: (e) => { j.token = e.target.value; } }, j.token);
+    const url = h("input", { class: "mono", "aria-label": "Organisation relay address", placeholder: "wss://relay.example", value: j.url, "data-keep": "joinurl", oninput: (e) => { j.url = e.target.value; } });
+    const copyId = async () => { try { await navigator.clipboard.writeText(st.ov.me.device_id); toast("Device id copied. Send it to your organisation's admin."); } catch (_) { toast("Select the device id and copy it."); } };
+    return [h("div", { class: "relayedit joinform" },
+      h("span", { class: "cap" }, "1 · This computer's device id"),
+      h("div", { class: "joinid" }, h("span", { class: "mono" }, st.ov.me.device_id), h("button", { class: "btn small", type: "button", onclick: copyId }, "Copy")),
+      h("span", { class: "note" }, "Send it to your organisation's admin. A token works for one device only, so it is useless to anyone else."),
+      h("span", { class: "cap next" }, "2 · The token and relay they send back"),
+      tok, h("div", { class: "field" }, url),
+      j.err ? h("div", { class: "status bad", role: "alert" }, h("span", {}, j.err)) : null,
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
+        h("button", { class: "btn primary", type: "button", onclick: async () => {
+          try { j.err = null; j.preview = await invoke("preview_join", { token: j.token.trim(), url: j.url.trim() }); j.token = j.token.trim(); render(); }
+          catch (e) { j.err = String(e); render(); } } }, "Continue"),
+        h("button", { class: "btn", type: "button", onclick: () => { st.join = null; render(); } }, "Cancel")))];
+  }
   const trust = () => h("section", { class: "card", id: "set-trust" }, ...secHead("Relay trust", "For a relay you run yourself, with its own certificate."),
     srow("Certificates", st.ov.relay_trust.ca_certs ? `${st.ov.relay_trust.ca_certs} extra certificate${st.ov.relay_trust.ca_certs > 1 ? "s are" : " is"} trusted, as well as the usual public ones.` : "Only the usual public certificate authorities are trusted. Choose a relay's .crt or .pem file (the certificate, never the private key).",
       caPicker, h("button", { class: "btn", type: "button", onclick: () => caPicker.click() }, "Choose file…"),

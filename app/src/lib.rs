@@ -147,6 +147,8 @@ pub struct DeviceDto {
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct Me {
     pub fingerprint: String,
+    /// This device's full id: what an organisation's admin needs to issue an enrollment token.
+    pub device_id: String,
     pub card: String,
     pub devices: usize,
     pub device_list: Vec<DeviceDto>,
@@ -215,6 +217,26 @@ pub struct Overview {
     pub requests: usize,
     pub relay: String,
     pub relay_trust: RelayTrustDto,
+    /// The organisation whose relay this is, if this device joined it with an enrollment token
+    /// (ADR 0023). `None` on an open relay.
+    pub organisation: Option<OrganisationDto>,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct OrganisationDto {
+    /// The tenant id the relay operator gave the organisation.
+    pub tenant: String,
+}
+
+/// What joining an organisation's relay with a token would do, shown before the person agrees.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct JoinPreview {
+    pub tenant: String,
+    /// The relay address, cleaned up, and its host for display.
+    pub relay: String,
+    pub relay_host: String,
+    /// Until when the token can be used (ms since the epoch).
+    pub valid_until_ms: u64,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -308,6 +330,18 @@ pub struct BlockedDto {
     pub owner: String,
     pub fingerprint: String,
     pub at: u64,
+}
+
+/// A relay address the person typed, checked for shape.
+fn checked_relay_url(url: &str) -> Result<&str> {
+    let url = url.trim();
+    if !(url.starts_with("ws://") || url.starts_with("wss://"))
+        || url.len() > 256
+        || url.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        bail!("the relay address must look like wss://relay.example or ws://127.0.0.1:8787");
+    }
+    Ok(url)
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -509,13 +543,7 @@ impl Session {
     }
 
     pub fn set_relay(&self, url: &str) -> Result<()> {
-        let url = url.trim();
-        if !(url.starts_with("ws://") || url.starts_with("wss://"))
-            || url.len() > 256
-            || url.chars().any(|c| c.is_control() || c.is_whitespace())
-        {
-            bail!("the relay address must look like wss://relay.example or ws://127.0.0.1:8787");
-        }
+        let url = checked_relay_url(url)?;
         let mut rs = self.settings();
         rs.url = url.into();
         self.save_settings(rs)
@@ -551,6 +579,93 @@ impl Session {
 
     fn target(&self) -> Target {
         target_for(&self.settings(), &self.home)
+    }
+
+    // ------------------------------------------------------ organisation relays (ADR 0023)
+
+    /// Check an enrollment token before joining: that it is one, that it is for this device and
+    /// that it has not expired. Nothing is stored or sent.
+    pub fn preview_join(&self, token: &str, url: &str) -> Result<JoinPreview> {
+        let url = checked_relay_url(url)?;
+        let tok = spike_core::enroll::EnrollToken::decode(token).map_err(|_| {
+            anyhow!("that is not an enrollment token: it starts with spike-enroll1:")
+        })?;
+        if tok.device_id != self.home.load_identity()?.device_id() {
+            bail!("this token was made for another device. Ask the organisation for a token for this computer: its device id is under Devices.");
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        if tok.not_after <= now {
+            bail!("this token has expired. Ask the organisation for a new one.");
+        }
+        let relay_host = url
+            .split_once("://")
+            .map(|(_, rest)| rest.split('/').next().unwrap_or(rest))
+            .unwrap_or(url)
+            .to_string();
+        Ok(JoinPreview {
+            tenant: tok.tenant,
+            relay: url.to_string(),
+            relay_host,
+            valid_until_ms: tok.not_after.saturating_mul(1000),
+        })
+    }
+
+    /// Join an organisation's relay: sign in there with the token (which enrolls this device),
+    /// then keep the token sealed with the other settings and make that relay the home relay.
+    /// Nothing is changed if the relay refuses.
+    pub async fn join_relay(&self, token: &str, url: &str) -> Result<String> {
+        let preview = self.preview_join(token, url)?;
+        let me = self.home.load_identity()?;
+        let mut enroll = self.home.load_enrollments()?;
+        enroll.insert(&preview.relay, token);
+        let mut rs = self.settings();
+        rs.url = preview.relay.clone();
+        let mut target = target_for(&rs, &self.home);
+        target.opts.enroll = enroll.clone();
+        let _net = self.net.lock().await;
+        let mut r = match tokio::time::timeout(Duration::from_secs(15), Relay::connect(target, &me))
+            .await
+        {
+            Err(_) => bail!("no answer from {} within 15 seconds", preview.relay),
+            Ok(Ok(r)) => r,
+            // A refusal is said in words, without the relay's code ("relay refused: <code>: <words>").
+            Ok(Err(e)) => {
+                let msg = format!("{e:#}");
+                let words = msg
+                    .strip_prefix("relay refused: ")
+                    .and_then(|rest| rest.split_once(": ").map(|(_, w)| w.to_string()))
+                    .unwrap_or(msg);
+                bail!("{} did not admit this device: {words}", preview.relay_host)
+            }
+        };
+        match r.tenant.take() {
+            Some(t) if t == preview.tenant => {}
+            Some(t) => bail!("the relay enrolled this device in '{t}', not '{}'", preview.tenant),
+            None => bail!("{} does not require enrollment, so this token is not needed there; you can use it as your home relay without one", preview.relay_host),
+        }
+        drop(r);
+        self.home.save_enrollments(&enroll)?;
+        self.save_settings(rs)?;
+        Ok(preview.tenant)
+    }
+
+    /// Forget the token for the home relay. The relay keeps the enrollment until the organisation
+    /// revokes it; this device stays able to sign in there.
+    pub fn leave_relay(&self) -> Result<()> {
+        let mut e = self.home.load_enrollments()?;
+        if e.remove(&self.settings().url) {
+            self.home.save_enrollments(&e)?;
+        }
+        Ok(())
+    }
+
+    fn organisation(&self) -> Option<OrganisationDto> {
+        let e = self.home.load_enrollments().ok()?;
+        let tok = e.for_url(&self.settings().url)?;
+        let t = spike_core::enroll::EnrollToken::decode(tok).ok()?;
+        Some(OrganisationDto { tenant: t.tenant })
     }
 
     /// Connect and sign in to the relay, to show the person whether it works.
@@ -746,6 +861,7 @@ impl Session {
         Ok(Overview {
             me: Me {
                 fingerprint: me.fingerprint(),
+                device_id: self.home.load_identity()?.device_id(),
                 card,
                 devices: me.devices().len(),
                 device_list,
@@ -765,6 +881,7 @@ impl Session {
                 },
                 allow_insecure: self.settings().allow_insecure,
             },
+            organisation: self.organisation(),
         })
     }
 
