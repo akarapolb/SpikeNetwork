@@ -10,6 +10,7 @@ use spike_cli::{
 };
 use spike_core::owner::IdentityCard;
 use spike_core::vault::KdfParams;
+use std::io::IsTerminal;
 use zeroize::Zeroizing;
 
 const MIN_PASSPHRASE_CHARS: usize = 10;
@@ -221,6 +222,10 @@ enum Cmd {
         /// Days the token may be redeemed for (the relay accepts at most its own limit, 7 by default).
         #[arg(long, default_value_t = 7)]
         days: u64,
+        /// Also draw the token as a QR code for the phone to scan, on standard error: `auto` when
+        /// this runs in a terminal, `always`, or `never`. The token's text is printed either way.
+        #[arg(long, default_value = "auto", value_parser = ["auto", "always", "never"])]
+        qr: String,
     },
     /// Organisation admin: remove a device from the tenant. The relay refuses it from then on and
     /// deletes what it holds for it.
@@ -831,6 +836,7 @@ async fn run() -> Result<()> {
         tenant,
         device,
         days,
+        qr,
     } = &cli.cmd
     {
         let k = read_admin_key(key)?;
@@ -841,7 +847,15 @@ async fn run() -> Result<()> {
         let t = k
             .issue(tenant, device.trim(), not_after)
             .context("tenant id or device id is not valid")?;
-        println!("{}", t.encode());
+        let token = t.encode();
+        if qr == "always" || (qr == "auto" && std::io::stderr().is_terminal()) {
+            eprintln!(
+                "Scan this on the phone (Settings, Home relay, Join, Scan the token's code):"
+            );
+            eprint!("{}", spike_cli::qr::terminal(&token)?);
+            eprintln!("or paste the text below.");
+        }
+        println!("{token}");
         eprintln!("valid for {days} days, for device {device} only. The device runs: spike join <token> --relay <url>");
         return Ok(());
     }
