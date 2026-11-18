@@ -7,7 +7,9 @@
 //! directory, and keeps the synchronous methods every caller already uses; they run the async ones, which a
 //! `FileStore` finishes without waiting. A store that has to wait (IndexedDB) has only the async methods.
 
-use crate::messages::MessageStore;
+use crate::direct_path::DirectPath;
+use crate::history::HistoryProvider;
+use crate::messages::{MessageStore, SqliteHistory};
 use crate::store::{FileStore, Store};
 use anyhow::{bail, Context, Result};
 use futures_util::FutureExt;
@@ -19,6 +21,7 @@ use spike_core::vault::{KdfParams, Vault, VaultHeader};
 use spike_core::Error as CoreError;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const HEADER_FILE: &str = "vault.json";
 const IDENTITY: &str = "identity.enc";
@@ -44,9 +47,12 @@ struct Profile {
 
 /// An unlocked state: a vault key and the store its sealed files live in. Without a type argument this is the
 /// state directory (`Home<FileStore>`), so existing code reads as before.
-pub struct Home<S: Store = FileStore> {
+pub struct Home<S: Store = FileStore, P: HistoryProvider = SqliteHistory> {
     store: S,
+    history: P,
     vault: Vault,
+    /// Direct connections (ADR 0027), where the platform has them. `None` sends everything through the relay.
+    direct: Option<Arc<dyn DirectPath>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -141,7 +147,23 @@ fn attachment_name(tag: &str) -> String {
 // ---------------------------------------------------------------------------------------------------------
 // The logic, over any store.
 // ---------------------------------------------------------------------------------------------------------
-impl<S: Store> Home<S> {
+impl<S: Store, P: HistoryProvider> Home<S, P> {
+    /// Use `direct` for direct connections.
+    pub fn with_direct(mut self, direct: Arc<dyn DirectPath>) -> Self {
+        self.direct = Some(direct);
+        self
+    }
+
+    /// The direct-connection hook, if this platform has one.
+    pub fn direct_path(&self) -> Option<&dyn DirectPath> {
+        self.direct.as_deref()
+    }
+
+    /// The message history, opened with this vault's key.
+    pub async fn messages_async(&self) -> Result<P::Opened<'_>> {
+        self.history.open(&self.vault).await
+    }
+
     /// Whether `store` already holds a vault.
     pub async fn exists_in(store: &S) -> Result<bool> {
         Ok(store.get(HEADER_FILE).await?.is_some())
@@ -151,6 +173,7 @@ impl<S: Store> Home<S> {
     /// state unless `force`.
     pub async fn create_with(
         store: S,
+        history: P,
         passphrase: &str,
         kdf: KdfParams,
         force: bool,
@@ -160,7 +183,12 @@ impl<S: Store> Home<S> {
         }
         let (vault, header) = Vault::create(passphrase, kdf)?;
         store.put(HEADER_FILE, header.to_json()?.as_bytes()).await?;
-        let home = Self { store, vault };
+        let home = Self {
+            store,
+            history,
+            vault,
+            direct: None,
+        };
         let device = Identity::generate()?;
         let owner = OwnerKey::generate();
         let list = DeviceList::sign(
@@ -179,7 +207,7 @@ impl<S: Store> Home<S> {
         Ok(home)
     }
 
-    pub async fn unlock_with(store: S, passphrase: &str) -> Result<Self> {
+    pub async fn unlock_with(store: S, history: P, passphrase: &str) -> Result<Self> {
         let Some(header) = store.get(HEADER_FILE).await? else {
             bail!("no state here (run `spike init`)");
         };
@@ -189,7 +217,12 @@ impl<S: Store> Home<S> {
             Err(CoreError::WrongPassphrase) => bail!("wrong passphrase"),
             Err(e) => return Err(e.into()),
         };
-        Ok(Self { store, vault })
+        Ok(Self {
+            store,
+            history,
+            vault,
+            direct: None,
+        })
     }
 
     /// Re-seal this device's vault under `new` (ADR 0003): only the header changes, so every file
@@ -541,7 +574,7 @@ impl<S: Store> Home<S> {
 // The state directory: what every caller has always used. Same names, same behaviour; each method runs the
 // async one above, which a `FileStore` completes without waiting.
 // ---------------------------------------------------------------------------------------------------------
-impl Home<FileStore> {
+impl Home<FileStore, SqliteHistory> {
     pub fn exists(dir: &Path) -> bool {
         FileStore::new(dir).has(HEADER_FILE)
     }
@@ -559,7 +592,9 @@ impl Home<FileStore> {
             bail!("state already exists in {} (use --force to replace it, destroying the old identity)", store.dir().display());
         }
         store.make_dir()?;
-        ready(Self::create_with(store, passphrase, kdf, force))
+        let history = SqliteHistory::new(store.dir().join(MESSAGES));
+        ready(Self::create_with(store, history, passphrase, kdf, force))
+            .map(|h| h.with_direct(Arc::new(crate::direct::NativeDirect)))
     }
 
     pub fn unlock(dir: impl Into<PathBuf>, passphrase: &str) -> Result<Self> {
@@ -567,7 +602,9 @@ impl Home<FileStore> {
         if !store.has(HEADER_FILE) {
             bail!("no state in {} (run `spike init`)", store.dir().display());
         }
-        ready(Self::unlock_with(store, passphrase))
+        let history = SqliteHistory::new(store.dir().join(MESSAGES));
+        ready(Self::unlock_with(store, history, passphrase))
+            .map(|h| h.with_direct(Arc::new(crate::direct::NativeDirect)))
     }
 
     pub fn path(&self) -> &Path {
@@ -702,9 +739,9 @@ impl Home<FileStore> {
         ready(self.save_json_async(name, value))
     }
 
-    /// Encrypted message history (see [`crate::messages`]). SQLite, so it stays with the state directory.
+    /// Encrypted message history (see [`crate::messages`]). SQLite, opened through the provider.
     /// It implements [`crate::history::History`]; its synchronous methods run that trait's operations.
     pub fn messages(&self) -> Result<MessageStore<'_>> {
-        MessageStore::open(&self.store.dir().join(MESSAGES), &self.vault)
+        ready(self.messages_async())
     }
 }

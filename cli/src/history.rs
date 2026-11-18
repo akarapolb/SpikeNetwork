@@ -9,6 +9,7 @@
 
 use crate::messages::{Reaction, StoredMessage};
 use anyhow::Result;
+use spike_core::vault::Vault;
 use std::future::Future;
 
 pub use spike_core::clock::MaybeSend;
@@ -59,4 +60,17 @@ pub trait History: MaybeSend {
         reactor: &str,
         r: &Reaction,
     ) -> impl Future<Output = Result<()>> + MaybeSend;
+}
+
+/// Where a `Home` gets its [`History`] from. Opening one needs the vault key (rows are sealed with it), so a
+/// store cannot be a plain field of `Home`: it borrows the vault for as long as it is open. The native provider
+/// is the SQLite file next to the state; a browser's opens IndexedDB.
+pub trait HistoryProvider: MaybeSend + crate::store::MaybeSync {
+    type Opened<'a>: History
+    where
+        Self: 'a;
+    fn open<'a>(
+        &'a self,
+        vault: &'a Vault,
+    ) -> impl Future<Output = Result<Self::Opened<'a>>> + MaybeSend;
 }

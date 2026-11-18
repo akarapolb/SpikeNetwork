@@ -8,7 +8,7 @@
 //! what they say. The sealed blob is bound to its row's tags, so rows cannot
 //! be moved between conversations or ids without detection.
 
-use crate::history::{History, MaybeSend};
+use crate::history::{History, HistoryProvider, MaybeSend};
 use crate::state::ready;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -482,6 +482,29 @@ impl<'v> MessageStore<'v> {
     #[cfg(test)]
     fn raw(&self) -> &Connection {
         &self.conn
+    }
+}
+
+/// The native [`HistoryProvider`]: the SQLite file `path`, created owner-only on first use.
+#[derive(Clone, Debug)]
+pub struct SqliteHistory {
+    path: std::path::PathBuf,
+}
+
+impl SqliteHistory {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl HistoryProvider for SqliteHistory {
+    type Opened<'a> = MessageStore<'a>;
+    fn open<'a>(
+        &'a self,
+        vault: &'a Vault,
+    ) -> impl Future<Output = Result<MessageStore<'a>>> + MaybeSend {
+        // Opening a file finishes without waiting, so do it now (the connection stays out of the future).
+        std::future::ready(MessageStore::open(&self.path, vault))
     }
 }
 

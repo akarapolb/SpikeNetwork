@@ -2,11 +2,17 @@
 //! directory still holding the same files as before the trait.
 
 use anyhow::Result;
+use spike_cli::messages::SqliteHistory;
 use spike_cli::state::Home;
 use spike_cli::store::{FileStore, Store};
 use spike_core::vault::KdfParams;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+
+// These tests never read messages, so the history file is never opened.
+fn history() -> SqliteHistory {
+    SqliteHistory::new(std::env::temp_dir().join("spike-store-test-never-opened.db"))
+}
 
 /// A store that keeps everything in a map, the way a browser store would keep it in IndexedDB.
 #[derive(Default, Clone)]
@@ -42,8 +48,10 @@ fn temp(name: &str) -> std::path::PathBuf {
 #[tokio::test]
 async fn home_works_over_a_store_that_is_not_a_directory() {
     let store = MemStore::default();
-    assert!(!Home::exists_in(&store).await.unwrap());
-    let home = Home::create_with(store, "pass phrase", kdf(), false)
+    assert!(!Home::<MemStore, SqliteHistory>::exists_in(&store)
+        .await
+        .unwrap());
+    let home = Home::create_with(store, history(), "pass phrase", kdf(), false)
         .await
         .unwrap();
 
@@ -68,25 +76,27 @@ async fn home_works_over_a_store_that_is_not_a_directory() {
 #[tokio::test]
 async fn the_same_store_can_be_unlocked_again_and_a_wrong_passphrase_is_refused() {
     let store = MemStore::default();
-    let home = Home::create_with(store.clone(), "right", kdf(), false)
+    let home = Home::create_with(store.clone(), history(), "right", kdf(), false)
         .await
         .unwrap();
     let card = home.identity_card_async().await.unwrap();
     // creating over a vault is refused without force
-    let err = Home::create_with(store.clone(), "right", kdf(), false)
+    let err = Home::create_with(store.clone(), history(), "right", kdf(), false)
         .await
         .err()
         .expect("refused");
     assert!(err.to_string().contains("already exists"), "{err}");
 
-    let again = Home::unlock_with(store.clone(), "right").await.unwrap();
+    let again = Home::unlock_with(store.clone(), history(), "right")
+        .await
+        .unwrap();
     assert_eq!(again.identity_card_async().await.unwrap(), card);
-    let err = Home::unlock_with(store.clone(), "wrong")
+    let err = Home::unlock_with(store.clone(), history(), "wrong")
         .await
         .err()
         .expect("refused");
     assert!(err.to_string().contains("wrong passphrase"), "{err}");
-    let err = Home::unlock_with(MemStore::default(), "right")
+    let err = Home::unlock_with(MemStore::default(), history(), "right")
         .await
         .err()
         .expect("refused");
@@ -94,7 +104,7 @@ async fn the_same_store_can_be_unlocked_again_and_a_wrong_passphrase_is_refused(
 
     // a file copied from another vault is refused (each name is bound into its seal)
     let other = MemStore::default();
-    let _ = Home::create_with(other.clone(), "right", kdf(), false)
+    let _ = Home::create_with(other.clone(), history(), "right", kdf(), false)
         .await
         .unwrap();
     let theirs = other.get("contacts.enc").await.unwrap().unwrap();
