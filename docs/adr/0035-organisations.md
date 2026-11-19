@@ -281,7 +281,9 @@ moving back, the admin interface closed to devices and to other keys), and `desk
 windows: the console, a member joining by the sheet, a contact on another relay, rules, revoke, leave; all checks
 pass). `android/drive_org.mjs` passes on the emulator (2026-11-15): the phone pastes the token (the join page's Paste
 button), sees the sheet, joins, receives the four rules from the console, learns it was removed, and leaves back to
-its previous relay.
+its previous relay. `android/drive_org_scan.mjs` passes on the emulator (2026-11-19): the console makes a token,
+the QR code it shows is captured from the window and put on the emulator's virtual-camera poster, and a clean
+install scans it (Home relay, Join, Scan), gets the sheet and joins. Not yet tried with a real phone's camera.
 
 **Limits (honest list).**
 - Rules are carried out by the app; a modified app ignores them.

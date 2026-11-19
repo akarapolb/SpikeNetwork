@@ -2,6 +2,7 @@
 // taps and types through `adb input`, runs bridge commands through the debug-only broadcast receiver.
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 import { join } from "node:path";
 import { sleep } from "../desktop/drive_lib.mjs";
 
@@ -157,4 +158,32 @@ export function createPhone(D) {
 
 
   return { adb, sh, nodes, screenText, waitText, tap, tapText, tapField, typeText, fieldLength, setField, shot, back, hideKeyboard, touch, debug };
+}
+
+// QR posters for the emulator's virtual camera (hw.camera.back = virtualscene).
+function crc32(buf) {
+  let c, crc = 0xffffffff;
+  for (const b of buf) { c = (crc ^ b) & 0xff; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; crc = (crc >>> 8) ^ c; }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function chunk(type, data) {
+  const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type), data]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([len, body, crc]);
+}
+/** A grayscale PNG of the QR rows: `scale` pixels per module, a 4-module quiet zone, on a 1024 square canvas. */
+export function qrPng(rows, scale) {
+  const n = rows.length, quiet = 4, side = (n + 2 * quiet) * scale;
+  const raw = Buffer.alloc((side + 1) * side, 255);
+  for (let y = 0; y < side; y++) {
+    raw[y * (side + 1)] = 0;
+    for (let x = 0; x < side; x++) {
+      const my = Math.floor(y / scale) - quiet, mx = Math.floor(x / scale) - quiet;
+      if (my >= 0 && my < n && mx >= 0 && mx < n && rows[my][mx] === "1") raw[y * (side + 1) + 1 + x] = 0;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(side, 0); ihdr.writeUInt32BE(side, 4); ihdr[8] = 8; ihdr[9] = 0;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
 }
