@@ -17,6 +17,7 @@ pub mod ops;
 pub mod org;
 pub mod outbox;
 pub mod presence;
+pub mod qr;
 pub mod requests;
 pub mod seen;
 pub mod socket;

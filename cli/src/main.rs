@@ -10,6 +10,7 @@ use spike_cli::{
 };
 use spike_core::owner::IdentityCard;
 use spike_core::vault::KdfParams;
+use std::io::IsTerminal;
 use zeroize::Zeroizing;
 
 const MIN_PASSPHRASE_CHARS: usize = 10;
@@ -360,6 +361,32 @@ enum Cmd {
     App {
         #[command(subcommand)]
         cmd: AppCmd,
+    },
+    /// Organisation admin (ADR 0035): make this computer's admin key for an organisation. Prints the
+    /// public half for the relay operator (`spike-relay tenant create <id> --admin-pub <hex>`).
+    OrgAdmin {
+        /// The organisation id on the relay: 1 to 32 of a-z, 0-9 and -.
+        #[arg(long)]
+        tenant: String,
+        /// The organisation's name, as members see it when they join.
+        #[arg(long)]
+        name: String,
+        /// The organisation's relay.
+        #[arg(long, env = "SPIKE_RELAY")]
+        relay: String,
+    },
+    /// Organisation admin (ADR 0035): sign a single-use enrolment token for one new device.
+    OrgToken {
+        /// A note for yourself about who the token is for; it stays on this computer.
+        #[arg(long, default_value = "")]
+        label: String,
+        /// Hours the token may be used for (clamped to the limits of ADR 0035).
+        #[arg(long, default_value_t = 24)]
+        hours: u64,
+        /// Also draw the token as a QR code for the phone to scan, on standard error: `auto` when
+        /// this runs in a terminal, `always`, or `never`. The token's text is printed either way.
+        #[arg(long, default_value = "auto", value_parser = ["auto", "always", "never"])]
+        qr: String,
     },
 }
 
@@ -1470,6 +1497,41 @@ async fn run() -> Result<()> {
                     );
                 }
             }
+        }
+        Cmd::OrgAdmin {
+            tenant,
+            name,
+            relay,
+        } => {
+            let a = spike_cli::org::create_admin(&home, &tenant, &name, &relay)?;
+            println!("{}", a.admin_pub()?);
+            eprintln!(
+                "admin key made for {} ({}) on {}",
+                a.org_name, a.tenant, a.relay
+            );
+            eprintln!("fingerprint: {}", a.fingerprint()?);
+            eprintln!(
+                "The relay operator registers the line above: spike-relay tenant create {} --admin-pub <hex>",
+                a.tenant
+            );
+        }
+        Cmd::OrgToken { label, hours, qr } => {
+            let (token, issued) =
+                spike_cli::org::issue_token(&home, &label, hours.saturating_mul(3600))?;
+            if qr == "always" || (qr == "auto" && std::io::stderr().is_terminal()) {
+                eprintln!("Scan this on the phone (Settings, Home relay, Join, Scan):");
+                let drawn = spike_cli::qr::terminal(&token)?;
+                eprint!("{drawn}");
+                eprintln!(
+                    "or paste the text below. The code is {} lines tall: if its top is cut off, make the window taller and run this again.",
+                    drawn.lines().count()
+                );
+            }
+            println!("{token}");
+            eprintln!(
+                "single use, valid until {} (unix time), token id {}",
+                issued.not_after, issued.token_id
+            );
         }
         Cmd::Prune { older_than_days } => {
             let now = std::time::SystemTime::now()
