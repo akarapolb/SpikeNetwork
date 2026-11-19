@@ -852,8 +852,12 @@ async fn run() -> Result<()> {
             eprintln!(
                 "Scan this on the phone (Settings, Home relay, Join, Scan the token's code):"
             );
-            eprint!("{}", spike_cli::qr::terminal(&token)?);
-            eprintln!("or paste the text below.");
+            let drawn = spike_cli::qr::terminal(&token)?;
+            eprint!("{drawn}");
+            eprintln!(
+                "or paste the text below. The code is {} lines tall: if its top is cut off, make the window taller and run this again.",
+                drawn.lines().count()
+            );
         }
         println!("{token}");
         eprintln!("valid for {days} days, for device {device} only. The device runs: spike join <token> --relay <url>");

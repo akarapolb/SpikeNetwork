@@ -84,7 +84,10 @@ on its Home relay page (`android/.../Organisation.kt`, through the bridge comman
 from a QR code. `spike tenant-token` draws the token as a QR code on standard error when it runs in a
 terminal (`--qr auto|always|never`; the text stays alone on standard output for scripts), black on white
 whatever the terminal's colours (`cli/src/qr.rs`). `android/drive_join_scan.mjs` puts that drawing, read
-back from the characters, on the emulator's virtual-camera poster; the phone scans it and joins.
+back from the characters, on the emulator's virtual-camera poster; the phone scans it and joins. The
+same was done with a screenshot of the code as Windows Terminal (PowerShell 5.1, dark theme) draws it,
+on 2026-11-19: it scanned and joined. A token makes a 69-module code, 39 lines tall, which does not fit
+a default 30-line window; the command says so under the code.
 
 **Relay flags.** `--require-enrollment` switches enrollment on (open mode stays the default, and tokens
 are ignored there); `--enroll-no-visitors` makes a closed relay; `--enroll-max-token-days` (7);
@@ -138,8 +141,8 @@ ignores tokens; operator requests need the operator key, cannot be replayed or b
 storage is sealed and per relay. Format tests in `core/src/enroll.rs`.
 
 **Not done.** The desktop has no scan (it takes the token pasted). The terminal QR code is tested by
-reading the characters back and by the emulator's virtual camera, not yet on a real phone pointed at a
-real screen. No independent review. The
+reading the characters back and through the emulator's virtual camera (including a screenshot of Windows
+Terminal), not yet with a real phone's camera pointed at a real screen. No independent review. The
 operator listener is plain HTTP like `/metrics`: keep it on loopback or a private network. The operator
 key is a file on the operator's machine (no hardware key, no two-person rule). Tenant usage numbers live
 in memory and in the database, not in Prometheus. No per-tenant storage limit on group mailboxes beyond
