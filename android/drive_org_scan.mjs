@@ -94,7 +94,7 @@ async function scan() {
   check(await waitText("Chats", 30000), "the phone is ready");
 
   console.log("-- Settings, Home relay, Join…, Scan");
-  await tapText("Settings", true); await sleep(600);
+  await tapText("Settings", true); await waitText("Home relay"); // a freshly booted emulator can take seconds to draw it
   await tapText("Home relay", true); await sleep(800);
   check(await waitText("Join an organisation"), "Home relay offers to join an organisation");
   await tapText("Join…", true);

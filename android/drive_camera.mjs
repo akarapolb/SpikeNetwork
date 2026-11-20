@@ -9,7 +9,7 @@ import { createPhone, APK, PKG } from "./phone_lib.mjs";
 const D = createDrive({ relayUrl: "ws://127.0.0.1:8787", shotsDir: process.argv[2] });
 const { check } = D;
 mkdirSync(D.shots, { recursive: true });
-const { adb, sh, screenText, waitText, tapText, tapField, typeText, shot, hideKeyboard, debug } = createPhone(D);
+const { adb, sh, screenText, waitText, tapText, setField, shot, hideKeyboard, debug } = createPhone(D);
 const expect = JSON.parse(readFileSync("android/camera-card.json", "utf8"));
 
 try {
@@ -31,7 +31,7 @@ try {
   shot("c2-scanned");
   check(seen, "the scanner read the QR code on the poster");
   if (seen) {
-    await tapField(0); typeText("Scanned"); hideKeyboard();
+    await setField(0, "Scanned"); hideKeyboard(); // setField checks what landed: `input text` can drop keys on a busy emulator
     await tapText("Add contact", true);
     check(await waitText("Scanned", 10000), "the scanned contact is in the chat list");
     const c = debug("overview").contacts.find((x) => x.name === "Scanned");
