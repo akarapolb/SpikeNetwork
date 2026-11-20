@@ -76,7 +76,8 @@ try {
   check(bob.device_list?.length === bob.devices && !!dev, `the contact carries its signed device list (${JSON.stringify(bob.device_list)})`);
   check(dev?.last_heard === null, "sending to Bob does not mark his device as heard from");
   sh(`am start -n ${PKG}/.MainActivity`);
-  await sleep(800);
+  // The list re-reads the engine when the listener next hears from the relay: wait for Bob rather than a fixed pause.
+  await waitText("Bob", 30000);
   await tapText("Bob");
   check(await waitText("hi Bob"), "the conversation opens");
   await tapText("Details", true);

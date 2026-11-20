@@ -90,7 +90,7 @@ try {
 
   // Members screen: alice is admin; the controls for large groups are there.
   await alice.invoke("sync"); await alice.refresh(); await alice.click("Org"); await sleep(500);
-  await alice.click("Members"); await sleep(700);
+  await alice.click("Group settings"); await sleep(700);
   t = await alice.text();
   check(t.toLowerCase().includes("members (3)") && t.includes("up to 500"), "alice's members screen counts 3 of up to 500");
   const tl = t.toLowerCase();
@@ -133,7 +133,7 @@ try {
   // Bob leaves from the screen; Alice, the admin, removes him on her next sync.
   await bob.eval("window.confirm = () => true;");
   await bob.refresh(); await bob.click("Board"); await sleep(500);
-  await bob.click("Members"); await sleep(600);
+  await bob.click("Group settings"); await sleep(600);
   await bob.click("Leave group"); await sleep(2500);
   t = await bob.text();
   check((await bob.invoke("overview")).groups[0].status === "left", "bob's list marks the group as left");
