@@ -606,7 +606,13 @@ pub fn process(
                     if env.kind == Kind::Status {
                         // Read receipt, online or typing (ADR 0037): kept only if we share the same.
                         if let Ok(status) = serde_json::from_str(&env.body) {
-                            presence::on_status(home, &peer, status, env.ts, spike_core::clock::now_ms())?;
+                            presence::on_status(
+                                home,
+                                &peer,
+                                status,
+                                env.ts,
+                                spike_core::clock::now_ms(),
+                            )?;
                         }
                         persist(sessions, me)?;
                         return Ok(Outcome::Ignored);

@@ -163,10 +163,15 @@ async fn timed<T>(what: &str, f: impl std::future::Future<Output = Result<T>>) -
 /// Take the app's network lock, giving up at `deadline`: a call stuck on a dead connection must not
 /// leave the join screen waiting forever (the time limit on the join itself only starts once it has
 /// the lock).
-async fn lock_net(net: &tokio::sync::Mutex<()>, deadline: tokio::time::Instant) -> Result<tokio::sync::MutexGuard<'_, ()>> {
+async fn lock_net(
+    net: &tokio::sync::Mutex<()>,
+    deadline: tokio::time::Instant,
+) -> Result<tokio::sync::MutexGuard<'_, ()>> {
     tokio::time::timeout_at(deadline, net.lock())
         .await
-        .map_err(|_| anyhow!("the app is still busy with another connection: try again in a moment"))
+        .map_err(|_| {
+            anyhow!("the app is still busy with another connection: try again in a moment")
+        })
 }
 
 impl Session {
@@ -200,10 +205,17 @@ impl Session {
         let _net = lock_net(&self.net, deadline).await?;
         let new = self.target_at(&body.relay);
         let old = self.target();
-        let m = match tokio::time::timeout_at(deadline, org::join(&self.home, token, new, Some(old))).await {
-            Ok(r) => r?,
-            Err(_) => bail!("no answer from {} within {} seconds: check the connection and try again", body.relay, NET_TIMEOUT.as_secs()),
-        };
+        let m =
+            match tokio::time::timeout_at(deadline, org::join(&self.home, token, new, Some(old)))
+                .await
+            {
+                Ok(r) => r?,
+                Err(_) => bail!(
+                    "no answer from {} within {} seconds: check the connection and try again",
+                    body.relay,
+                    NET_TIMEOUT.as_secs()
+                ),
+            };
         self.set_relay(&m.relay)?;
         Ok(org_dto(&m))
     }
@@ -227,12 +239,23 @@ impl Session {
         })
         .await;
         match r {
-            Ok(u) if u.removed => Some(format!("{} removed this device from its relay. Choose another relay in Settings.", m.org_name)),
-            Ok(u) if u.changed => Some(format!("{} changed the rules for this device.", m.org_name)),
+            Ok(u) if u.removed => Some(format!(
+                "{} removed this device from its relay. Choose another relay in Settings.",
+                m.org_name
+            )),
+            Ok(u) if u.changed => {
+                Some(format!("{} changed the rules for this device.", m.org_name))
+            }
             Ok(_) => None,
             // A relay that offers forged or older rules is refused, and the held rules stay in force.
-            Err(e) if format!("{e:#}").contains("rollback") || format!("{e:#}").contains("signature") => {
-                Some(format!("Refused rules from the relay that were not newer or not signed by {}.", m.org_name))
+            Err(e)
+                if format!("{e:#}").contains("rollback")
+                    || format!("{e:#}").contains("signature") =>
+            {
+                Some(format!(
+                    "Refused rules from the relay that were not newer or not signed by {}.",
+                    m.org_name
+                ))
             }
             Err(_) => None,
         }
@@ -251,7 +274,11 @@ impl Session {
         }
         let _net = self.net.lock().await;
         let org_target = (!m.removed).then(|| self.target_at(&m.relay));
-        timed(&next, org::leave(&self.home, org_target, self.target_at(&next))).await?;
+        timed(
+            &next,
+            org::leave(&self.home, org_target, self.target_at(&next)),
+        )
+        .await?;
         self.set_relay(&next)
     }
 
@@ -305,7 +332,10 @@ impl Session {
     }
 
     pub fn org_admin(&self) -> Result<Option<AdminDto>> {
-        org::admin(&self.home)?.as_ref().map(Self::admin_dto).transpose()
+        org::admin(&self.home)?
+            .as_ref()
+            .map(Self::admin_dto)
+            .transpose()
     }
 
     pub fn org_admin_create(&self, tenant: &str, name: &str, relay: &str) -> Result<AdminDto> {
@@ -341,7 +371,11 @@ impl Session {
 
     pub fn org_issue_token(&self, label: &str, hours: u64) -> Result<NewTokenDto> {
         let (token, t) = org::issue_token(&self.home, label, hours.clamp(1, 168) * 3600)?;
-        Ok(NewTokenDto { token, token_id: t.token_id, not_after: t.not_after })
+        Ok(NewTokenDto {
+            token,
+            token_id: t.token_id,
+            not_after: t.not_after,
+        })
     }
 
     pub async fn org_withdraw_token(&self, token_id: &str) -> Result<()> {
@@ -377,9 +411,15 @@ mod tests {
         let r = d.to_rules().unwrap();
         assert_eq!(r.backups, Some(BackupRule::KeyRequired));
         assert_eq!(RulesDto::from(&r).agents.as_deref(), Some("verified_only"));
-        let bad = RulesDto { agents: Some("some".into()), ..Default::default() };
+        let bad = RulesDto {
+            agents: Some("some".into()),
+            ..Default::default()
+        };
         assert!(bad.to_rules().is_err());
-        let blank = RulesDto { backups: Some(" ".into()), ..Default::default() };
+        let blank = RulesDto {
+            backups: Some(" ".into()),
+            ..Default::default()
+        };
         assert_eq!(blank.to_rules().unwrap().backups, None);
     }
 
@@ -388,7 +428,9 @@ mod tests {
         let net = tokio::sync::Mutex::new(());
         let held = net.lock().await;
         let soon = tokio::time::Instant::now() + Duration::from_millis(50);
-        let e = lock_net(&net, soon).await.err().expect("a held lock times out");
+        let e = lock_net(&net, soon)
+            .await
+            .expect_err("a held lock times out");
         assert!(e.to_string().contains("busy"));
         drop(held);
         let later = tokio::time::Instant::now() + Duration::from_millis(50);

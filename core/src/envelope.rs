@@ -680,21 +680,41 @@ mod tests {
     #[test]
     fn an_offered_name_comes_only_with_an_introduction() {
         let mut e = Envelope::text("hi").unwrap();
-        assert!(!String::from_utf8(e.to_bytes()).unwrap().contains("intro_name"));
+        assert!(!String::from_utf8(e.to_bytes())
+            .unwrap()
+            .contains("intro_name"));
         e.intro_name = Some("Alice".into());
-        assert!(Envelope::from_bytes(&e.to_bytes()).is_err(), "no intro, no name");
+        assert!(
+            Envelope::from_bytes(&e.to_bytes()).is_err(),
+            "no intro, no name"
+        );
         e.intro = Some("spike2:abcd".into());
         assert_eq!(
-            Envelope::from_bytes(&e.to_bytes()).unwrap().intro_name.as_deref(),
+            Envelope::from_bytes(&e.to_bytes())
+                .unwrap()
+                .intro_name
+                .as_deref(),
             Some("Alice")
         );
-        for bad in ["".to_string(), " Alice".into(), "A
-B".into(), "x".repeat(MAX_INTRO_NAME + 1)] {
+        for bad in [
+            "".to_string(),
+            " Alice".into(),
+            "A
+B"
+            .into(),
+            "x".repeat(MAX_INTRO_NAME + 1),
+        ] {
             e.intro_name = Some(bad.clone());
-            assert!(Envelope::from_bytes(&e.to_bytes()).is_err(), "{bad:?} accepted");
+            assert!(
+                Envelope::from_bytes(&e.to_bytes()).is_err(),
+                "{bad:?} accepted"
+            );
         }
         e.intro_name = Some("ก".repeat(MAX_INTRO_NAME));
-        assert!(Envelope::from_bytes(&e.to_bytes()).is_ok(), "counted in characters");
+        assert!(
+            Envelope::from_bytes(&e.to_bytes()).is_ok(),
+            "counted in characters"
+        );
     }
 
     #[test]

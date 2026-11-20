@@ -21,36 +21,69 @@ fn now_secs() -> u64 {
 /// Run at sign-in, on a blocking thread, after the device's signature checked out. `Ok(true)` means
 /// the device signs in as a visitor: an enrolled relay lets devices outside the organisation deliver
 /// to its members (owner decision 1: members talk to anyone), but keeps nothing for them.
-pub(crate) fn gate(state: &Shared, cfg: &Config, me: &str, enrol: Option<&str>) -> Result<bool, ServerMsg> {
+pub(crate) fn gate(
+    state: &Shared,
+    cfg: &Config,
+    me: &str,
+    enrol: Option<&str>,
+) -> Result<bool, ServerMsg> {
     let store = &state.store;
     if let Some(token) = enrol {
         let body = EnrolToken::decode(token)
             .and_then(|t| t.open())
             .map_err(|_| err("token_invalid", "this organisation token is not valid"))?;
         if body.expired(now_secs()) {
-            return Err(err("token_expired", "this organisation token has expired: ask for a new one"));
+            return Err(err(
+                "token_expired",
+                "this organisation token has expired: ask for a new one",
+            ));
         }
         let r = store.redeem(me, &body).map_err(|_| internal())?;
         match r {
             Redeem::Enrolled | Redeem::AlreadyMember => {}
             Redeem::NoTenant | Redeem::WrongKey => {
-                return Err(err("token_invalid", "this relay does not know the organisation in this token"))
+                return Err(err(
+                    "token_invalid",
+                    "this relay does not know the organisation in this token",
+                ))
             }
-            Redeem::Suspended => return Err(err("tenant_suspended", "this organisation is suspended on this relay")),
-            Redeem::Withdrawn => return Err(err("token_withdrawn", "the organisation withdrew this token")),
-            Redeem::Used => return Err(err("token_used", "this token was already used by another device")),
+            Redeem::Suspended => {
+                return Err(err(
+                    "tenant_suspended",
+                    "this organisation is suspended on this relay",
+                ))
+            }
+            Redeem::Withdrawn => {
+                return Err(err(
+                    "token_withdrawn",
+                    "the organisation withdrew this token",
+                ))
+            }
+            Redeem::Used => {
+                return Err(err(
+                    "token_used",
+                    "this token was already used by another device",
+                ))
+            }
             Redeem::Full => {
-                return Err(err("tenant_over_limit", "devices: the organisation has no device places left"))
+                return Err(err(
+                    "tenant_over_limit",
+                    "devices: the organisation has no device places left",
+                ))
             }
             Redeem::OtherTenant => {
-                return Err(err("already_enrolled", "this device is already in another organisation on this relay"))
+                return Err(err(
+                    "already_enrolled",
+                    "this device is already in another organisation on this relay",
+                ))
             }
         }
     }
     match store.membership(me).map_err(|_| internal())? {
-        Some((_, state)) if state != ACTIVE => {
-            Err(err("tenant_suspended", "this organisation is suspended on this relay"))
-        }
+        Some((_, state)) if state != ACTIVE => Err(err(
+            "tenant_suspended",
+            "this organisation is suspended on this relay",
+        )),
         Some(_) => {
             let _ = store.touch(me);
             Ok(false)
@@ -61,8 +94,14 @@ pub(crate) fn gate(state: &Shared, cfg: &Config, me: &str, enrol: Option<&str>) 
 
 pub(crate) fn on_fetch_rules(state: &Shared, me: &str) -> ServerMsg {
     match state.store.rules_for(me) {
-        Ok(Some((tenant, rules))) => ServerMsg::Rules { tenant: Some(tenant), rules },
-        Ok(None) => ServerMsg::Rules { tenant: None, rules: None },
+        Ok(Some((tenant, rules))) => ServerMsg::Rules {
+            tenant: Some(tenant),
+            rules,
+        },
+        Ok(None) => ServerMsg::Rules {
+            tenant: None,
+            rules: None,
+        },
         Err(_) => internal(),
     }
 }
@@ -76,11 +115,15 @@ pub(crate) fn on_leave(state: &Shared, me: &str) -> ServerMsg {
 
 /// Tell a tenant's connected members that rules changed. They verify the document themselves.
 fn push_rules(state: &Shared, tenant: &str, doc: &str) {
-    let Ok(members) = state.store.tenant_members(tenant) else { return };
+    let Ok(members) = state.store.tenant_members(tenant) else {
+        return;
+    };
     let st = state.state.lock().unwrap();
     for d in members {
         for (_, conn) in st.online.get(&d).into_iter().flatten() {
-            let _ = conn.try_send(ServerMsg::RulesChanged { rules: doc.to_string() });
+            let _ = conn.try_send(ServerMsg::RulesChanged {
+                rules: doc.to_string(),
+            });
         }
     }
 }
@@ -102,23 +145,36 @@ fn admin_dispatch(state: &Shared, cfg: &Config, tenant: &str, msg: ClientMsg) ->
             Ok(false) => err("not_found", "no such device in this organisation"),
             Err(_) => internal(),
         },
-        ClientMsg::CancelToken { token_id, not_after } => {
+        ClientMsg::CancelToken {
+            token_id,
+            not_after,
+        } => {
             if hex::decode(&token_id).map(|b| b.len()) != Ok(16) {
                 return err("bad_request", "invalid token id");
             }
             match store.cancel_token(tenant, &token_id, not_after) {
                 Ok(true) => ServerMsg::TokenCancelled { token_id },
-                Ok(false) => err("token_used", "a device already used this token: revoke the device instead"),
+                Ok(false) => err(
+                    "token_used",
+                    "a device already used this token: revoke the device instead",
+                ),
                 Err(_) => internal(),
             }
         }
         ClientMsg::PublishRules { rules } => {
-            let Ok(Some(t)) = store.tenant(tenant) else { return internal() };
-            let Ok(pk) = hex::decode(&t.admin_pub).map(|b| <[u8; 32]>::try_from(b)) else { return internal() };
+            let Ok(Some(t)) = store.tenant(tenant) else {
+                return internal();
+            };
+            let Ok(pk) = hex::decode(&t.admin_pub).map(<[u8; 32]>::try_from) else {
+                return internal();
+            };
             let Ok(pk) = pk else { return internal() };
             let opened = SignedRules::decode(&rules).and_then(|s| s.open(&pk, tenant));
             let Ok(r) = opened else {
-                return err("bad_rules", "rules are not signed by this organisation's admin key");
+                return err(
+                    "bad_rules",
+                    "rules are not signed by this organisation's admin key",
+                );
             };
             match store.put_rules(tenant, r.version, &rules) {
                 Ok(true) => {
@@ -141,7 +197,10 @@ fn admin_dispatch(state: &Shared, cfg: &Config, tenant: &str, msg: ClientMsg) ->
             Ok(None) => err("not_found", "no such organisation"),
             Err(_) => internal(),
         },
-        _ => err("forbidden", "an admin connection may only make organisation requests"),
+        _ => err(
+            "forbidden",
+            "an admin connection may only make organisation requests",
+        ),
     }
 }
 
@@ -164,7 +223,11 @@ where
     let found = {
         let (state, tenant) = (state.clone(), tenant.clone());
         tokio::task::spawn_blocking(move || {
-            if is_valid_tenant_id(&tenant) { state.store.tenant(&tenant).ok().flatten() } else { None }
+            if is_valid_tenant_id(&tenant) {
+                state.store.tenant(&tenant).ok().flatten()
+            } else {
+                None
+            }
         })
         .await
         .map_err(|_| ())?
@@ -180,11 +243,23 @@ where
         state.metrics.error("auth_failed");
         return Err(());
     };
-    send_json(&mut tx, &ServerMsg::AdminReady { tenant: t.id.clone(), name: t.name, state: t.state }).await?;
+    send_json(
+        &mut tx,
+        &ServerMsg::AdminReady {
+            tenant: t.id.clone(),
+            name: t.name,
+            state: t.state,
+        },
+    )
+    .await?;
     let mut bucket = crate::TokenBucket::new(cfg.req_rate, cfg.req_burst);
     loop {
-        let frame = tokio::time::timeout(cfg.idle_timeout, rx.next()).await.map_err(|_| ())?;
-        let Some(Ok(frame)) = frame else { return Ok(()) };
+        let frame = tokio::time::timeout(cfg.idle_timeout, rx.next())
+            .await
+            .map_err(|_| ())?;
+        let Some(Ok(frame)) = frame else {
+            return Ok(());
+        };
         let Message::Text(text) = frame else {
             if matches!(frame, Message::Close(_)) {
                 return Ok(());
@@ -196,10 +271,19 @@ where
             continue;
         };
         if !matches!(msg, ClientMsg::Ping) && !bucket.allow(1.0) {
-            send_json(&mut tx, &err("rate_limited", "too many requests: slow down")).await?;
+            send_json(
+                &mut tx,
+                &err("rate_limited", "too many requests: slow down"),
+            )
+            .await?;
             continue;
         }
-        let (st, cf, ten, key) = (state.clone(), cfg.clone(), tenant.clone(), admin_pub.clone());
+        let (st, cf, ten, key) = (
+            state.clone(),
+            cfg.clone(),
+            tenant.clone(),
+            admin_pub.clone(),
+        );
         let reply = tokio::task::spawn_blocking(move || {
             // A rotated admin key ends the old key's sessions at their next request.
             match st.store.tenant(&ten) {
@@ -210,7 +294,11 @@ where
         .await
         .map_err(|_| ())?;
         let Some(reply) = reply else {
-            let _ = send_json(&mut tx, &err("auth_failed", "the organisation's admin key changed")).await;
+            let _ = send_json(
+                &mut tx,
+                &err("auth_failed", "the organisation's admin key changed"),
+            )
+            .await;
             return Ok(());
         };
         if let ServerMsg::Error { code, .. } = &reply {

@@ -88,7 +88,7 @@ pub fn import(home: &Home, text: &str) -> Result<(usize, usize)> {
         Err(_) => t
             .lines()
             .filter(|l| !l.trim().is_empty())
-            .map(|l| serde_json::from_str(l))
+            .map(serde_json::from_str)
             .collect::<Result<_, _>>()
             .context("that is not a list of agent listings")?,
     };

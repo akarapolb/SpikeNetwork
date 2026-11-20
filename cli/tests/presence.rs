@@ -93,36 +93,94 @@ async fn statuses_follow_both_switches_and_stay_between_two_people() {
 
     // Off by default: nothing is sent, nothing is shown.
     assert_eq!(presence::share(&a.0).unwrap(), presence::Share::default());
-    assert!(!presence::send(&a.0, url.as_str().into(), "bob", Status::Read { upto: 5 }).await.unwrap());
-    assert!(!presence::send(&a.0, url.as_str().into(), "bob", Status::Typing { on: true }).await.unwrap());
+    assert!(
+        !presence::send(&a.0, url.as_str().into(), "bob", Status::Read { upto: 5 })
+            .await
+            .unwrap()
+    );
+    assert!(!presence::send(
+        &a.0,
+        url.as_str().into(),
+        "bob",
+        Status::Typing { on: true }
+    )
+    .await
+    .unwrap());
 
     // Alice shares everything; Bob shares nothing yet. Bob keeps none of it (reciprocal).
     presence::set_share(&a.0, all_on()).unwrap();
-    assert!(presence::send(&a.0, url.as_str().into(), "bob", Status::Read { upto: now() }).await.unwrap());
-    assert!(presence::send(&a.0, url.as_str().into(), "bob", Status::Typing { on: true }).await.unwrap());
+    assert!(presence::send(
+        &a.0,
+        url.as_str().into(),
+        "bob",
+        Status::Read { upto: now() }
+    )
+    .await
+    .unwrap());
+    assert!(presence::send(
+        &a.0,
+        url.as_str().into(),
+        "bob",
+        Status::Typing { on: true }
+    )
+    .await
+    .unwrap());
     recv(b, &url).await;
-    assert_eq!(presence::shown(&b.0, &key(a), now()).unwrap(), presence::Shown::default());
+    assert_eq!(
+        presence::shown(&b.0, &key(a), now()).unwrap(),
+        presence::Shown::default()
+    );
 
     // Both share: Bob sees Alice's receipt and typing, and Alice sees Bob's.
     presence::set_share(&b.0, all_on()).unwrap();
     let t1 = now();
-    assert!(presence::send(&a.0, url.as_str().into(), "bob", Status::Read { upto: t1 }).await.unwrap());
-    assert!(presence::send(&a.0, url.as_str().into(), "bob", Status::Typing { on: true }).await.unwrap());
+    assert!(
+        presence::send(&a.0, url.as_str().into(), "bob", Status::Read { upto: t1 })
+            .await
+            .unwrap()
+    );
+    assert!(presence::send(
+        &a.0,
+        url.as_str().into(),
+        "bob",
+        Status::Typing { on: true }
+    )
+    .await
+    .unwrap());
     // Online goes to a verified contact only: Alice verified Bob, Bob did not verify Alice.
-    assert!(presence::send(&a.0, url.as_str().into(), "bob", Status::Online).await.unwrap());
-    assert!(!presence::send(&b.0, url.as_str().into(), "alice", Status::Online).await.unwrap());
+    assert!(
+        presence::send(&a.0, url.as_str().into(), "bob", Status::Online)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !presence::send(&b.0, url.as_str().into(), "alice", Status::Online)
+            .await
+            .unwrap()
+    );
     recv(b, &url).await;
     let seen = presence::shown(&b.0, &key(a), now()).unwrap();
     assert_eq!(seen.read_upto, Some(t1));
     assert!(seen.typing && seen.online);
 
     // The same read point is not told twice, and a read point never moves back.
-    assert!(!presence::send(&a.0, url.as_str().into(), "bob", Status::Read { upto: t1 }).await.unwrap());
+    assert!(
+        !presence::send(&a.0, url.as_str().into(), "bob", Status::Read { upto: t1 })
+            .await
+            .unwrap()
+    );
     presence::on_status(&b.0, &key(a), Status::Read { upto: 1 }, now(), now()).unwrap();
-    assert_eq!(presence::shown(&b.0, &key(a), now()).unwrap().read_upto, Some(t1));
+    assert_eq!(
+        presence::shown(&b.0, &key(a), now()).unwrap().read_upto,
+        Some(t1)
+    );
 
     // Typing goes stale by itself, and a message ends it.
-    assert!(!presence::shown(&b.0, &key(a), now() + presence::TYPING_MS + 1).unwrap().typing);
+    assert!(
+        !presence::shown(&b.0, &key(a), now() + presence::TYPING_MS + 1)
+            .unwrap()
+            .typing
+    );
     ops::send(&a.0, &url, "bob", b"done typing").await.unwrap();
     recv(b, &url).await;
     assert!(!presence::shown(&b.0, &key(a), now()).unwrap().typing);
@@ -132,13 +190,26 @@ async fn statuses_follow_both_switches_and_stay_between_two_people() {
     assert!(!presence::on_status(&b.0, &key(a), Status::Online, old, now()).unwrap());
 
     // Turning the switch off forgets what was kept.
-    presence::set_share(&b.0, presence::Share { receipts: false, ..all_on() }).unwrap();
-    assert_eq!(presence::shown(&b.0, &key(a), now()).unwrap().read_upto, None);
+    presence::set_share(
+        &b.0,
+        presence::Share {
+            receipts: false,
+            ..all_on()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        presence::shown(&b.0, &key(a), now()).unwrap().read_upto,
+        None
+    );
 
     // Alice's other device receives nothing of Bob's or Alice's statuses: they go to contacts only.
     presence::set_share(&alice[1].0, all_on()).unwrap();
     recv(&alice[1], &url).await;
-    assert_eq!(presence::shown(&alice[1].0, &key(b), now()).unwrap(), presence::Shown::default());
+    assert_eq!(
+        presence::shown(&alice[1].0, &key(b), now()).unwrap(),
+        presence::Shown::default()
+    );
 
     // A status never travels in a group, and a malformed one is refused by the envelope check.
     let mut e = Envelope::status(Status::Online).unwrap();

@@ -302,66 +302,67 @@ async fn listen(app: tauri::AppHandle, weak: Weak<Session>) {
         let connected_at = std::time::Instant::now();
         let mut resubscribe = false;
         // Back after being offline: no wait, straight to the sync below.
-        let woke = came_back || loop {
-            if weak.strong_count() == 0 {
-                return;
-            }
-            let signal = async {
-                match &changed {
-                    Some(c) => c.notified().await,
-                    None => std::future::pending().await,
+        let woke = came_back
+            || loop {
+                if weak.strong_count() == 0 {
+                    return;
                 }
-            };
-            tokio::select! {
-                r = relay.next_incoming(Some(Duration::from_secs(50))) => match r {
-                    // The fast path (ADR 0030): a one-to-one delivery is stored and acknowledged right
-                    // here, on this connection, which stays open. Anything that goes wrong (another
-                    // operation took the connection, the delivery was odd) falls back to a full sync,
-                    // which is offered the same delivery again.
-                    Ok(Some(spike_cli::client::Incoming::Delivery(d))) => {
-                        let Some(s) = weak.upgrade() else { return };
-                        if s.paused() {
-                            break true;
-                        }
-                        match s.listener_receive(&mut relay, &d).await {
-                            Ok(r) => {
-                                let attention = s.attention().unwrap_or(0);
-                                drop(s);
-                                if r.received + r.changed + r.message_requests + r.groups + r.agent_requests > 0 || !r.notes.is_empty() {
-                                    if let Some(w) = app.get_webview_window("main") {
-                                        if !w.is_focused().unwrap_or(true) {
-                                            let _ = w.request_user_attention(Some(
-                                                tauri::UserAttentionType::Informational,
-                                            ));
-                                        }
-                                    }
-                                    set_title(&app, attention);
-                                    let _ = app.emit("synced", r);
-                                }
-                                continue;
-                            }
-                            Err(e) => {
-                                dbg_log!("fast path failed ({e:#}); syncing");
+                let signal = async {
+                    match &changed {
+                        Some(c) => c.notified().await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {
+                    r = relay.next_incoming(Some(Duration::from_secs(50))) => match r {
+                        // The fast path (ADR 0030): a one-to-one delivery is stored and acknowledged right
+                        // here, on this connection, which stays open. Anything that goes wrong (another
+                        // operation took the connection, the delivery was odd) falls back to a full sync,
+                        // which is offered the same delivery again.
+                        Ok(Some(spike_cli::client::Incoming::Delivery(d))) => {
+                            let Some(s) = weak.upgrade() else { return };
+                            if s.paused() {
                                 break true;
                             }
+                            match s.listener_receive(&mut relay, &d).await {
+                                Ok(r) => {
+                                    let attention = s.attention().unwrap_or(0);
+                                    drop(s);
+                                    if r.received + r.changed + r.message_requests + r.groups + r.agent_requests > 0 || !r.notes.is_empty() {
+                                        if let Some(w) = app.get_webview_window("main") {
+                                            if !w.is_focused().unwrap_or(true) {
+                                                let _ = w.request_user_attention(Some(
+                                                    tauri::UserAttentionType::Informational,
+                                                ));
+                                            }
+                                        }
+                                        set_title(&app, attention);
+                                        let _ = app.emit("synced", r);
+                                    }
+                                    continue;
+                                }
+                                Err(e) => {
+                                    dbg_log!("fast path failed ({e:#}); syncing");
+                                    break true;
+                                }
+                            }
                         }
-                    }
-                    Ok(Some(_)) => break true,
-                    Ok(None) => continue,
-                    // Displaced by an operation that connected, or the connection dropped.
-                    Err(e) => {
-                        dbg_log!("wait ended: {e:#}");
+                        Ok(Some(_)) => break true,
+                        Ok(None) => continue,
+                        // Displaced by an operation that connected, or the connection dropped.
+                        Err(e) => {
+                            dbg_log!("wait ended: {e:#}");
+                            break false;
+                        }
+                    },
+                    // We joined, left or moved a large group: reconnect to listen to the right mailboxes.
+                    _ = signal => {
+                        dbg_log!("large groups changed; listening again");
+                        resubscribe = true;
                         break false;
                     }
-                },
-                // We joined, left or moved a large group: reconnect to listen to the right mailboxes.
-                _ = signal => {
-                    dbg_log!("large groups changed; listening again");
-                    resubscribe = true;
-                    break false;
                 }
-            }
-        };
+            };
         drop(relay);
         if resubscribe {
             retry = Duration::from_millis(200);
@@ -706,13 +707,23 @@ fn set_presence_share(
 }
 
 #[tauri::command]
-fn peer_status(state: State<'_, AppState>, name: String) -> Result<spike_cli::presence::Shown, String> {
+fn peer_status(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<spike_cli::presence::Shown, String> {
     session(&state)?.peer_status(&name).map_err(err)
 }
 
 #[tauri::command]
-async fn send_presence(state: State<'_, AppState>, name: String, what: String) -> Result<bool, String> {
-    session(&state)?.send_presence(&name, &what).await.map_err(err)
+async fn send_presence(
+    state: State<'_, AppState>,
+    name: String,
+    what: String,
+) -> Result<bool, String> {
+    session(&state)?
+        .send_presence(&name, &what)
+        .await
+        .map_err(err)
 }
 
 /// A one-time invite link, valid 7 days (ADR 0039).
@@ -746,7 +757,9 @@ fn replace_contact_key(
     name: String,
     card: String,
 ) -> Result<String, String> {
-    session(&state)?.replace_contact_key(&name, &card).map_err(err)
+    session(&state)?
+        .replace_contact_key(&name, &card)
+        .map_err(err)
 }
 
 /// The call screen turns this on while a call is up, so the page is granted the microphone only then.
@@ -802,12 +815,18 @@ fn set_relay(state: State<'_, AppState>, url: String) -> Result<(), String> {
 // ------------------------------------------------------------------ organisations (ADR 0035)
 
 #[tauri::command]
-fn org_inspect(state: State<'_, AppState>, token: String) -> Result<spike_app::org::OrgTokenDto, String> {
+fn org_inspect(
+    state: State<'_, AppState>,
+    token: String,
+) -> Result<spike_app::org::OrgTokenDto, String> {
     session(&state)?.org_inspect(&token).map_err(err)
 }
 
 #[tauri::command]
-async fn org_join(state: State<'_, AppState>, token: String) -> Result<spike_app::org::OrgDto, String> {
+async fn org_join(
+    state: State<'_, AppState>,
+    token: String,
+) -> Result<spike_app::org::OrgDto, String> {
     session(&state)?.org_join(&token).await.map_err(err)
 }
 
@@ -827,8 +846,15 @@ fn org_admin(state: State<'_, AppState>) -> Result<Option<spike_app::org::AdminD
 }
 
 #[tauri::command]
-fn org_admin_create(state: State<'_, AppState>, tenant: String, name: String, relay: String) -> Result<spike_app::org::AdminDto, String> {
-    session(&state)?.org_admin_create(&tenant, &name, &relay).map_err(err)
+fn org_admin_create(
+    state: State<'_, AppState>,
+    tenant: String,
+    name: String,
+    relay: String,
+) -> Result<spike_app::org::AdminDto, String> {
+    session(&state)?
+        .org_admin_create(&tenant, &name, &relay)
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -837,13 +863,20 @@ async fn org_console(state: State<'_, AppState>) -> Result<spike_app::org::Conso
 }
 
 #[tauri::command]
-fn org_issue_token(state: State<'_, AppState>, label: String, hours: u64) -> Result<spike_app::org::NewTokenDto, String> {
+fn org_issue_token(
+    state: State<'_, AppState>,
+    label: String,
+    hours: u64,
+) -> Result<spike_app::org::NewTokenDto, String> {
     session(&state)?.org_issue_token(&label, hours).map_err(err)
 }
 
 #[tauri::command]
 async fn org_withdraw_token(state: State<'_, AppState>, token_id: String) -> Result<(), String> {
-    session(&state)?.org_withdraw_token(&token_id).await.map_err(err)
+    session(&state)?
+        .org_withdraw_token(&token_id)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -852,7 +885,10 @@ async fn org_revoke(state: State<'_, AppState>, device: String) -> Result<(), St
 }
 
 #[tauri::command]
-async fn org_publish_rules(state: State<'_, AppState>, rules: spike_app::org::RulesDto) -> Result<u64, String> {
+async fn org_publish_rules(
+    state: State<'_, AppState>,
+    rules: spike_app::org::RulesDto,
+) -> Result<u64, String> {
     session(&state)?.org_publish_rules(rules).await.map_err(err)
 }
 
@@ -1261,7 +1297,9 @@ fn open_url(url: String) -> Result<(), String> {
     let spawned = std::process::Command::new("open").arg(&url).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let spawned = std::process::Command::new("xdg-open").arg(&url).spawn();
-    spawned.map(|_| ()).map_err(|e| format!("Could not open the browser: {e}"))
+    spawned
+        .map(|_| ())
+        .map_err(|e| format!("Could not open the browser: {e}"))
 }
 
 /// Fetch (and check) a message's file and hand the bytes to the window, for the image viewer. Nothing is saved.
@@ -1498,7 +1536,10 @@ mod single {
         if found.is_empty() {
             return true;
         }
-        let apps = found.iter().filter(|(_, n)| n == "spike-desktop.exe").count();
+        let apps = found
+            .iter()
+            .filter(|(_, n)| n == "spike-desktop.exe")
+            .count();
         let text = format!(
             "Spike Connect is already running, or did not close completely ({} app and {} helper process(es) found).
 

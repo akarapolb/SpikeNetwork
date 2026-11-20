@@ -200,13 +200,9 @@ impl Engine {
                         .filter(|n| !n.trim().is_empty()),
                 ),
             )?),
-            "replace_contact_key" => {
-                val(x.replace_contact_key(&s(a, "name")?, &s(a, "card")?)?)
-            }
+            "replace_contact_key" => val(x.replace_contact_key(&s(a, "name")?, &s(a, "card")?)?),
             "mark_verified" => val(x.mark_verified(&s(a, "name")?, &s(a, "fingerprint")?)?),
-            "change_passphrase" => {
-                val(x.change_passphrase(s(a, "old")?, s(a, "new")?)?)
-            }
+            "change_passphrase" => val(x.change_passphrase(s(a, "old")?, s(a, "new")?)?),
             "set_profile_name" => val(x.set_profile_name(&s(a, "name")?)?),
             "rename_contact" => val(x.rename_contact(&s(a, "old")?, &s(a, "name")?)?),
             "set_relay" => val(x.set_relay(&s(a, "url")?)?),
@@ -216,7 +212,9 @@ impl Engine {
             "org_inspect" => val(x.org_inspect(&s(a, "token")?)?),
             "org_join" => val(rt.block_on(x.org_join(&s(a, "token")?))?),
             "org_status" => val(x.org_status()?),
-            "org_leave" => val(rt.block_on(x.org_leave(a.get("next").and_then(Value::as_str).map(str::to_string)))?),
+            "org_leave" => val(rt.block_on(
+                x.org_leave(a.get("next").and_then(Value::as_str).map(str::to_string)),
+            )?),
             "edit_message" => val(rt.block_on(x.edit(&s(a, "id")?, &s(a, "text")?))?),
             "delete_message" => val(rt.block_on(x.delete(&s(a, "id")?))?),
             "message_requests" => val(x.message_requests()?),

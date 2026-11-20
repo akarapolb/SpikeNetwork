@@ -98,7 +98,9 @@ impl EnrolToken {
         now: u64,
     ) -> Result<(Self, TokenBody)> {
         if !is_valid_tenant_id(tenant) {
-            return Err(Error::BadCard("tenant id must be 1 to 32 of a-z, 0-9 and -"));
+            return Err(Error::BadCard(
+                "tenant id must be 1 to 32 of a-z, 0-9 and -",
+            ));
         }
         let org_name: String = org_name.trim().chars().take(MAX_ORG_NAME).collect();
         let mut id = [0u8; 16];
@@ -147,7 +149,10 @@ impl EnrolToken {
     /// expiry (see [`TokenBody::expired`]) or that the key is the tenant's (the relay does that).
     pub fn open(&self) -> Result<TokenBody> {
         let body: TokenBody = serde_json::from_str(&self.body).map_err(|_| Error::Malformed)?;
-        if body.v != 1 || !is_valid_tenant_id(&body.tenant) || body.org_name.chars().count() > MAX_ORG_NAME {
+        if body.v != 1
+            || !is_valid_tenant_id(&body.tenant)
+            || body.org_name.chars().count() > MAX_ORG_NAME
+        {
             return Err(Error::BadCard("unsupported organisation token"));
         }
         let id = hex::decode(&body.token_id)?;
@@ -155,7 +160,11 @@ impl EnrolToken {
             return Err(Error::Malformed);
         }
         let pk = hex32(&body.admin_pub)?;
-        if !verify_raw(&pk, &[ENROL_CTX, self.body.as_bytes()].concat(), &hex64(&self.sig)?) {
+        if !verify_raw(
+            &pk,
+            &[ENROL_CTX, self.body.as_bytes()].concat(),
+            &hex64(&self.sig)?,
+        ) {
             return Err(Error::BadSignature);
         }
         Ok(body)
@@ -254,7 +263,11 @@ impl SignedRules {
 
     /// Verify against the admin key and tenant the device pinned, and parse.
     pub fn open(&self, admin_pub: &[u8; 32], tenant: &str) -> Result<Rules> {
-        if !verify_raw(admin_pub, &[RULES_CTX, self.body.as_bytes()].concat(), &hex64(&self.sig)?) {
+        if !verify_raw(
+            admin_pub,
+            &[RULES_CTX, self.body.as_bytes()].concat(),
+            &hex64(&self.sig)?,
+        ) {
             return Err(Error::BadSignature);
         }
         let r: Rules = serde_json::from_str(&self.body).map_err(|_| Error::Malformed)?;
@@ -312,7 +325,11 @@ pub fn verify_admin_auth(
     audience: &str,
     sig: &[u8; 64],
 ) -> bool {
-    verify_raw(admin_pub, &ctx_message(ADMIN_AUTH_CTX, tenant, nonce, audience), sig)
+    verify_raw(
+        admin_pub,
+        &ctx_message(ADMIN_AUTH_CTX, tenant, nonce, audience),
+        sig,
+    )
 }
 
 #[cfg(test)]
@@ -324,7 +341,15 @@ mod tests {
     #[test]
     fn a_token_round_trips_and_verifies() {
         let k = OwnerKey::generate();
-        let (t, body) = EnrolToken::issue(&k, "northwind", "wss://relay.example", "Northwind", TOKEN_DEFAULT_SECS, NOW).unwrap();
+        let (t, body) = EnrolToken::issue(
+            &k,
+            "northwind",
+            "wss://relay.example",
+            "Northwind",
+            TOKEN_DEFAULT_SECS,
+            NOW,
+        )
+        .unwrap();
         let s = t.encode();
         assert!(s.starts_with(TOKEN_PREFIX));
         let back = EnrolToken::decode(&format!("  {s}\n")).unwrap();
@@ -349,15 +374,27 @@ mod tests {
     #[test]
     fn a_tampered_token_is_refused() {
         let k = OwnerKey::generate();
-        let (t, _) = EnrolToken::issue(&k, "northwind", "wss://relay.example", "Northwind", 3600, NOW).unwrap();
+        let (t, _) = EnrolToken::issue(
+            &k,
+            "northwind",
+            "wss://relay.example",
+            "Northwind",
+            3600,
+            NOW,
+        )
+        .unwrap();
         // Change the expiry inside the signed body.
         let mut bad = t.clone();
-        bad.body = bad.body.replace(&format!("{}", NOW + 3600), &format!("{}", NOW + 999_999));
+        bad.body = bad
+            .body
+            .replace(&format!("{}", NOW + 3600), &format!("{}", NOW + 999_999));
         assert!(matches!(bad.open(), Err(Error::BadSignature)));
         // Swap in another admin key (re-signing is impossible without the key).
         let other = OwnerKey::generate();
         let mut swapped = t.clone();
-        swapped.body = swapped.body.replace(&hex::encode(k.public()), &hex::encode(other.public()));
+        swapped.body = swapped
+            .body
+            .replace(&hex::encode(k.public()), &hex::encode(other.public()));
         assert!(swapped.open().is_err());
         assert!(EnrolToken::decode("spike2:abc").is_err());
         assert!(EnrolToken::decode("spikeorg1:!!!").is_err());
@@ -367,7 +404,10 @@ mod tests {
     fn bad_tenant_ids_are_refused() {
         let k = OwnerKey::generate();
         for bad in ["", "North", "a b", "x".repeat(33).as_str(), "a/b"] {
-            assert!(EnrolToken::issue(&k, bad, "wss://r", "T", 3600, NOW).is_err(), "{bad}");
+            assert!(
+                EnrolToken::issue(&k, bad, "wss://r", "T", 3600, NOW).is_err(),
+                "{bad}"
+            );
         }
     }
 
@@ -390,10 +430,15 @@ mod tests {
         let s = SignedRules::sign(&k, &rules(3)).unwrap();
         let back = SignedRules::decode(&s.encode()).unwrap();
         assert_eq!(back.open(&k.public(), "northwind").unwrap(), rules(3));
-        assert!(matches!(back.open(&OwnerKey::generate().public(), "northwind"), Err(Error::BadSignature)));
+        assert!(matches!(
+            back.open(&OwnerKey::generate().public(), "northwind"),
+            Err(Error::BadSignature)
+        ));
         assert!(back.open(&k.public(), "other").is_err());
         let mut forged = back.clone();
-        forged.body = forged.body.replace("\"keep_messages_days\":90", "\"keep_messages_days\":1");
+        forged.body = forged
+            .body
+            .replace("\"keep_messages_days\":90", "\"keep_messages_days\":1");
         assert!(forged.open(&k.public(), "northwind").is_err());
     }
 
@@ -405,7 +450,10 @@ mod tests {
         assert!(v3.accept(&k.public(), "northwind", 3).unwrap().is_none());
         assert!(matches!(
             v3.accept(&k.public(), "northwind", 4),
-            Err(Error::Rollback { seen: 4, offered: 3 })
+            Err(Error::Rollback {
+                seen: 4,
+                offered: 3
+            })
         ));
     }
 
@@ -418,7 +466,13 @@ mod tests {
         let mut r = rules(1);
         r.version = 0;
         assert!(SignedRules::sign(&k, &r).is_err());
-        let empty = Rules { v: 1, tenant: "northwind".into(), version: 1, issued_at: NOW, ..Default::default() };
+        let empty = Rules {
+            v: 1,
+            tenant: "northwind".into(),
+            version: 1,
+            issued_at: NOW,
+            ..Default::default()
+        };
         let s = SignedRules::sign(&k, &empty).unwrap();
         assert_eq!(s.open(&k.public(), "northwind").unwrap().backups, None);
     }
@@ -427,13 +481,43 @@ mod tests {
     fn admin_auth_is_bound_to_tenant_audience_and_context() {
         let k = OwnerKey::generate();
         let sig = sign_admin_auth(&k, "northwind", b"nonce", "relay.example:443");
-        assert!(verify_admin_auth(&k.public(), "northwind", b"nonce", "relay.example", &sig));
-        assert!(!verify_admin_auth(&k.public(), "other", b"nonce", "relay.example", &sig));
-        assert!(!verify_admin_auth(&k.public(), "northwind", b"nonce", "evil.example", &sig));
-        assert!(!verify_admin_auth(&k.public(), "northwind", b"other", "relay.example", &sig));
+        assert!(verify_admin_auth(
+            &k.public(),
+            "northwind",
+            b"nonce",
+            "relay.example",
+            &sig
+        ));
+        assert!(!verify_admin_auth(
+            &k.public(),
+            "other",
+            b"nonce",
+            "relay.example",
+            &sig
+        ));
+        assert!(!verify_admin_auth(
+            &k.public(),
+            "northwind",
+            b"nonce",
+            "evil.example",
+            &sig
+        ));
+        assert!(!verify_admin_auth(
+            &k.public(),
+            "northwind",
+            b"other",
+            "relay.example",
+            &sig
+        ));
         // A device sign-in answer is not an admin sign-in, even made by the same key bytes.
         let raw = k.sign_raw(b"nonce");
-        assert!(!verify_admin_auth(&k.public(), "northwind", b"nonce", "relay.example", &raw));
+        assert!(!verify_admin_auth(
+            &k.public(),
+            "northwind",
+            b"nonce",
+            "relay.example",
+            &raw
+        ));
     }
 
     #[test]

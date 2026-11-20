@@ -239,7 +239,9 @@ impl<S: Store, P: HistoryProvider> Home<S, P> {
             Err(CoreError::WrongPassphrase) => bail!("wrong passphrase"),
             Err(e) => return Err(e.into()),
         };
-        self.store.put(HEADER_FILE, next.to_json()?.as_bytes()).await
+        self.store
+            .put(HEADER_FILE, next.to_json()?.as_bytes())
+            .await
     }
 
     /// The name you chose to offer people (ADR 0038), if any.

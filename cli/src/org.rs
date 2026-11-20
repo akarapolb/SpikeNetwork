@@ -16,7 +16,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use spike_core::owner::OwnerKey;
 use spike_core::tenant::{
-    admin_fingerprint, is_valid_tenant_id, sign_admin_auth, EnrolToken, Rules, SignedRules, TokenBody,
+    admin_fingerprint, is_valid_tenant_id, sign_admin_auth, EnrolToken, Rules, SignedRules,
+    TokenBody,
 };
 use spike_core::wire::{ClientMsg, ServerMsg, WireTenantDevice, WireTenantUsage};
 
@@ -83,11 +84,15 @@ pub fn inspect(token: &str) -> Result<TokenBody> {
 pub fn explain(code: &str) -> &'static str {
     match code {
         "token_expired" => "This token has expired. Ask your organisation for a new one.",
-        "token_used" => "This token was already used by another device. Ask your organisation for a new one.",
+        "token_used" => {
+            "This token was already used by another device. Ask your organisation for a new one."
+        }
         "token_withdrawn" => "Your organisation withdrew this token.",
         "token_invalid" => "This relay does not recognise the organisation in this token.",
         "tenant_suspended" => "This organisation is suspended on its relay.",
-        "tenant_over_limit" => "The organisation has no device places left. Ask its admin to make room.",
+        "tenant_over_limit" => {
+            "The organisation has no device places left. Ask its admin to make room."
+        }
         "already_enrolled" => "This device is already in another organisation on that relay.",
         "not_enrolled" => "This relay only admits devices an organisation enrolled.",
         "device_revoked" => "Your organisation removed this device.",
@@ -97,10 +102,17 @@ pub fn explain(code: &str) -> &'static str {
 
 /// Re-sign our device list so this device reads from `relay` (or the sender's relay for `None`),
 /// and publish it on `publish_to`. Contacts then deliver to the new home relay (ADR 0009).
-pub async fn publish_home_relay(home: &Home, relay: Option<String>, publish_to: &mut Relay) -> Result<()> {
+pub async fn publish_home_relay(
+    home: &Home,
+    relay: Option<String>,
+    publish_to: &mut Relay,
+) -> Result<()> {
     let me = home.load_identity()?;
     let owner = home.load_owner()?;
-    if let Some(list) = home.load_device_list()?.with_relay(&owner, &me.device_id(), relay)? {
+    if let Some(list) = home
+        .load_device_list()?
+        .with_relay(&owner, &me.device_id(), relay)?
+    {
         home.save_device_list(&list)?;
         publish_to.publish_device_list(&list).await?;
     }
@@ -110,18 +122,23 @@ pub async fn publish_home_relay(home: &Home, relay: Option<String>, publish_to: 
 /// Join: sign in to the organisation's relay with the token, take its rules, and make it this
 /// device's home relay in the signed device list. `old` is the relay used until now; the new list is
 /// published there too, so contacts who look there learn where to deliver.
-pub async fn join(home: &Home, token: &str, new: Target, old: Option<Target>) -> Result<Membership> {
+pub async fn join(
+    home: &Home,
+    token: &str,
+    new: Target,
+    old: Option<Target>,
+) -> Result<Membership> {
     let body = inspect(token)?;
     if membership(home)?.is_some_and(|m| !m.removed) {
         bail!("this device is already in an organisation: leave it first");
     }
     let me = home.load_identity()?;
-    let mut relay = Relay::connect_enrol(new.clone(), &me, token).await.map_err(|e| {
-        match e.downcast_ref::<crate::client::RelayRefused>() {
+    let mut relay = Relay::connect_enrol(new.clone(), &me, token)
+        .await
+        .map_err(|e| match e.downcast_ref::<crate::client::RelayRefused>() {
             Some(r) => anyhow!("{}", explain(&r.code)),
             None => e.context(format!("could not reach {}", new.url)),
-        }
-    })?;
+        })?;
     let mut m = Membership {
         tenant: body.tenant.clone(),
         org_name: body.org_name.clone(),
@@ -176,17 +193,25 @@ pub struct RulesUpdate {
 /// Refresh rules on an open connection to the organisation's relay and carry out the retention rule.
 /// A relay offering older or forged rules is refused (the error says so) and the held rules stay.
 pub async fn refresh(home: &Home, relay: &mut Relay) -> Result<RulesUpdate> {
-    let Some(mut m) = membership(home)? else { return Ok(RulesUpdate::default()) };
+    let Some(mut m) = membership(home)? else {
+        return Ok(RulesUpdate::default());
+    };
     let fetched = relay.fetch_rules().await?;
     let changed = apply_fetched(&mut m, fetched)?;
     save_membership(home, Some(&m))?;
     let pruned = enforce_retention(home, &m)?;
-    Ok(RulesUpdate { changed, removed: m.removed, pruned })
+    Ok(RulesUpdate {
+        changed,
+        removed: m.removed,
+        pruned,
+    })
 }
 
 /// "Messages kept on this device": delete older messages in every conversation (owner decision 3).
 pub fn enforce_retention(home: &Home, m: &Membership) -> Result<usize> {
-    let Some(days) = m.rules.as_ref().and_then(|r| r.keep_messages_days) else { return Ok(0) };
+    let Some(days) = m.rules.as_ref().and_then(|r| r.keep_messages_days) else {
+        return Ok(0);
+    };
     if m.removed {
         return Ok(0);
     }
@@ -203,7 +228,9 @@ pub async fn leave(home: &Home, org: Option<Target>, next: Target) -> Result<()>
             let _ = r.leave_tenant().await;
         }
     }
-    let mut r = Relay::connect(next.clone(), &me).await.with_context(|| format!("could not reach {}", next.url))?;
+    let mut r = Relay::connect(next.clone(), &me)
+        .await
+        .with_context(|| format!("could not reach {}", next.url))?;
     crate::ops::publish_keys(home, next.clone()).await?;
     publish_home_relay(home, Some(next.url.clone()), &mut r).await?;
     save_membership(home, None)
@@ -211,7 +238,9 @@ pub async fn leave(home: &Home, org: Option<Target>, next: Target) -> Result<()>
 
 /// The rules in force on this device, if any. A removed membership enforces nothing.
 pub fn rules_in_force(home: &Home) -> Result<Option<Rules>> {
-    Ok(membership(home)?.filter(|m| !m.removed).and_then(|m| m.rules))
+    Ok(membership(home)?
+        .filter(|m| !m.removed)
+        .and_then(|m| m.rules))
 }
 
 // -------------------------------------------------------------------------------------- admin
@@ -291,7 +320,14 @@ pub fn create_admin(home: &Home, tenant: &str, org_name: &str, relay: &str) -> R
 /// Sign a single-use token (local only: the relay learns of it when a device uses it).
 pub fn issue_token(home: &Home, label: &str, valid_secs: u64) -> Result<(String, IssuedToken)> {
     let mut a = admin(home)?.context("this computer holds no organisation admin key")?;
-    let (t, body) = EnrolToken::issue(&a.key()?, &a.tenant, &a.relay, &a.org_name, valid_secs, now_secs())?;
+    let (t, body) = EnrolToken::issue(
+        &a.key()?,
+        &a.tenant,
+        &a.relay,
+        &a.org_name,
+        valid_secs,
+        now_secs(),
+    )?;
     let issued = IssuedToken {
         token_id: body.token_id,
         label: label.trim().chars().take(64).collect(),
@@ -320,9 +356,18 @@ impl AdminRelay {
         let audience = target.audience();
         let mut ws = WsConnector.connect(&target).await?;
         let first = recv(&mut ws).await?;
-        let ServerMsg::Challenge { nonce } = first else { bail!("relay did not send a challenge") };
+        let ServerMsg::Challenge { nonce } = first else {
+            bail!("relay did not send a challenge")
+        };
         let sig = sign_admin_auth(&a.key()?, &a.tenant, &hex::decode(nonce)?, &audience);
-        send(&mut ws, &ClientMsg::AdminAuth { tenant: a.tenant.clone(), sig: hex::encode(sig) }).await?;
+        send(
+            &mut ws,
+            &ClientMsg::AdminAuth {
+                tenant: a.tenant.clone(),
+                sig: hex::encode(sig),
+            },
+        )
+        .await?;
         match recv(&mut ws).await? {
             ServerMsg::AdminReady { tenant, name, state } => Ok(Self { ws, tenant, name, state }),
             ServerMsg::Error { code, .. } if code == "auth_failed" => bail!(
@@ -340,7 +385,10 @@ async fn send<S: Socket>(ws: &mut S, m: &ClientMsg) -> Result<()> {
 }
 
 async fn recv<S: Socket>(ws: &mut S) -> Result<ServerMsg> {
-    let t = ws.recv().await?.ok_or_else(|| anyhow!("relay closed the connection"))?;
+    let t = ws
+        .recv()
+        .await?
+        .ok_or_else(|| anyhow!("relay closed the connection"))?;
     Ok(serde_json::from_str(&t)?)
 }
 
@@ -361,21 +409,37 @@ impl<S: Socket> AdminRelay<S> {
     }
 
     pub async fn revoke(&mut self, device: &str) -> Result<()> {
-        match self.ask(ClientMsg::RevokeDevice { device: device.into() }).await? {
+        match self
+            .ask(ClientMsg::RevokeDevice {
+                device: device.into(),
+            })
+            .await?
+        {
             ServerMsg::DeviceRevoked { .. } => Ok(()),
             _ => bail!("unexpected answer from the relay"),
         }
     }
 
     pub async fn cancel_token(&mut self, token_id: &str, not_after: u64) -> Result<()> {
-        match self.ask(ClientMsg::CancelToken { token_id: token_id.into(), not_after }).await? {
+        match self
+            .ask(ClientMsg::CancelToken {
+                token_id: token_id.into(),
+                not_after,
+            })
+            .await?
+        {
             ServerMsg::TokenCancelled { .. } => Ok(()),
             _ => bail!("unexpected answer from the relay"),
         }
     }
 
     pub async fn publish_rules(&mut self, rules: &SignedRules) -> Result<u64> {
-        match self.ask(ClientMsg::PublishRules { rules: rules.encode() }).await? {
+        match self
+            .ask(ClientMsg::PublishRules {
+                rules: rules.encode(),
+            })
+            .await?
+        {
             ServerMsg::RulesStored { version } => Ok(version),
             _ => bail!("unexpected answer from the relay"),
         }
@@ -408,7 +472,11 @@ pub async fn publish_rules(home: &Home, relay: &mut AdminRelay, mut rules: Rules
 /// Withdraw an unused token, here and on the relay.
 pub async fn withdraw_token(home: &Home, relay: &mut AdminRelay, token_id: &str) -> Result<()> {
     let mut a = admin(home)?.context("this computer holds no organisation admin key")?;
-    let t = a.tokens.iter_mut().find(|t| t.token_id == token_id).context("no such token")?;
+    let t = a
+        .tokens
+        .iter_mut()
+        .find(|t| t.token_id == token_id)
+        .context("no such token")?;
     relay.cancel_token(token_id, t.not_after).await?;
     t.withdrawn = true;
     save_admin(home, Some(&a))

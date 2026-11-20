@@ -465,7 +465,11 @@ where
         .or_else(|| host_seen.lock().unwrap().clone())
         .unwrap_or_default();
     let (ed25519, sig, enrol) = match serde_json::from_str::<ClientMsg>(&text) {
-        Ok(ClientMsg::Auth { ed25519, sig, enrol }) => (ed25519, sig, enrol),
+        Ok(ClientMsg::Auth {
+            ed25519,
+            sig,
+            enrol,
+        }) => (ed25519, sig, enrol),
         // An organisation admin's console (ADR 0035): its own, smaller set of requests.
         Ok(ClientMsg::AdminAuth { tenant, sig }) => {
             return org::serve_admin(tx, rx, state, cfg, nonce, audience, tenant, sig).await;
@@ -899,11 +903,20 @@ fn on_send(
     // An enrolled relay keeps mailboxes for its members only (ADR 0035): a queued message for anyone
     // else could never be read here, and would let outsiders use the relay as free storage.
     if cfg.enrolled && !matches!(state.store.membership(to), Ok(Some(_))) {
-        return Some(err("not_enrolled", "the recipient has no mailbox on this relay"));
+        return Some(err(
+            "not_enrolled",
+            "the recipient has no mailbox on this relay",
+        ));
     }
     // An organisation pays for what is held for its devices (ADR 0023): past its limit, refuse.
-    if matches!(state.store.tenant_storage_over(to, blob.len() as u64), Ok(true)) {
-        return Some(err("tenant_over_limit", "storage: the recipient's organisation is at its storage limit"));
+    if matches!(
+        state.store.tenant_storage_over(to, blob.len() as u64),
+        Ok(true)
+    ) {
+        return Some(err(
+            "tenant_over_limit",
+            "storage: the recipient's organisation is at its storage limit",
+        ));
     }
     let id = match state
         .store
@@ -1451,8 +1464,14 @@ fn on_put_chunk(
     if data.len() < OVERHEAD {
         return err("bad_request", "chunk too short");
     }
-    if matches!(state.store.tenant_storage_over(me, data.len() as u64), Ok(true)) {
-        return err("tenant_over_limit", "storage: your organisation is at its storage limit");
+    if matches!(
+        state.store.tenant_storage_over(me, data.len() as u64),
+        Ok(true)
+    ) {
+        return err(
+            "tenant_over_limit",
+            "storage: your organisation is at its storage limit",
+        );
     }
     match state.store.put_chunk(
         blob,

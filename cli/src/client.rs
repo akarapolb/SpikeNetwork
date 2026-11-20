@@ -130,7 +130,11 @@ impl Relay {
     }
 
     /// Connect and present an organisation's enrolment token with the sign-in (ADR 0035).
-    pub async fn connect_enrol(target: impl Into<Target>, me: &Identity, token: &str) -> Result<Self> {
+    pub async fn connect_enrol(
+        target: impl Into<Target>,
+        me: &Identity,
+        token: &str,
+    ) -> Result<Self> {
         Self::connect_full(&WsConnector, TokioClock, target, me, Some(token)).await
     }
 }
@@ -215,7 +219,10 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
                     self.rules_changed = false;
                     return Ok((tenant, rules));
                 }
-                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery { id, blob: hex::decode(blob)? }),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
                 ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
                 _ => {}
             }
@@ -228,7 +235,10 @@ impl<S: Socket, C: Clock + Clone> Relay<S, C> {
         loop {
             match self.read().await? {
                 ServerMsg::LeftTenant => return Ok(()),
-                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery { id, blob: hex::decode(blob)? }),
+                ServerMsg::Deliver { id, blob } => self.pending.push_back(Delivery {
+                    id,
+                    blob: hex::decode(blob)?,
+                }),
                 ServerMsg::Error { code, message } => bail!("relay error: {code}: {message}"),
                 _ => {}
             }

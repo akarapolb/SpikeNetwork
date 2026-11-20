@@ -914,7 +914,10 @@ fn contact_updates_follow_the_device_list_rules() {
     );
     let c = &alice.home.load_contacts().unwrap()[0];
     assert!(!c.verified);
-    assert!(c.key_changed.is_some(), "the apps warn until it is compared again");
+    assert!(
+        c.key_changed.is_some(),
+        "the apps warn until it is compared again"
+    );
 }
 
 #[test]

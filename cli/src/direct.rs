@@ -487,6 +487,35 @@ async fn deliver(ctx: &Ctx, blob: &[u8]) -> (Vec<u8>, Option<After>) {
     (vec![TAG_ACK], Some(after))
 }
 
+/// The native [`DirectPath`](crate::direct_path::DirectPath): the functions above, for a `Home` over the state
+/// directory.
+pub struct NativeDirect;
+
+impl crate::direct_path::DirectPath for NativeDirect {
+    fn enabled(&self, home: &crate::direct_path::AnyHome) -> bool {
+        home.downcast_ref::<Home>().is_some_and(enabled)
+    }
+
+    fn try_send<'a>(
+        &'a self,
+        home: &'a crate::direct_path::AnyHome,
+        me: &'a spike_core::identity::Identity,
+        card: &'a DeviceCard,
+        blob: &'a [u8],
+    ) -> crate::direct_path::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            match home.downcast_ref::<Home>() {
+                Some(h) => try_send(h, me, card, blob).await,
+                None => bail!("direct connections are not available here"),
+            }
+        })
+    }
+
+    fn note_fallback(&self, e: &anyhow::Error) {
+        note_fallback(e)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,34 +543,5 @@ mod tests {
         ] {
             assert!(check_address(bad).is_err(), "{bad}");
         }
-    }
-}
-
-/// The native [`DirectPath`](crate::direct_path::DirectPath): the functions above, for a `Home` over the state
-/// directory.
-pub struct NativeDirect;
-
-impl crate::direct_path::DirectPath for NativeDirect {
-    fn enabled(&self, home: &crate::direct_path::AnyHome) -> bool {
-        home.downcast_ref::<Home>().is_some_and(enabled)
-    }
-
-    fn try_send<'a>(
-        &'a self,
-        home: &'a crate::direct_path::AnyHome,
-        me: &'a spike_core::identity::Identity,
-        card: &'a DeviceCard,
-        blob: &'a [u8],
-    ) -> crate::direct_path::BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            match home.downcast_ref::<Home>() {
-                Some(h) => try_send(h, me, card, blob).await,
-                None => bail!("direct connections are not available here"),
-            }
-        })
-    }
-
-    fn note_fallback(&self, e: &anyhow::Error) {
-        note_fallback(e)
     }
 }

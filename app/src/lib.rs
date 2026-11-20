@@ -1163,7 +1163,11 @@ impl Session {
             // A device its organisation removed is only a visitor on that relay now, so reading fails there.
             // Say that in words rather than as a relay error (ADR 0035).
             if let Some(note) = self.org_refresh().await {
-                if spike_cli::org::membership(&self.home).ok().flatten().is_some_and(|m| m.removed) {
+                if spike_cli::org::membership(&self.home)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|m| m.removed)
+                {
                     out.notes.push(note);
                     return Ok(out);
                 }
@@ -1756,7 +1760,10 @@ impl Session {
             .map(|m| {
                 let here = m.stamp_device == my_id;
                 let from = (!here).then(|| {
-                    format!("Device {}", m.stamp_device.chars().take(6).collect::<String>())
+                    format!(
+                        "Device {}",
+                        m.stamp_device.chars().take(6).collect::<String>()
+                    )
                 });
                 let mut dto = message_dto(m, None, true, &me);
                 dto.out = here;
@@ -1768,11 +1775,7 @@ impl Session {
     }
 
     /// Send a note, or a file with an optional caption, to your other devices only.
-    pub async fn send_to_devices(
-        &self,
-        text: &str,
-        file: Option<(&str, &[u8])>,
-    ) -> Result<usize> {
+    pub async fn send_to_devices(&self, text: &str, file: Option<(&str, &[u8])>) -> Result<usize> {
         let text = text.trim_end();
         if file.is_none() && text.trim().is_empty() {
             bail!("nothing to send");

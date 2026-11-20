@@ -5372,6 +5372,7 @@ dependencies = [
  "clap",
  "futures-util",
  "hex",
+ "qrcode",
  "rand 0.8.8",
  "rpassword",
  "rusqlite",

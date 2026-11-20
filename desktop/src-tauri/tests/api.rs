@@ -101,7 +101,12 @@ async fn chat_send_receive_unread_and_verification() {
     assert!(alice.s.send("Nobody", "hi").await.is_err());
 
     assert_eq!(
-        alice.s.send("Bob", "hello from alice").await.unwrap().delivered,
+        alice
+            .s
+            .send("Bob", "hello from alice")
+            .await
+            .unwrap()
+            .delivered,
         1
     );
     let got = bob.s.sync(IDLE).await.unwrap();
@@ -186,7 +191,11 @@ async fn a_verified_contact_whose_key_changes_warns_until_compared_again() {
     assert!(before.verified && before.key_changed.is_none() && before.verified_at.is_some());
 
     // A new identity under the same name is refused when adding, and taken only when replaced on purpose.
-    let e = alice.s.add_contact("Bob", &card(&bob2)).unwrap_err().to_string();
+    let e = alice
+        .s
+        .add_contact("Bob", &card(&bob2))
+        .unwrap_err()
+        .to_string();
     assert!(e.contains("KEY CHANGE"), "{e}");
     assert!(bob_row(&alice).verified);
     assert!(alice.s.replace_contact_key("Nobody", &card(&bob2)).is_err());
@@ -197,7 +206,10 @@ async fn a_verified_contact_whose_key_changes_warns_until_compared_again() {
     let after = bob_row(&alice);
     assert!(!after.verified, "a changed key is not verified");
     assert!(after.key_changed.is_some());
-    assert_eq!(after.verified_at, before.verified_at, "kept to say 'was verified'");
+    assert_eq!(
+        after.verified_at, before.verified_at,
+        "kept to say 'was verified'"
+    );
     assert_eq!(after.fingerprint, fp(&bob2));
     // The old safety number no longer verifies; the new one does, and clears the warning.
     assert!(alice.s.mark_verified("Bob", &fp(&bob)).is_err());

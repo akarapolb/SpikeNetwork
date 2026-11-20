@@ -401,7 +401,10 @@ fn a_direct_message_arrives_while_the_listener_hangs_on_an_unreachable_relay() {
         std::thread::spawn(move || b.ok("direct_wait", json!({ "ms": 15000 })))
     };
     std::thread::sleep(std::time::Duration::from_millis(300));
-    alice.ok("send", json!({ "name": "Bob", "text": "while the relay hangs" }));
+    alice.ok(
+        "send",
+        json!({ "name": "Bob", "text": "while the relay hangs" }),
+    );
     assert_eq!(waiting.join().unwrap()["received"], 1);
     let thread = bob.ok("conversation", json!({ "name": "Alice" }));
     assert_eq!(thread[1]["body"], "while the relay hangs");

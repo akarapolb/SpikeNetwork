@@ -410,12 +410,16 @@ async fn notes_and_files_reach_only_your_own_devices() {
         assert_eq!(msgs[0].id, id);
         assert_eq!(msgs[0].body, "for my laptop");
     }
-    let (_, bytes) = ops::fetch_attachment(&alice[1].0, &url, &fid).await.unwrap();
+    let (_, bytes) = ops::fetch_attachment(&alice[1].0, &url, &fid)
+        .await
+        .unwrap();
     assert_eq!(bytes, b"plan v4");
     // Bob gets nothing at all.
     assert!(recv(&bob[0], &url).await.is_empty());
     assert!(history(&bob[0], &alice[0]).is_empty());
     // A device on its own has nobody to send to.
-    let err = ops::send_to_own(&bob[0].0, &url, "hi", None).await.unwrap_err();
+    let err = ops::send_to_own(&bob[0].0, &url, "hi", None)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("link one first"), "{err}");
 }

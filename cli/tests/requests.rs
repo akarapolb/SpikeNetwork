@@ -385,8 +385,13 @@ async fn an_introduction_offers_the_senders_chosen_name() {
     assert!(alice.0.set_profile_name(&"x".repeat(65)).is_err());
     assert!(alice.0.set_profile_name("Ali\nce").is_err());
     alice.0.set_profile_name("  Alice Sommer  ").unwrap();
-    assert_eq!(alice.0.profile_name().unwrap().as_deref(), Some("Alice Sommer"));
-    ops::send(&alice.0, url.as_str(), "bob", b"hi").await.unwrap();
+    assert_eq!(
+        alice.0.profile_name().unwrap().as_deref(),
+        Some("Alice Sommer")
+    );
+    ops::send(&alice.0, url.as_str(), "bob", b"hi")
+        .await
+        .unwrap();
     recv(&bob, &url).await;
     let list = requests::list(&bob.0).unwrap();
     assert_eq!(list[0].name.as_deref(), Some("Alice Sommer"));
@@ -404,24 +409,38 @@ async fn an_introduction_offers_the_senders_chosen_name() {
 async fn changing_the_passphrase_keeps_everything() {
     let (url, alice, bob) = setup().await;
     one_way(&bob, "alice", &alice);
-    ops::send(&alice.0, url.as_str(), "bob", b"before the change").await.unwrap();
+    ops::send(&alice.0, url.as_str(), "bob", b"before the change")
+        .await
+        .unwrap();
     recv(&bob, &url).await;
     let fingerprint = bob.0.load_identity().unwrap().card().device_id();
 
-    assert!(bob.0.change_passphrase("not it at all", "a new passphrase").is_err());
-    bob.0.change_passphrase(PASS, "a brand new passphrase").unwrap();
+    assert!(bob
+        .0
+        .change_passphrase("not it at all", "a new passphrase")
+        .is_err());
+    bob.0
+        .change_passphrase(PASS, "a brand new passphrase")
+        .unwrap();
     // The open home keeps working.
     assert_eq!(bob.0.messages().unwrap().all().unwrap().len(), 1);
 
-    let err = Home::unlock(&bob.1, PASS).err().expect("old passphrase refused");
+    let err = Home::unlock(&bob.1, PASS)
+        .err()
+        .expect("old passphrase refused");
     assert!(format!("{err:#}").contains("wrong passphrase"), "{err:#}");
     let again = Home::unlock(&bob.1, "a brand new passphrase").unwrap();
-    assert_eq!(again.load_identity().unwrap().card().device_id(), fingerprint);
+    assert_eq!(
+        again.load_identity().unwrap().card().device_id(),
+        fingerprint
+    );
     assert_eq!(again.load_contacts().unwrap()[0].name, "alice");
     let msgs = again.messages().unwrap().all().unwrap();
     assert_eq!(msgs.len(), 1, "history (indexed by keyed tags) still found");
     // And it still receives.
-    ops::send(&alice.0, url.as_str(), "bob", b"after the change").await.unwrap();
+    ops::send(&alice.0, url.as_str(), "bob", b"after the change")
+        .await
+        .unwrap();
     let mut n = 0;
     ops::recv(&again, &url, IDLE, |_| n += 1).await.unwrap();
     assert_eq!(n, 1);

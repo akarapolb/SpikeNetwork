@@ -150,14 +150,25 @@ impl Store {
         rows.collect()
     }
 
-    pub fn tenant_set_limits(&self, id: &str, max_devices: Option<u64>, storage_bytes: Option<u64>) -> rusqlite::Result<bool> {
+    pub fn tenant_set_limits(
+        &self,
+        id: &str,
+        max_devices: Option<u64>,
+        storage_bytes: Option<u64>,
+    ) -> rusqlite::Result<bool> {
         let c = self.conn.lock().unwrap();
         let mut n = 0;
         if let Some(d) = max_devices {
-            n += c.execute("UPDATE tenants SET max_devices = ?2 WHERE id = ?1", params![id, d as i64])?;
+            n += c.execute(
+                "UPDATE tenants SET max_devices = ?2 WHERE id = ?1",
+                params![id, d as i64],
+            )?;
         }
         if let Some(b) = storage_bytes {
-            n += c.execute("UPDATE tenants SET storage_bytes = ?2 WHERE id = ?1", params![id, b as i64])?;
+            n += c.execute(
+                "UPDATE tenants SET storage_bytes = ?2 WHERE id = ?1",
+                params![id, b as i64],
+            )?;
         }
         Ok(n > 0)
     }
@@ -218,7 +229,11 @@ impl Store {
             return Ok(Redeem::Suspended);
         }
         let current: Option<String> = tx
-            .query_row("SELECT tenant FROM enrollments WHERE device = ?1", [device], |r| r.get(0))
+            .query_row(
+                "SELECT tenant FROM enrollments WHERE device = ?1",
+                [device],
+                |r| r.get(0),
+            )
             .optional()?;
         match current {
             Some(ten) if ten == t.tenant => return Ok(Redeem::AlreadyMember),
@@ -226,14 +241,22 @@ impl Store {
             None => {}
         }
         let used: Option<Option<String>> = tx
-            .query_row("SELECT device FROM token_uses WHERE token_id = ?1", [&t.token_id], |r| r.get(0))
+            .query_row(
+                "SELECT device FROM token_uses WHERE token_id = ?1",
+                [&t.token_id],
+                |r| r.get(0),
+            )
             .optional()?;
         match used {
             Some(None) => return Ok(Redeem::Withdrawn),
             Some(Some(d)) if d != device => return Ok(Redeem::Used),
             _ => {}
         }
-        let n: i64 = tx.query_row("SELECT COUNT(*) FROM enrollments WHERE tenant = ?1", [&t.tenant], |r| r.get(0))?;
+        let n: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM enrollments WHERE tenant = ?1",
+            [&t.tenant],
+            |r| r.get(0),
+        )?;
         if max_devices > 0 && n >= max_devices {
             return Ok(Redeem::Full);
         }
@@ -246,7 +269,10 @@ impl Store {
             "INSERT INTO enrollments (device, tenant, token_id, enrolled_day, active_week) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![device, t.tenant, t.token_id, unix_day(now), unix_week(now)],
         )?;
-        tx.execute("DELETE FROM revoked_devices WHERE device = ?1 AND tenant = ?2", params![device, t.tenant])?;
+        tx.execute(
+            "DELETE FROM revoked_devices WHERE device = ?1 AND tenant = ?2",
+            params![device, t.tenant],
+        )?;
         tx.commit()?;
         Ok(Redeem::Enrolled)
     }
@@ -310,7 +336,10 @@ impl Store {
     pub fn revoke(&self, tenant: &str, device: &str) -> rusqlite::Result<bool> {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction()?;
-        let n = tx.execute("DELETE FROM enrollments WHERE device = ?1 AND tenant = ?2", params![device, tenant])?;
+        let n = tx.execute(
+            "DELETE FROM enrollments WHERE device = ?1 AND tenant = ?2",
+            params![device, tenant],
+        )?;
         if n == 1 {
             forget_device(&tx, device)?;
             tx.execute(
@@ -327,7 +356,11 @@ impl Store {
         let mut c = self.conn.lock().unwrap();
         let tx = c.transaction()?;
         let tenant: Option<String> = tx
-            .query_row("SELECT tenant FROM enrollments WHERE device = ?1", [device], |r| r.get(0))
+            .query_row(
+                "SELECT tenant FROM enrollments WHERE device = ?1",
+                [device],
+                |r| r.get(0),
+            )
             .optional()?;
         if tenant.is_some() {
             tx.execute("DELETE FROM enrollments WHERE device = ?1", [device])?;
@@ -338,10 +371,19 @@ impl Store {
     }
 
     /// Withdraw an unused token. False if a device already used it.
-    pub fn cancel_token(&self, tenant: &str, token_id: &str, not_after: u64) -> rusqlite::Result<bool> {
+    pub fn cancel_token(
+        &self,
+        tenant: &str,
+        token_id: &str,
+        not_after: u64,
+    ) -> rusqlite::Result<bool> {
         let c = self.conn.lock().unwrap();
         let used: Option<Option<String>> = c
-            .query_row("SELECT device FROM token_uses WHERE token_id = ?1", [token_id], |r| r.get(0))
+            .query_row(
+                "SELECT device FROM token_uses WHERE token_id = ?1",
+                [token_id],
+                |r| r.get(0),
+            )
             .optional()?;
         if let Some(Some(_)) = used {
             return Ok(false);
@@ -410,7 +452,9 @@ impl Store {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let Some((tenant, limit)) = t else { return Ok(false) };
+        let Some((tenant, limit)) = t else {
+            return Ok(false);
+        };
         if limit <= 0 {
             return Ok(false);
         }
@@ -418,7 +462,9 @@ impl Store {
     }
 
     pub fn tenant_usage(&self, tenant: &str) -> rusqlite::Result<Option<WireTenantUsage>> {
-        let Some(t) = self.tenant(tenant)? else { return Ok(None) };
+        let Some(t) = self.tenant(tenant)? else {
+            return Ok(None);
+        };
         let devices: i64 = self.conn.lock().unwrap().query_row(
             "SELECT COUNT(*) FROM enrollments WHERE tenant = ?1",
             [tenant],
@@ -436,7 +482,10 @@ impl Store {
     }
 
     /// Forget token uses whose tokens have expired (an expired token is refused anyway).
-    pub(super) fn purge_tokens(tx: &rusqlite::Transaction<'_>, now: i64) -> rusqlite::Result<usize> {
+    pub(super) fn purge_tokens(
+        tx: &rusqlite::Transaction<'_>,
+        now: i64,
+    ) -> rusqlite::Result<usize> {
         tx.execute("DELETE FROM token_uses WHERE not_after * 1000 < ?1", [now])
     }
 }
@@ -450,13 +499,17 @@ mod tests {
     fn setup() -> (Store, OwnerKey) {
         let s = Store::open(None).unwrap();
         let k = OwnerKey::generate();
-        assert!(s.tenant_create("nw", "Northwind", &hex::encode(k.public()), 2, 0).unwrap());
+        assert!(s
+            .tenant_create("nw", "Northwind", &hex::encode(k.public()), 2, 0)
+            .unwrap());
         assert!(!s.tenant_create("nw", "Again", "00", 1, 0).unwrap());
         (s, k)
     }
 
     fn token(k: &OwnerKey, tenant: &str) -> TokenBody {
-        EnrolToken::issue(k, tenant, "wss://r", "Northwind", 3600, 1_800_000_000).unwrap().1
+        EnrolToken::issue(k, tenant, "wss://r", "Northwind", 3600, 1_800_000_000)
+            .unwrap()
+            .1
     }
 
     #[test]
@@ -466,7 +519,10 @@ mod tests {
         assert_eq!(s.redeem("dev-a", &t).unwrap(), Redeem::Enrolled);
         assert_eq!(s.redeem("dev-a", &t).unwrap(), Redeem::AlreadyMember);
         assert_eq!(s.redeem("dev-b", &t).unwrap(), Redeem::Used);
-        assert_eq!(s.membership("dev-a").unwrap(), Some(("nw".into(), ACTIVE.into())));
+        assert_eq!(
+            s.membership("dev-a").unwrap(),
+            Some(("nw".into(), ACTIVE.into()))
+        );
         let devs = s.tenant_devices("nw").unwrap();
         assert_eq!(devs.len(), 1);
         assert_eq!(devs[0].activity, "active");
@@ -475,8 +531,14 @@ mod tests {
     #[test]
     fn the_wrong_key_an_unknown_tenant_and_a_full_tenant_are_refused() {
         let (s, k) = setup();
-        assert_eq!(s.redeem("d", &token(&OwnerKey::generate(), "nw")).unwrap(), Redeem::WrongKey);
-        assert_eq!(s.redeem("d", &token(&k, "other")).unwrap(), Redeem::NoTenant);
+        assert_eq!(
+            s.redeem("d", &token(&OwnerKey::generate(), "nw")).unwrap(),
+            Redeem::WrongKey
+        );
+        assert_eq!(
+            s.redeem("d", &token(&k, "other")).unwrap(),
+            Redeem::NoTenant
+        );
         assert_eq!(s.redeem("d1", &token(&k, "nw")).unwrap(), Redeem::Enrolled);
         assert_eq!(s.redeem("d2", &token(&k, "nw")).unwrap(), Redeem::Enrolled);
         assert_eq!(s.redeem("d3", &token(&k, "nw")).unwrap(), Redeem::Full);
@@ -526,7 +588,10 @@ mod tests {
         assert!(s.put_rules("nw", 2, "doc2").unwrap());
         assert!(!s.put_rules("nw", 2, "again").unwrap());
         assert!(!s.put_rules("nw", 1, "older").unwrap());
-        assert_eq!(s.rules_for("d").unwrap(), Some(("nw".into(), Some("doc2".into()))));
+        assert_eq!(
+            s.rules_for("d").unwrap(),
+            Some(("nw".into(), Some("doc2".into())))
+        );
         assert_eq!(s.tenant_devices("nw").unwrap()[0].rules_version, 2);
         assert_eq!(s.rules_for("stranger").unwrap(), None);
     }
@@ -537,7 +602,8 @@ mod tests {
         s.tenant_set_limits("nw", None, Some(15)).unwrap();
         s.redeem("d", &token(&k, "nw")).unwrap();
         s.enqueue("d", b"0123456789", 60_000, 10).unwrap();
-        s.enqueue("outsider", b"0123456789012345678901234", 60_000, 10).unwrap();
+        s.enqueue("outsider", b"0123456789012345678901234", 60_000, 10)
+            .unwrap();
         assert!(!s.tenant_storage_over("d", 5).unwrap());
         assert!(s.tenant_storage_over("d", 6).unwrap());
         assert!(!s.tenant_storage_over("outsider", 1_000_000).unwrap());
